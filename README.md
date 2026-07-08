@@ -1,46 +1,97 @@
-<img  width="820"  alt="image" src="https://github.com/user-attachments/assets/2e1710b0-cdbd-4576-bd24-1614df016219" />
+# Cursor助手 · cursor-byok
 
-<img width="820"  alt="image" src="https://github.com/user-attachments/assets/00885453-6a91-4052-aadf-f686daeec881" />
+> 把你自己的 LLM API key（OpenAI 兼容 / Anthropic 兼容）接入 Cursor IDE，绕开官方模型与订阅绑定。
+>
+> English: [README_EN.md](./README_EN.md)
 
-<img  width="820"  alt="image" src="https://github.com/user-attachments/assets/a607be84-a738-4e33-9750-13352e74001c" />
+[截图1]: https://github.com/user-attachments/assets/2e1710b0-cdbd-4576-bd24-1614df016219
+[截图2]: https://github.com/user-attachments/assets/00885453-6a91-4052-aadf-f686daeec881
+[截图3]: https://github.com/user-attachments/assets/a607be84-a738-4e33-9750-13352e74001c
 
+<img width="820" alt="screenshot" src="https://github.com/user-attachments/assets/2e1710b0-cdbd-4576-bd24-1614df016219" />
+<img width="820" alt="screenshot" src="https://github.com/user-attachments/assets/00885453-6a91-4052-aadf-f686daeec881" />
+<img width="820" alt="screenshot" src="https://github.com/user-attachments/assets/a607be84-a738-4e33-9750-13352e74001c" />
 
+---
 
-## 为什么做这个项目
+## 这是什么
 
-公司喜欢把 Agent 服务与模型绑定在一起，让用户只能在指定模型、指定订阅和指定计费方式下使用工具。
+一个 Windows 桌面应用（Wails v3 + Go 后端 + Vue 3 前端），在本地起一个与 Cursor 兼容的 agent 服务，把 Cursor 客户端的 chat / agent 请求转发到**你自己配置的模型 provider**。它不是 Cursor 的替代品，而是一个本地中间人代理 + 本地 agent 执行内核。
 
-我希望打破这种绑定关系：模型应该可以自由选择。开发者应该能够把自己的模型 API 接入到任何 IDE、Chat、Agent 或开发工具中，也可以自托管整套服务，避免被单一平台锁定。
+适用场景：
+- 想用第三方 OpenAI 兼容 / Anthropic 兼容 API 驱动 Cursor 的 chat 与 agent
+- 想自托管整套 agent 服务，不被单一平台锁定
+- 想精细控制模型选择、计费方式与上下文处理
 
-这个项目的目标，是让模型选择权重新回到用户手里。
+## 工作原理
 
-## 路线图
+1. **本地服务**：在本地启动 HTTP/Connect-RPC 服务，对外暴露与 Cursor 兼容的接口
+2. **流量导入**：通过向 Cursor 注入代理设置 + 安装本地 CA 证书，把 Cursor 流量导向本地
+3. **请求转发**：本地 backend 做 prompt 编译、历史投影、tool call 处理后，调用你配置的模型 provider
+4. **agent 内核**：在本地重建类 Cursor 的 agent 执行循环（tool 调用、shell、文件编辑、codebase 索引、上下文压缩、usage 统计、会话回放）
 
-[正式版路线图](https://github.com/leookun/cursor-byok/discussions/32)
-[详细使用教程](https://dcne38qm5vlg.feishu.cn/wiki/JeP7wdGnziBXuikNaF5czWbrn8c)
+## 支持的模型 provider
 
-## 后续
+| 类型 | 协议 | 示例 |
+|---|---|---|
+| OpenAI 兼容 | `/v1/responses`、`/v1/chat/completions`、自定义路径 | OpenAI 官方、各类第三方 OpenAI 兼容网关 |
+| Anthropic 兼容 | Anthropic Messages API | Claude 官方、Bedrock/Vertex 透出等 |
 
-后续会继续扩展更多工具和使用场景，包括但不限于：
+每条模型配置含：`baseURL`、`apiKey`、`modelID`、provider 类型、端点、reasoning effort、thinking budget、自定义请求头、额外请求参数、context window、max tokens。
 
-- 支持更多 IDE 接入
-- 支持更多 Chat 类应用
-- 支持更多 Agent 工具和工作流
-- 提供更完善的自托管部署方式
-- 持续优化不同模型 API 的兼容性
-- 降低接入成本，让已有模型额度可以被更充分地利用
+## 支持的 IDE
 
-最终希望做到：让你的模型 API 可以自由接入到你想使用的任何工具中。
+- **Cursor**（当前版本，代码内硬编码 Cursor 的 `state.vscdb` 路径、扩展 proto、settings keys）
 
+## 主要功能
 
+- **模型适配器管理**：GUI 增删改查、单测 / 批量并发测试（并发 10）
+- **两种运行模式**：本地服务模式（默认，请求经本地 backend 转发到你配置的模型）/ 直连 Cursor 模式（放行到官方，默认关闭）
+- **usage 指标**：input / output / cache token、缓存命中率、按 $5 / $25 / $0.5 / $6.25 每百万 token 估算花费
+- **prompt cache**：Anthropic cache breakpoints、OpenAI prompt_cache_key
+- **thinking / reasoning**：深度思考、reasoning effort 控制、按 provider 差异化注入 disable 字段
+- **会话持久化**：`~/.cursor-local-assistant-v2/` 下 config / history / logs
+- **自动更新**：从本仓库 release 拉取 `update.json` manifest
+- **多语言 GUI**：简体中文、English、日本語
 
+## 安装与使用
 
-## Star History
+1. 从 [Releases](https://github.com/kael-odin/cursor-byok/releases) 下载 Windows amd64 压缩包
+2. 解压并运行 `windows-64.exe`
+3. 在「模型配置」中添加你的模型适配器（填 baseURL / apiKey / modelID）
+4. 启动本地服务（首次需 UAC 提权安装 CA 证书）
+5. 打开 Cursor，chat / agent 即由你配置的模型驱动
 
-<a href="https://www.star-history.com/?repos=leookun%2Fcursor-byok&type=timeline&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=leookun/cursor-byok&type=timeline&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=leookun/cursor-byok&type=timeline&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=leookun/cursor-byok&type=timeline&legend=top-left" />
- </picture>
-</a>
+> 详细配置项与故障排查见 GUI 内的「使用教程」入口（指向本仓库 README）。
+
+## 构建
+
+依赖：Go ≥1.25、Node.js、yarn、wails3 CLI（`v3.0.0-alpha.74`）、protoc 工具链。
+
+```bash
+# 生成 proto 代码（首次或 proto 变更后）
+wails3 task common:generate:proto
+
+# 构建 Windows amd64 发行包（产物：bin/windows-64.zip）
+wails3 task build:windows:amd64
+```
+
+## 项目结构
+
+```
+internal/
+  backend/agent/model/   模型适配器（openai.go / anthropic.go / router.go）
+  backend/forwarder/     agent 执行内核（service.go / actor.go / compaction.go）
+  backend/server/        HTTP 路由、中间件、policy
+  bridge/                Wails service 桥接层
+  cursor/                Cursor 客户端注入（证书、settings、state.vscdb）
+  netproxy/              系统级网络代理
+  buildinfo/             版本与发布目标
+frontend/                Vue 3 + vue-router + Tailwind + i18n
+proto/                   Cursor 兼容 proto 定义
+cursor-tab-server/       Cursor Tab 补全反向代理（独立程序）
+```
+
+## 许可证
+
+MIT。本项目基于 [leookun/cursor-byok](https://github.com/leookun/cursor-byok) 衍生，感谢原作者。
