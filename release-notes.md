@@ -1,5 +1,8 @@
-QQ10群：1049354347
-----
-- 更新支持最新版Cursor 3.9.16
+- 移除应用内广告 SDK（首页广告位、广告弹层、远程广告拉取与轮询、设备指纹上报）
+- 移除作者个人露出（作者按钮、bilibili 引流、作者寄语弹窗、docs.leokun.cn 文档站外链）
+- 发布目标迁移至 kael-odin/cursor-byok（自动更新、release 资产、README 同步全部指向本 fork）
+- 修复 OpenAI 适配器 thinking disable 不识别小米 MiMo（reasoning=disabled 时 MiMo 仍开思考）
+- 修复 Anthropic 适配器 thinking 配置在 override 路径丢失，与 openai 行为对齐
+- 标题与品牌去除"永久免费"立场表述
+- 更新支持最新版 Cursor 3.9.16
 - 支持多工作区模式
-

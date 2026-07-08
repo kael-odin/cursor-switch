@@ -5,19 +5,13 @@ import {
   StartProxy,
   StopProxy,
 } from "@bindings/cursor/internal/bridge/proxyservice.js";
-import {
-  GetAdRuntime,
-  OpenExternalURL as OpenAdExternalURL,
-} from "@bindings/cursor/internal/bridge/adservice.js";
 import { GetHomeMetricsSummary } from "@bindings/cursor/internal/bridge/metricsservice.js";
 import {
   CheckForUpdates,
   GetAppVersion,
-  GetFooterAuthorInfo,
   InstallReadyUpdate,
   GetModelEditorContext,
   OpenConfigWindow,
-  OpenFooterAuthorHome,
   OpenHistoryWindow,
   OpenModelConfigWindow,
   OpenModelEditorWindow,
@@ -70,14 +64,6 @@ export function getHomeMetricsSummary() {
   return withApiLogging("GetHomeMetricsSummary", undefined, () => GetHomeMetricsSummary());
 }
 
-export function getAdRuntime() {
-  return GetAdRuntime();
-}
-
-export function openAdExternalURL(url) {
-  return OpenAdExternalURL(url);
-}
-
 export function startProxyService() {
   return withApiLogging("StartProxy", undefined, () => StartProxy());
 }
@@ -98,20 +84,12 @@ export function getAppVersion() {
   return withApiLogging("GetAppVersion", undefined, () => GetAppVersion());
 }
 
-export function getFooterAuthorInfo() {
-  return withApiLogging("GetFooterAuthorInfo", undefined, () => GetFooterAuthorInfo());
-}
-
 export function checkForUpdates() {
   return withApiLogging("CheckForUpdates", undefined, () => CheckForUpdates());
 }
 
 export function installReadyUpdate() {
   return withApiLogging("InstallReadyUpdate", undefined, () => InstallReadyUpdate());
-}
-
-export function openFooterAuthorHome() {
-  return withApiLogging("OpenFooterAuthorHome", undefined, () => OpenFooterAuthorHome());
 }
 
 export function openModelConfig() {

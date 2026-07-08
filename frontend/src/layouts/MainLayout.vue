@@ -4,10 +4,6 @@ import LocaleSelect from "@/components/LocaleSelect.vue";
 import { useMessage } from "@/composables/useMessage";
 import { showModal } from "@/composables/useModal";
 import {
-  getFooterAuthorInfo,
-  openFooterAuthorHome,
-} from "@/services/clientApi";
-import {
   appState,
   checkForAppUpdates,
   syncServiceState,
@@ -21,11 +17,10 @@ import Logo from "@/assets/logo.png";
 const route = useRoute();
 const message = useMessage();
 const showIcon = computed(() => route.meta.showIcon !== false);
-const title = computed(() => route.meta.title ?? "Cursor助手｜永久免费｜自定义API");
+const title = computed(() => route.meta.title ?? "Cursor助手｜自定义API");
 const directlyClose = computed(() => route.meta.directlyClose === true);
 const showFooter = computed(() => route.path === "/");
-const footerAuthorInfo = ref(null);
-const usageDocsURL = "https://docs.leokun.cn";
+const usageDocsURL = "https://github.com/kael-odin/cursor-byok#readme";
 let proxyStateTimer = null;
 const proxyStatePollIntervalMs = 10000;
 const netProxyEndpoint = computed(
@@ -88,14 +83,6 @@ async function handleCheckForUpdates() {
   }
 }
 
-async function loadFooterAuthorInfo() {
-  try {
-    footerAuthorInfo.value = await getFooterAuthorInfo();
-  } catch (error) {
-    console.error("[MainLayout] 加载作者信息失败", error);
-  }
-}
-
 async function showActionError(title, error) {
   await showModal({
     title,
@@ -103,27 +90,6 @@ async function showActionError(title, error) {
     confirmText: "确定",
     showCancel: false,
   });
-}
-
-async function handleOpenAuthorHome() {
-  if (!footerAuthorInfo.value) {
-    return;
-  }
-  const confirmed = await showModal({
-    title: footerAuthorInfo.value.dialogTitle,
-    content: footerAuthorInfo.value.dialogContent,
-    confirmText: footerAuthorInfo.value.dialogConfirmText,
-    cancelText: footerAuthorInfo.value.dialogCancelText,
-    showCancel: true,
-  });
-  if (!confirmed) {
-    return;
-  }
-  try {
-    await openFooterAuthorHome();
-  } catch (error) {
-    await showActionError("打开主页失败", error);
-  }
 }
 
 async function handleOpenUsageDocs() {
@@ -135,7 +101,6 @@ async function handleOpenUsageDocs() {
 }
 
 onMounted(() => {
-  void loadFooterAuthorInfo();
   proxyStateTimer = window.setInterval(() => {
     if (showFooter.value) {
       void syncServiceState().catch(() => {});
@@ -219,15 +184,6 @@ onUnmounted(() => {
       >
         <span class="icon-[mdi--file-document-outline] text-[15px]"></span>
         <span>使用教程</span>
-      </button>
-      <button
-        v-if="footerAuthorInfo"
-        type="button"
-        class="center-row shrink-0 gap-[6px] cursor-pointer rounded-[6px] px-[6px] py-[3px] transition-colors duration-150 hover:bg-[#1f1f1f] hover:text-[#e5e5e5]"
-        @click="handleOpenAuthorHome"
-      >
-        <span class="icon-[ant-design--bilibili-outlined] text-[14px]"></span>
-        <span>{{ footerAuthorInfo.buttonText }}</span>
       </button>
       <div
         v-if="updateViewState.footerDownloading"
