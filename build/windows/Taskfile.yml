@@ -144,7 +144,7 @@ tasks:
       - rm -rf "{{.STAGING_DIR}}"
       - mkdir -p "{{.STAGING_DIR}}"
       - cp "{{.OUTPUT}}" "{{.STAGING_DIR}}/"
-      - powershell -NoProfile -Command "Compress-Archive -Path (Get-ChildItem -Force '{{.STAGING_DIR}}').FullName -DestinationPath '{{.BIN_DIR}}/{{.ZIP_NAME}}' -Force"
+      - powershell -NoProfile -Command "Compress-Archive -Path '{{.STAGING_DIR}}/*' -DestinationPath '{{.BIN_DIR}}/{{.ZIP_NAME}}' -Force"
       - rm -rf "{{.STAGING_DIR}}"
       - rm -f "{{.OUTPUT}}"
 
