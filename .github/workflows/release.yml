@@ -10,6 +10,9 @@ on:
         description: "版本号（如 0.0.39-beta，不带头 v）"
         required: true
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: build ${{ matrix.target }}
@@ -111,6 +114,12 @@ jobs:
       - name: List assets
         run: find assets -type f | head
 
+      - name: Flatten assets
+        shell: bash
+        run: |
+          find assets -type f -name 'cursor-byok-*' -exec mv {} assets/ \;
+          find assets -type f | head
+
       - name: Generate update.json
         run: |
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
@@ -129,7 +138,8 @@ jobs:
           tag_name: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
           name: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
           files: |
-            assets/*
+            assets/cursor-byok-*
+            assets/update.json
           prerelease: ${{ contains(github.event.inputs.version || github.ref_name, 'beta') }}
           body_path: release-notes.md
         env:
