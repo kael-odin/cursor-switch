@@ -77,6 +77,13 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: echo "Building from tag ${{ github.ref_name }}"
 
+      - name: Ensure release directory
+        shell: bash
+        run: |
+          VERSION="$(go run ./scripts/release version -config ./build/config.yml)"
+          mkdir -p "bin/release/${VERSION}"
+          echo "Release dir: bin/release/${VERSION}"
+
       - name: Build release asset
         run: wails3 task ${{ matrix.task }}
         env:
