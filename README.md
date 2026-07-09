@@ -76,6 +76,29 @@ wails3 task common:generate:proto
 wails3 task build:windows:amd64
 ```
 
+## 发布
+
+多平台发行通过 GitHub Actions 自动构建（`.github/workflows/release.yml`），在 4 个平台 runner 上产出 Windows / macOS Intel / macOS Apple Silicon / Linux 资产，生成 `update.json`，并发布到 Release。本地无需跨平台构建。
+
+**发新版前**：
+
+1. 改 `build/config.yml` 的 `info.version` 与 `build/windows/info.json` 的 `file_version` / `ProductVersion`（两处版本号保持一致）
+2. 更新 `release-notes.md` 写本次变更
+3. 提交并推送到 `main`
+
+**触发发布**（二选一）：
+
+```bash
+# 方式一：手动触发（指定版本号，不带前导 v）
+gh workflow run release.yml -f version=0.0.40
+
+# 方式二：打 tag 自动触发
+git tag v0.0.40
+git push origin v0.0.40
+```
+
+版本号含 `beta` / `rc` 等字样时自动标记为 prerelease。资产命名遵循 `cursor-byok-<版本>-<平台>.<后缀>`，与上游一致。
+
 ## 项目结构
 
 ```

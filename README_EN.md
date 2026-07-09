@@ -70,6 +70,29 @@ wails3 task common:generate:proto
 wails3 task build:windows:amd64
 ```
 
+## Publishing
+
+Multi-platform releases are built by GitHub Actions (`.github/workflows/release.yml`) on 4 platform runners — producing Windows / macOS Intel / macOS Apple Silicon / Linux assets plus `update.json`, then published to Releases. No local cross-platform build required.
+
+**Before a new release**:
+
+1. Update `info.version` in `build/config.yml` and `file_version` / `ProductVersion` in `build/windows/info.json` (keep both in sync)
+2. Update `release-notes.md` with the changelog
+3. Commit and push to `main`
+
+**Trigger the release** (either way):
+
+```bash
+# Option 1: manual dispatch (version without leading v)
+gh workflow run release.yml -f version=0.0.40
+
+# Option 2: push a tag
+git tag v0.0.40
+git push origin v0.0.40
+```
+
+Versions containing `beta` / `rc` are automatically marked as prerelease. Assets follow the `cursor-byok-<version>-<platform>.<ext>` naming, matching upstream.
+
 ## Project layout
 
 ```
