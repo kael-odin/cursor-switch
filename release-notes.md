@@ -1,3 +1,4 @@
+- 支持 GPT 5.6
 - 移除应用内广告 SDK（首页广告位、广告弹层、远程广告拉取与轮询、设备指纹上报）
 - 移除作者个人露出（作者按钮、bilibili 引流、作者寄语弹窗、docs.leokun.cn 文档站外链）
 - 发布目标迁移至 kael-odin/cursor-byok（自动更新、release 资产、README 同步全部指向本 fork）
