@@ -1,0 +1,48 @@
+name: check
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: go vet+build+test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test ./internal/... ./scripts/...
+
+  versions:
+    name: version sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Verify version sync
+        # 校验 build/config.yml 与 windows/info.json、wails.exe.manifest 三处版本一致，
+        # 防止发版时资产版本与二进制自报版本错位。
+        run: go run ./scripts/release verify-versions -config ./build/config.yml
+
