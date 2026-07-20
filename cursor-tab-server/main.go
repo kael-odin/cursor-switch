@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	defaultConfigPath = "./config.yaml"
-	defaultListenAddr = ":8041"
+	defaultConfigPath       = "./config.yaml"
+	defaultExampleConfigPath = "./config.example.yaml"
+	defaultListenAddr       = ":8041"
 )
 
 var hopByHopHeaders = map[string]struct{}{
@@ -68,6 +69,18 @@ type serverApp struct {
 }
 
 func main() {
+	if _, err := os.Stat(defaultConfigPath); err != nil {
+		if os.IsNotExist(err) {
+			if copyErr := copyFile(defaultExampleConfigPath, defaultConfigPath); copyErr != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "未找到 %s，且从 %s 复制失败: %v\n", defaultConfigPath, defaultExampleConfigPath, copyErr)
+				os.Exit(1)
+			}
+			log.Printf("未找到 %s，已从 %s 复制一份，请编辑填入真实 token 后重启", defaultConfigPath, defaultExampleConfigPath)
+			os.Exit(0)
+		}
+		_, _ = fmt.Fprintf(os.Stderr, "检查配置文件失败: %v\n", err)
+		os.Exit(1)
+	}
 	cfg, err := loadConfig(defaultConfigPath)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "加载配置失败: %v\n", err)
@@ -286,4 +299,12 @@ func cloneUpstreamTargets(input map[string]string) map[string]string {
 		output[key] = value
 	}
 	return output
+}
+
+func copyFile(src, dst string) error {
+	contents, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, contents, 0o600)
 }

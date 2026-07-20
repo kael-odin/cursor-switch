@@ -17,7 +17,7 @@ WORKDIR /app
 
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/cursor-tab-server /app/cursor-tab-server
-COPY config.yaml /app/config.yaml
+COPY config.example.yaml /app/config.yaml
 
 EXPOSE 8041
 

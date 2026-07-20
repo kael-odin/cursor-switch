@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -28,6 +29,7 @@ type updateManifest struct {
 	ReleaseNotes string                         `json:"release_notes"`
 	Platforms    map[string]updateManifestAsset `json:"platforms"`
 	Mandatory    bool                           `json:"mandatory"`
+	Signature    string                         `json:"signature,omitempty"`
 }
 
 type updateManifestAsset struct {
@@ -50,7 +52,7 @@ var releaseAssets = []assetSpec{
 
 func main() {
 	if len(os.Args) < 2 {
-		exitf("usage: go run ./scripts/release <version|notes|manifest> [flags]")
+		exitf("usage: go run ./scripts/release <version|notes|manifest|keypair|sign> [flags]")
 	}
 
 	switch os.Args[1] {
@@ -60,6 +62,10 @@ func main() {
 		runNotes(os.Args[2:])
 	case "manifest":
 		runManifest(os.Args[2:])
+	case "keypair":
+		runKeypair(os.Args[2:])
+	case "sign":
+		runSign(os.Args[2:])
 	default:
 		exitf("unknown subcommand: %s", os.Args[1])
 	}
@@ -246,4 +252,117 @@ func exitErr(err error) {
 func exitf(format string, args ...any) {
 	_, _ = fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
+}
+
+// runKeypair 生成一对 ed25519 密钥：私钥写入 --key（默认 ~/.cursor-byok-release.key，0600），
+// 公钥以 hex 打印到 stdout（供填入 internal/updater/pubkey.go 的 releasePublicKeyHex）。
+func runKeypair(args []string) {
+	flags := flag.NewFlagSet("keypair", flag.ExitOnError)
+	keyPath := flags.String("key", "", "private key output path (default $HOME/.cursor-byok-release.key)")
+	_ = flags.Parse(args)
+
+	path := strings.TrimSpace(*keyPath)
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			exitErr(err)
+		}
+		path = filepath.Join(home, ".cursor-byok-release.key")
+	}
+
+	if _, err := os.Stat(path); err == nil {
+		exitf("private key already exists at %s — refusing to overwrite (delete it first to regenerate)", path)
+	}
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		exitErr(err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		exitErr(err)
+	}
+	if err := os.WriteFile(path, []byte(hex.EncodeToString(priv)), 0o600); err != nil {
+		exitErr(err)
+	}
+
+	fmt.Printf("private key written: %s (KEEP SECRET — never commit)\n", path)
+	fmt.Printf("public key (hex): %s\n", hex.EncodeToString(pub))
+	fmt.Println("Paste the public key into internal/updater/pubkey.go: releasePublicKeyHex")
+}
+
+// runSign 读取 --manifest 的 update.json，用 --key 的私钥对 canonical manifest（除 signature 外）签名，
+// 把 signature 写回 manifest 并落盘。
+func runSign(args []string) {
+	flags := flag.NewFlagSet("sign", flag.ExitOnError)
+	manifestPath := flags.String("manifest", "", "update.json path to sign in-place")
+	keyPath := flags.String("key", "", "private key path (default $HOME/.cursor-byok-release.key)")
+	_ = flags.Parse(args)
+
+	if strings.TrimSpace(*manifestPath) == "" {
+		exitf("manifest path is required")
+	}
+	path := strings.TrimSpace(*keyPath)
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			exitErr(err)
+		}
+		path = filepath.Join(home, ".cursor-byok-release.key")
+	}
+
+	priv, err := loadSigningKey(path)
+	if err != nil {
+		exitErr(err)
+	}
+
+	raw, err := os.ReadFile(*manifestPath)
+	if err != nil {
+		exitErr(err)
+	}
+
+	var m updateManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		exitf("parse manifest: %v", err)
+	}
+
+	// canonical bytes = manifest with signature cleared, compact JSON (matches updater.canonicalManifestBytes).
+	m.Signature = ""
+	canonical, err := json.Marshal(m)
+	if err != nil {
+		exitErr(err)
+	}
+
+	sig := ed25519.Sign(priv, canonical)
+	m.Signature = hex.EncodeToString(sig)
+
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		exitErr(err)
+	}
+	out = append(out, '\n')
+	if err := os.WriteFile(*manifestPath, out, 0o644); err != nil {
+		exitErr(err)
+	}
+	fmt.Printf("signed manifest: %s (signature=%s)\n", *manifestPath, m.Signature)
+}
+
+func loadSigningKey(path string) (ed25519.PrivateKey, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read signing key %s: %w", path, err)
+	}
+	hexStr := strings.TrimSpace(string(raw))
+	seed, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return nil, fmt.Errorf("decode signing key hex: %w", err)
+	}
+	// Accept either the 64-byte private key or the 32-byte seed.
+	if len(seed) == ed25519.SeedSize {
+		return ed25519.NewKeyFromSeed(seed), nil
+	}
+	if len(seed) == ed25519.PrivateKeySize {
+		return ed25519.PrivateKey(seed), nil
+	}
+	return nil, fmt.Errorf("invalid signing key length %d (want %d seed or %d private key)", len(seed), ed25519.SeedSize, ed25519.PrivateKeySize)
 }

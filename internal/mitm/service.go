@@ -20,6 +20,7 @@ import (
 	"cursor/internal/certs"
 	"cursor/internal/logger"
 	"cursor/internal/netproxy"
+	"cursor/internal/runtime"
 
 	"github.com/elazarl/goproxy"
 )
@@ -477,6 +478,9 @@ func (s *ProxyServer) forwardToServer(incoming *http.Request) (*http.Response, e
 	serverReq.ContentLength = incoming.ContentLength
 	copyHeaders(serverReq.Header, incoming.Header)
 	serverReq.Header.Set(HeaderServerUpstreamURL, rawURL)
+	// 用进程级 loopback token 覆盖 Authorization，backend 中间件据此校验请求确实来自本进程 mitm，
+	// 拒绝本机其它进程未经 mitm 直接调用 backend 的 cursor.sh 兼容路由。
+	serverReq.Header.Set("Authorization", runtime.LoopbackAuthorization())
 	removeHopByHop(serverReq.Header)
 
 	resp, err := s.upstreamClient.Do(serverReq)

@@ -165,7 +165,7 @@ func (engine *Engine) Compile(input CompileInput) (CompiledPrompt, error) {
 			}
 			messages = append(messages, Message{
 				Role:    "assistant",
-				Content: formatMessageText(fmt.Sprintf("<tool_result source=%q tool=%q>\n%s\n</tool_result>", strings.TrimSpace(result.Source), strings.TrimSpace(result.ToolName), payload)),
+				Content: formatMessageText(fmt.Sprintf("<tool_result source=%q tool=%q>\n%s\n</tool_result>", strings.TrimSpace(result.Source), strings.TrimSpace(result.ToolName), escapePromptXMLBody(payload))),
 			})
 		}
 	}
@@ -526,7 +526,7 @@ func buildRequestContextUserIntentSummarySection(requestContext *agentv1.Request
 	if summary == "" {
 		return ""
 	}
-	return "<user_intent_summary>\n" + summary + "\n</user_intent_summary>"
+	return "<user_intent_summary>\n" + escapePromptXMLBody(summary) + "\n</user_intent_summary>"
 }
 
 func buildRequestContextHooksAdditionalContextSection(requestContext *agentv1.RequestContext) string {
@@ -537,7 +537,7 @@ func buildRequestContextHooksAdditionalContextSection(requestContext *agentv1.Re
 	if hooks == "" {
 		return ""
 	}
-	return "<hooks_additional_context>\n" + hooks + "\n</hooks_additional_context>"
+	return "<hooks_additional_context>\n" + escapePromptXMLBody(hooks) + "\n</hooks_additional_context>"
 }
 
 func buildRequestContextCurrentFileContentsSection(requestContext *agentv1.RequestContext) string {
@@ -563,7 +563,7 @@ func buildRequestContextCurrentFileContentsSection(requestContext *agentv1.Reque
 	sort.Strings(paths)
 	entries := make([]string, 0, len(paths))
 	for _, path := range paths {
-		entries = append(entries, fmt.Sprintf("<file path=%q>\n%s\n</file>", escapePromptXML(path), contentsByPath[path]))
+		entries = append(entries, fmt.Sprintf("<file path=%q>\n%s\n</file>", escapePromptXML(path), escapePromptXMLBody(contentsByPath[path])))
 	}
 	return "<current_file_contents>\n" + strings.Join(entries, "\n\n") + "\n</current_file_contents>"
 }
@@ -576,7 +576,7 @@ func buildRequestContextCommitAttributionSection(requestContext *agentv1.Request
 	if message == "" {
 		return ""
 	}
-	return "<commit_attribution_message>\n" + message + "\n</commit_attribution_message>"
+	return "<commit_attribution_message>\n" + escapePromptXMLBody(message) + "\n</commit_attribution_message>"
 }
 
 func buildRequestContextPRAttributionSection(requestContext *agentv1.RequestContext) string {
@@ -587,7 +587,7 @@ func buildRequestContextPRAttributionSection(requestContext *agentv1.RequestCont
 	if message == "" {
 		return ""
 	}
-	return "<pr_attribution_message>\n" + message + "\n</pr_attribution_message>"
+	return "<pr_attribution_message>\n" + escapePromptXMLBody(message) + "\n</pr_attribution_message>"
 }
 
 func buildEmbeddedMCPDescriptorSection(descriptor *agentv1.McpDescriptor, serverID string, folderPath string) string {
@@ -649,6 +649,18 @@ func escapePromptXML(value string) string {
 		">", "&gt;",
 	)
 	return replacer.Replace(strings.TrimSpace(value))
+}
+
+// escapePromptXMLBody 转义正文字本的 XML 特殊字符但不做 trim，
+// 用于文件内容、tool_result payload 等 body 嵌入，防止其中含 </file> 等标签逃逸出 prompt 结构。
+func escapePromptXMLBody(value string) string {
+	replacer := strings.NewReplacer(
+		"&", "&amp;",
+		`"`, "&quot;",
+		"<", "&lt;",
+		">", "&gt;",
+	)
+	return replacer.Replace(value)
 }
 
 func compactProtoJSON(message proto.Message) string {

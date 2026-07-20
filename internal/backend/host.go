@@ -277,6 +277,7 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 	host.mux = server.New(
 		server.Use(
 			server.Recover(),
+			server.LoopbackAuth(),
 			server.ServerContext(),
 			server.PolicyMiddleware(host.configs),
 			server.ErrorEncoder(),

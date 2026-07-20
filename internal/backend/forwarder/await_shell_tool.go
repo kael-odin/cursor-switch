@@ -245,20 +245,42 @@ func backgroundShellRuntimeMS(createdAt time.Time, completedAt time.Time) uint64
 	return uint64(end.Sub(createdAt).Milliseconds())
 }
 
+const (
+	// awaitShellPatternMaxLen 限制模型提供的正则长度，防止超大模式导致编译/回溯爆炸。
+	awaitShellPatternMaxLen = 512
+	// awaitShellPatternMatchTimeout 限制单次正则匹配耗时，防止 ReDoS 卡死 actor goroutine。
+	awaitShellPatternMatchTimeout = 2 * time.Second
+)
+
 func awaitShellPatternMatched(pattern string, output string) (bool, *string, error) {
 	trimmed := strings.TrimSpace(pattern)
 	if trimmed == "" {
 		return false, nil, nil
 	}
+	if len(trimmed) > awaitShellPatternMaxLen {
+		return false, nil, fmt.Errorf("invalid AwaitShell pattern: exceeds %d chars", awaitShellPatternMaxLen)
+	}
 	expr, err := regexp.Compile("(?m)" + trimmed)
 	if err != nil {
 		return false, nil, fmt.Errorf("invalid AwaitShell pattern: %w", err)
 	}
-	match := expr.FindString(output)
-	if match == "" {
-		return false, nil, nil
+	type matchResult struct {
+		match string
 	}
-	return true, &match, nil
+	resultCh := make(chan matchResult, 1)
+	go func() {
+		match := expr.FindString(output)
+		resultCh <- matchResult{match: match}
+	}()
+	select {
+	case res := <-resultCh:
+		if res.match == "" {
+			return false, nil, nil
+		}
+		return true, &res.match, nil
+	case <-time.After(awaitShellPatternMatchTimeout):
+		return false, nil, fmt.Errorf("AwaitShell pattern match timed out after %s (possible ReDoS)", awaitShellPatternMatchTimeout)
+	}
 }
 
 func truncateAwaitShellOutput(value string) string {

@@ -45,6 +45,12 @@ func (s *ProxyService) ApplyCursorSettings() error {
 
 // ClearCursorSettings 用于处理与 ClearCursorSettings 相关的逻辑。
 func (s *ProxyService) ClearCursorSettings() error {
+	// best-effort 卸载系统信任的 CA，失败仅日志，不阻断退出。
+	if s.caCertPEM != nil {
+		if err := cursor.UninstallCACert(s.caCertPEM); err != nil {
+			fmt.Printf("uninstall ca cert (best-effort): %v\n", err)
+		}
+	}
 	if goruntime.GOOS == "darwin" {
 		if err := cursor.ClearSystemNodeExtraCACerts(); err != nil {
 			return err

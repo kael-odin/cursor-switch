@@ -121,6 +121,14 @@ jobs:
           find assets -type f | head
 
       - name: Generate update.json
+        # The manifest generated here is UNSIGNED. To enable signature enforcement,
+        # a maintainer runs locally after the release is created:
+        #   go run ./scripts/release keypair            # once, keep private key secret
+        #   go run ./scripts/release sign -manifest <downloaded update.json>
+        #   # paste the public key into internal/updater/pubkey.go releasePublicKeyHex
+        #   # re-upload the signed update.json to the release
+        # Until releasePublicKeyHex is populated, the updater accepts unsigned manifests
+        # (checksum-only) for backward compatibility.
         run: |
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
           VERSION="${VERSION#v}"

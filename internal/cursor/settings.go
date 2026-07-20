@@ -141,10 +141,11 @@ func WriteUserProxySettings(proxyURL string) error {
 	} else if len(bytes.TrimSpace(data)) > 0 {
 		parsed, err := decodeCursorSettingsJSONC(data)
 		if err != nil {
-			if removeErr := os.Remove(settingsPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-				return fmt.Errorf("解析 Cursor 配置失败，且删除损坏配置失败: %w", removeErr)
+			backupPath := settingsPath + ".corrupt.bak"
+			if renameErr := os.Rename(settingsPath, backupPath); renameErr != nil && !errors.Is(renameErr, os.ErrNotExist) {
+				return fmt.Errorf("解析 Cursor 配置失败，且备份损坏配置失败: %w", renameErr)
 			}
-			logger.Infof("writeCursorUserProxySettings: removed invalid settings path=%s err=%v", settingsPath, err)
+			logger.Infof("writeCursorUserProxySettings: backed up invalid settings path=%s backup=%s err=%v", settingsPath, backupPath, err)
 			data = nil
 		} else {
 			settings = parsed

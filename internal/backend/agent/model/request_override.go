@@ -3,9 +3,19 @@ package modeladapter
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 )
+
+// blockedCustomHeaders 列出用户自定义请求头不得覆盖的敏感头。
+// 这些头由适配器按 provider 协议设置真实凭据，允许用户覆盖会把鉴权重定向到攻击者端点。
+var blockedCustomHeaders = map[string]struct{}{
+	"authorization": {},
+	"x-api-key":     {},
+	"host":          {},
+	"cookie":        {},
+}
 
 func cloneRequestBodyOverride(input map[string]any) map[string]any {
 	if len(input) == 0 {
@@ -83,6 +93,10 @@ func ApplyCustomHeaders(httpReq *http.Request, enabled bool, headersJSON string)
 	for key, value := range headers {
 		name := strings.TrimSpace(key)
 		if name == "" {
+			continue
+		}
+		if _, blocked := blockedCustomHeaders[strings.ToLower(name)]; blocked {
+			log.Printf("modeladapter: custom header %q blocked (would override auth/host)", name)
 			continue
 		}
 		httpReq.Header.Set(name, value)

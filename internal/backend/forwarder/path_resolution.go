@@ -1,6 +1,7 @@
 package forwarder
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,6 +164,96 @@ func isAbsoluteToolPath(path string) bool {
 		return true
 	}
 	return len(trimmed) >= 3 && isASCIIAlpha(trimmed[0]) && trimmed[1] == ':' && isPathSeparator(trimmed[2])
+}
+
+// pathWithinWorkspace 判断 resolved 是否落在 root 之下（含 root 自身）。
+// 跨盘绝对路径（如 root=C:\ws, resolved=D:\x）会被 filepath.Rel 判为相对路径而不被接受。
+func pathWithinWorkspace(resolved string, root string) bool {
+	cleanedResolved := filepath.Clean(strings.TrimSpace(resolved))
+	cleanedRoot := filepath.Clean(strings.TrimSpace(root))
+	if cleanedResolved == "" || cleanedRoot == "" {
+		return false
+	}
+	rel, err := filepath.Rel(cleanedRoot, cleanedResolved)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	// rel 形如 "sub/file" 在工作区内；".." 或 "../..." 表示逃逸出 root。
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
+}
+
+// resolveAndFenceWritePath 把模型给定的写入路径解析并围栏在工作区内。
+// 规则：
+//   - 路径必须解析后落在某 workspaceRoot 之下，或落在 terminalsFolder 之下；否则拒绝。
+//   - 相对路径按各 workspaceRoot 解析；绝对路径需本身就在某 workspace 内。
+//   - 不做"base 名后缀匹配"这类可能逃逸工作区的启发式——写入必须显式落在工作区。
+//
+// 返回围栏后的绝对路径；ok=false 时调用方必须拒绝该写入。
+func resolveAndFenceWritePath(path string, ctx streamPathContext) (string, bool) {
+	trimmedPath := strings.TrimSpace(path)
+	if trimmedPath == "" {
+		return "", false
+	}
+	cleanedPath := filepath.Clean(trimmedPath)
+
+	// terminalsFolder 是显式允许的写入区（终端快照文件），单独放行。
+	if tf := strings.TrimSpace(ctx.terminalsFolder); tf != "" {
+		if pathWithinWorkspace(cleanedPath, tf) || cleanedPath == filepath.Clean(tf) {
+			return cleanedPath, true
+		}
+	}
+
+	if len(ctx.workspacePaths) == 0 {
+		return "", false
+	}
+
+	// 绝对路径：必须本身已落在某 workspace 内。
+	if filepath.IsAbs(cleanedPath) {
+		for _, root := range ctx.workspacePaths {
+			if pathWithinWorkspace(cleanedPath, root) {
+				return cleanedPath, true
+			}
+		}
+		return "", false
+	}
+
+	// 相对路径：按各 workspace 解析后落定。
+	for _, root := range ctx.workspacePaths {
+		candidate := filepath.Clean(filepath.Join(root, cleanedPath))
+		if pathWithinWorkspace(candidate, root) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+// ensureWritePathWithinWorkspace 是面向 tool 调用方的包装：取 stream 上下文并围栏。
+// 返回围栏后的绝对路径，或 error（调用方应作为可恢复的工具调用错误返回）。
+//
+// ponytail: 当 stream 既无 workspace 也无 terminals 上下文时（如异常 resume / 老对话），
+// 围栏无法判定，此时回退到"仅要求绝对路径"的旧行为并放行，避免把用户锁死无法写入。
+// 真正的防护发生在"有工作区上下文但路径在区外"时。upgrade path：若确认 Cursor 总是
+// 携带 workspace，可在后续版本移除此回退，强制围栏。
+func ensureWritePathWithinWorkspace(stream *ActiveStream, path string) (string, error) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return "", fmt.Errorf("write path is required")
+	}
+	ctx := snapshotStreamPathContext(stream)
+	if len(ctx.workspacePaths) == 0 && strings.TrimSpace(ctx.terminalsFolder) == "" {
+		if !isAbsoluteToolPath(trimmed) {
+			return "", fmt.Errorf("write path must be absolute")
+		}
+		return filepath.Clean(trimmed), nil
+	}
+	resolved, ok := resolveAndFenceWritePath(trimmed, ctx)
+	if !ok {
+		return "", fmt.Errorf("refused write outside workspace: %s", trimmed)
+	}
+	return resolved, nil
 }
 
 func isASCIIAlpha(value byte) bool {

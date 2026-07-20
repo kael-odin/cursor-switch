@@ -8,3 +8,8 @@ import "fmt"
 func EnsureCACertInstalled(_ []byte, certPath string) error {
 	return fmt.Errorf("ensureCACertInstalled: 当前平台暂不支持，certPath=%s", certPath)
 }
+
+// UninstallCACert 非 Windows/macOS 平台的存根实现
+func UninstallCACert(_ []byte) error {
+	return fmt.Errorf("uninstallCACert: 当前平台暂不支持")
+}

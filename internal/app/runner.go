@@ -11,6 +11,7 @@ import (
 	"time"
 
 	serverconfig "cursor/internal/backend/server/config"
+	"cursor/internal/appdata"
 	"cursor/internal/buildinfo"
 
 	"github.com/leaanthony/u"
@@ -57,10 +58,13 @@ func Run(resources EmbeddedResources) error {
 	logger.Init()
 	netproxy.InstallDefaultTransport()
 
-	embeddedCACertPEM := certs.EmbeddedCACertPEM()
-	logEmbeddedCAInfo(embeddedCACertPEM)
+	certPEM, keyPEM, err := certs.EnsureMachineCA(appdata.CACertFilePath(), appdata.CAKeyFilePath())
+	if err != nil {
+		return err
+	}
+	logMachineCAInfo(certPEM)
 
-	certManager, err := certs.NewEmbeddedManager()
+	certManager, err := certs.NewManagerFromPEM(certPEM, keyPEM)
 	if err != nil {
 		return err
 	}
@@ -70,7 +74,7 @@ func Run(resources EmbeddedResources) error {
 	if err != nil {
 		return err
 	}
-	proxyService := bridge.NewProxyService(proxyServer, certManager, embeddedCACertPEM)
+	proxyService := bridge.NewProxyService(proxyServer, certManager, certPEM)
 	metricsService := bridge.NewMetricsService()
 	windowService := bridge.NewWindowService()
 	var updateManager *updater.Manager
@@ -247,20 +251,20 @@ func Run(resources EmbeddedResources) error {
 	return app.Run()
 }
 
-// logEmbeddedCAInfo 用于处理与 logEmbeddedCAInfo 相关的逻辑。
-func logEmbeddedCAInfo(certPEM []byte) {
+// logMachineCAInfo 用于记录本机 CA 的加载信息（sha256/subject/有效期）。
+func logMachineCAInfo(certPEM []byte) {
 	if len(certPEM) == 0 {
-		logger.Errorf("embedded CA is empty")
+		logger.Errorf("machine CA is empty")
 		return
 	}
 	cert, err := parseEmbeddedCert(certPEM)
 	if err != nil {
-		logger.Errorf("parse embedded CA failed: %v", err)
+		logger.Errorf("parse machine CA failed: %v", err)
 		return
 	}
 	sum := sha256.Sum256(cert.Raw)
 	logger.Infof(
-		"embedded CA loaded: sha256=%s subject=%s valid=%s~%s",
+		"machine CA loaded: sha256=%s subject=%s valid=%s~%s",
 		strings.ToUpper(hex.EncodeToString(sum[:])),
 		cert.Subject.String(),
 		cert.NotBefore.Format(time.RFC3339),

@@ -49,8 +49,12 @@ func (service *Service) handleWriteToolInvocation(stream *ActiveStream, invocati
 		return newRecoverableToolInvocationError(err)
 	}
 
-	resolvedPath := strings.TrimSpace(writeArgs.Path)
-	writeArgs.Path = resolvedPath
+	fencedPath, err := ensureWritePathWithinWorkspace(stream, writeArgs.Path)
+	if err != nil {
+		return newRecoverableToolInvocationError(err)
+	}
+	writeArgs.Path = fencedPath
+	resolvedPath := fencedPath
 
 	visibleArgsJSON, err := writeArgs.MarshalJSON()
 	if err != nil {

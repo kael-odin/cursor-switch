@@ -45,6 +45,7 @@ type manifest struct {
 	ReleaseNotes string                      `json:"release_notes"`
 	Platforms    map[string]manifestPlatform `json:"platforms"`
 	Mandatory    bool                        `json:"mandatory"`
+	Signature    string                      `json:"signature,omitempty"`
 }
 
 type manifestPlatform struct {
@@ -205,6 +206,14 @@ func (m *Manager) fetchUpdateInfo(ctx context.Context) (*UpdateInfo, error) {
 
 	if compareVersions(data.Version, buildinfo.CurrentVersion()) <= 0 {
 		return nil, nil
+	}
+
+	// 校验 manifest 签名：公钥已配置时强制校验，拒绝被篡改的 update.json（即使 release token 泄露）。
+	if ok, err := verifyManifestSignature(&data); err != nil || !ok {
+		if err != nil {
+			logger.Errorf("manifest signature rejected: %v", err)
+		}
+		return nil, fmt.Errorf("update manifest signature verification failed")
 	}
 
 	platformKey, err := currentPlatformKey()

@@ -49,6 +49,30 @@ func PolicyMiddleware(configs *serverconfig.Manager) Middleware {
 	}
 }
 
+// healthzPath 与 internal/backend/host.go 的 healthPath 保持一致，loopback 鉴权对其放行。
+const loopbackAuthExemptPath = "/healthz"
+
+// LoopbackAuth 校验请求携带的进程级 loopback token，拒绝本机其它进程未经 mitm 直接调用 backend 的 cursor.sh 兼容路由。
+// mitm 在 forwardToServer 中注入 Authorization: Bearer <runtime.LoopbackToken()>，故合法中继请求必然通过。
+func LoopbackAuth() Middleware {
+	expected := legacyruntime.LoopbackAuthorization()
+	return func(next HandlerFunc) HandlerFunc {
+		return func(ctx *Context) error {
+			if ctx == nil || ctx.Request == nil {
+				return fmt.Errorf("loopback auth: nil request")
+			}
+			if ctx.Request.URL.Path == loopbackAuthExemptPath {
+				return next(ctx)
+			}
+			provided := strings.TrimSpace(ctx.Request.Header.Get("Authorization"))
+			if provided == "" || !strings.EqualFold(provided, expected) {
+				return fmt.Errorf("loopback auth: unauthorized")
+			}
+			return next(ctx)
+		}
+	}
+}
+
 func ErrorEncoder() Middleware {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx *Context) error {

@@ -34,13 +34,46 @@ func compareVersions(a, b string) int {
 	if right.prerelease == "" {
 		return -1
 	}
-	if left.prerelease > right.prerelease {
-		return 1
+	return comparePrerelease(left.prerelease, right.prerelease)
+}
+
+// comparePrerelease 按 semver 规则比较预发布标识符：
+//   - 以点分段逐段比较；
+//   - 全数字段按数值比较，否则字典序比较；数字段 < 非数字段；
+//   - 段数少者居前（beta.2 < beta.2.1）。
+//
+// 修正了旧实现整串字典序导致的 beta.10 < beta.2 错误。
+func comparePrerelease(a, b string) int {
+	partsA := strings.Split(a, ".")
+	partsB := strings.Split(b, ".")
+	min := len(partsA)
+	if len(partsB) < min {
+		min = len(partsB)
 	}
-	if left.prerelease < right.prerelease {
-		return -1
+	for i := 0; i < min; i++ {
+		pa := partsA[i]
+		pb := partsB[i]
+		aNum, aErr := strconv.Atoi(pa)
+		bNum, bErr := strconv.Atoi(pb)
+		switch {
+		case aErr == nil && bErr == nil:
+			if aNum != bNum {
+				return compareInts(aNum, bNum)
+			}
+		case aErr == nil && bErr != nil:
+			return -1 // numeric < non-numeric
+		case aErr != nil && bErr == nil:
+			return 1
+		default:
+			if pa != pb {
+				if pa < pb {
+					return -1
+				}
+				return 1
+			}
+		}
 	}
-	return 0
+	return compareInts(len(partsA), len(partsB))
 }
 
 func parseVersion(raw string) semanticVersion {

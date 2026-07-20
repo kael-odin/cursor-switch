@@ -24,4 +24,10 @@ cmd/ads-server/data/
 cmd/ads-server/ads-server
 cmd/ads-server/ads-server-linux-amd64.tar
 cursor-tab-server/cursor-tab-server-linux-amd64.tar
+cursor-tab-server/config.yaml
+internal/certs/ca.crt
+internal/certs/ca.key
 *.syso
+/release.exe
+scripts/release/release.exe
+cursor-tab-server/cursor-tab-server.exe

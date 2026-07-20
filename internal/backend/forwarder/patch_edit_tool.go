@@ -86,6 +86,13 @@ func (service *Service) handlePatchEditToolInvocation(stream *ActiveStream, invo
 	payload.ArgsDecodeFailed = decodeErr != nil
 
 	resolvedPath := strings.TrimSpace(args.Path)
+	if decodeErr == nil && resolvedPath != "" {
+		fencedPath, fenceErr := ensureWritePathWithinWorkspace(stream, resolvedPath)
+		if fenceErr != nil {
+			return newRecoverableToolInvocationError(fenceErr)
+		}
+		resolvedPath = fencedPath
+	}
 	payload.ResolvedPath = resolvedPath
 	if decodeErr == nil {
 		payload.Args.Path = resolvedPath
