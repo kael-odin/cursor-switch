@@ -15,7 +15,7 @@ import (
 // 任何篡改（即使 release token 泄露）都会因签名失败而被拒。
 //
 // 生成密钥对：go run ./scripts/release keypair（私钥本地保管，不入库）。
-var releasePublicKeyHex = ""
+var releasePublicKeyHex = "97cf224383b8f58ff4c30e8f02387e1a8df50d4e3605c4ab43f91836924178d7"
 
 // verifyManifestSignature 校验 manifest 的 ed25519 签名。
 // 签名内容为 manifest 除 signature 外字段的 canonical JSON（字段按结构体顺序，无多余空白）。

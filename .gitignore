@@ -31,3 +31,7 @@ internal/certs/ca.key
 /release.exe
 scripts/release/release.exe
 cursor-tab-server/cursor-tab-server.exe
+
+# release signing private key (never commit)
+.cursor-byok-release.key
+*.cursor-byok-release.key

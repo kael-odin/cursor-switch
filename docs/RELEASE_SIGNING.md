@@ -43,6 +43,8 @@ git push origin v0.0.41
 
 强制签名后:`update.json` 带 ed25519 签名,二进制内置公钥校验,签名不过一律拒绝更新。即使 release token 泄露,攻击者没有私钥就无法伪造可被接受的更新。
 
+> **当前状态(2026-07-20):已启用。** 公钥已填入 `internal/updater/pubkey.go`(`releasePublicKeyHex`)。私钥在维护者本地 `~/.cursor-byok-release.key`(0600,不入库)。**从此刻起每次发版后必须本地 `sign` 再重传 update.json**(见第 3 步),否则新版客户端会因 `manifest missing required signature` 拒绝更新。
+
 ### 启用步骤(只需做一次)
 
 **第 1 步:生成密钥对**
