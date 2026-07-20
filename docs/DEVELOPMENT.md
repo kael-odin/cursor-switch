@@ -126,5 +126,6 @@ go test ./internal/... ./scripts/...
 
 ## 6. 已知留债(欢迎接手)
 
-- **god 文件**:`service.go`、`openai.go`、`compaction.go`、`appState.js` 仍偏大。已做文件组织级拆分(见 git log `refactor:`),真正的 god 对象解耦(多结构+接口)需先补 `decodeInboundIntent` 等的 *Service 测试夹具。
+- **god 文件**:`service.go`(2038)、`openai.go`(1708)、`compaction.go`(1730)、`appState.js`(1387)仍偏大。已做文件组织级拆分(见 git log `refactor:`),真正的 god 对象解耦(多结构+接口)需补更多 *Service 方法测试夹具。
+- **conversation_action 非 cancel 路径测试**:`decodeInboundIntent` 已覆盖 run/exec/heartbeat 等路径,但 conversation_action 的 resume/plan 等路径需 `*StreamBroker` 夹具,留待后续。
 - **版本三处合一已自动化**:改 `build/config.yml` 后跑 `go run ./scripts/release sync-versions` 即同步 `info.json` + `wails.exe.manifest`,`verify-versions` 作 CI 兜底。
