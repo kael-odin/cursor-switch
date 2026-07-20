@@ -82,7 +82,7 @@ wails3 task build:windows:amd64
 
 **发新版前**：
 
-1. 改 `build/config.yml` 的 `info.version` 与 `build/windows/info.json` 的 `file_version` / `ProductVersion`（两处版本号保持一致）
+1. 改 `build/config.yml` 的 `info.version`，并同步 `build/windows/info.json`(`file_version`/`ProductVersion`)与 `build/windows/wails.exe.manifest`(`version`)——三处必须一致，CI `check.yml` 的 `verify-versions` 会校验
 2. 更新 `release-notes.md` 写本次变更
 3. 提交并推送到 `main`
 
