@@ -126,6 +126,5 @@ go test ./internal/... ./scripts/...
 
 ## 6. 已知留债(欢迎接手)
 
-- **版本三处合一未完全自动化**:`config.yml` 改了之后,`info.json` 和 `wails.exe.manifest` 仍需手动同步(有 CI 校验兜底,但生成步骤未做)。可加 `scripts/release sync-versions` 在 build 前从 `config.yml` 生成这两文件。
-- **god 文件**:`service.go`(3198 行)、`openai.go`(2133)、`compaction.go`(1912)、`appState.js`(1387)仍大。已做文件组织级拆分(见 git log `refactor: 拆 god 文件`),真正的 god 对象解耦(多结构+接口)需先补 `decodeInboundIntent` 等的 *Service 测试夹具。
-- **vet 两条 pre-existing warning**:`bridge.go` proto 锁拷贝,非本轮引入,可忽略。
+- **god 文件**:`service.go`、`openai.go`、`compaction.go`、`appState.js` 仍偏大。已做文件组织级拆分(见 git log `refactor:`),真正的 god 对象解耦(多结构+接口)需先补 `decodeInboundIntent` 等的 *Service 测试夹具。
+- **版本三处合一已自动化**:改 `build/config.yml` 后跑 `go run ./scripts/release sync-versions` 即同步 `info.json` + `wails.exe.manifest`,`verify-versions` 作 CI 兜底。
