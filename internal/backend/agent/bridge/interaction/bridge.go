@@ -18,6 +18,8 @@ import (
 	"unicode/utf8"
 
 	readability "codeberg.org/readeck/go-readability/v2"
+
+	"google.golang.org/protobuf/proto"
 	htmlmarkdown "github.com/firecrawl/html-to-markdown"
 	mdplugin "github.com/firecrawl/html-to-markdown/plugin"
 
@@ -325,7 +327,7 @@ func (bridge *Bridge) openSwitchMode(toolCall runtimecore.ToolInvocation) (*agen
 			},
 		},
 	}
-	argsPayload, _ := json.Marshal(args)
+	argsPayload, _ := json.Marshal(&args)
 	return serverMessage, runtimecore.PendingInteraction{
 		InteractionID:   fmt.Sprintf("%d", messageID),
 		ArgsJSON:        argsPayload,
@@ -679,7 +681,7 @@ func truncateWebSearchReplay(searchTerm string, references []*agentv1.WebSearchR
 		if reference == nil {
 			continue
 		}
-		next := *reference
+		next := proto.Clone(reference).(*agentv1.WebSearchReference)
 		title := truncateInteractionText("WebSearch title", next.GetTitle(), webSearchTitleLimit)
 		chunk := truncateInteractionText("WebSearch snippet", next.GetChunk(), webSearchChunkLimit)
 		if title != next.GetTitle() || chunk != next.GetChunk() {
@@ -687,7 +689,7 @@ func truncateWebSearchReplay(searchTerm string, references []*agentv1.WebSearchR
 		}
 		next.Title = title
 		next.Chunk = chunk
-		nextReferences = append(nextReferences, &next)
+		nextReferences = append(nextReferences, next)
 	}
 	nextPayload := formatWebSearchPayload(searchTerm, nextReferences)
 	if strings.TrimSpace(payload) != "" && len(nextPayload) == 0 {
