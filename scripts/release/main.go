@@ -53,7 +53,7 @@ var releaseAssets = []assetSpec{
 
 func main() {
 	if len(os.Args) < 2 {
-		exitf("usage: go run ./scripts/release <version|notes|manifest|keypair|sign|verify-versions> [flags]")
+		exitf("usage: go run ./scripts/release <version|notes|manifest|keypair|sign|verify-versions|sync-versions> [flags]")
 	}
 
 	switch os.Args[1] {
@@ -69,6 +69,8 @@ func main() {
 		runSign(os.Args[2:])
 	case "verify-versions":
 		runVerifyVersions(os.Args[2:])
+	case "sync-versions":
+		runSyncVersions(os.Args[2:])
 	default:
 		exitf("unknown subcommand: %s", os.Args[1])
 	}
@@ -426,4 +428,66 @@ func runVerifyVersions(args []string) {
 	}
 
 	fmt.Printf("versions OK: %s\n", version)
+}
+
+// runSyncVersions 以 build/config.yml 的 info.version 为单一事实源，
+// 把 windows/info.json（fixed.file_version + info.*.ProductVersion）与
+// windows/wails.exe.manifest（assemblyIdentity version）同步到同一版本号。
+// 这是 verify-versions 的写入对应：改 config.yml 后跑一次 sync-versions 即三处合一。
+func runSyncVersions(args []string) {
+	flags := flag.NewFlagSet("sync-versions", flag.ExitOnError)
+	configPath := flags.String("config", "build/config.yml", "path to build config")
+	_ = flags.Parse(args)
+
+	version, err := readVersion(*configPath)
+	if err != nil {
+		exitErr(err)
+	}
+	configDir := filepath.Dir(*configPath)
+
+	// info.json：解析后改字段，写回时用与源文件相同的缩进。
+	infoPath := filepath.Join(configDir, "windows", "info.json")
+	raw, err := os.ReadFile(infoPath)
+	if err != nil {
+		exitErr(fmt.Errorf("read info.json: %w", err))
+	}
+	var info map[string]any
+	if err := json.Unmarshal(raw, &info); err != nil {
+		exitErr(fmt.Errorf("parse info.json: %w", err))
+	}
+	if fixed, ok := info["fixed"].(map[string]any); ok {
+		fixed["file_version"] = version
+	}
+	if infos, ok := info["info"].(map[string]any); ok {
+		for _, entry := range infos {
+			if m, ok := entry.(map[string]any); ok {
+				m["ProductVersion"] = version
+			}
+		}
+	}
+	out, err := json.MarshalIndent(info, "", "\t")
+	if err != nil {
+		exitErr(err)
+	}
+	out = append(out, '\n')
+	if err := os.WriteFile(infoPath, out, 0o644); err != nil {
+		exitErr(fmt.Errorf("write info.json: %w", err))
+	}
+
+	// manifest：正则替换 assemblyIdentity 的 version（仅主 assemblyIdentity，不动 Common-Controls）。
+	manifestPath := filepath.Join(configDir, "windows", "wails.exe.manifest")
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		exitErr(fmt.Errorf("read wails.exe.manifest: %w", err))
+	}
+	re := regexp.MustCompile(`(<assemblyIdentity[^>]*\bversion=")[^"]+(")`)
+	updated := re.ReplaceAll(manifest, []byte("${1}"+version+"${2}"))
+	if string(updated) == string(manifest) {
+		exitf("wails.exe.manifest: no assemblyIdentity version= attribute found to update")
+	}
+	if err := os.WriteFile(manifestPath, updated, 0o644); err != nil {
+		exitErr(fmt.Errorf("write wails.exe.manifest: %w", err))
+	}
+
+	fmt.Printf("synced versions to %s (info.json + wails.exe.manifest)\n", version)
 }
