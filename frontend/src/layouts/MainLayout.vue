@@ -17,7 +17,7 @@ import Logo from "@/assets/logo.png";
 const route = useRoute();
 const message = useMessage();
 const showIcon = computed(() => route.meta.showIcon !== false);
-const title = computed(() => route.meta.title ?? "Cursor助手｜自定义API");
+const title = computed(() => route.meta.title ?? "Cursor助手");
 const directlyClose = computed(() => route.meta.directlyClose === true);
 const showFooter = computed(() => route.path === "/");
 const usageDocsURL = "https://github.com/kael-odin/cursor-byok#readme";

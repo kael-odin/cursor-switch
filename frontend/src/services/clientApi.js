@@ -64,6 +64,14 @@ export function getHomeMetricsSummary() {
   return withApiLogging("GetHomeMetricsSummary", undefined, () => GetHomeMetricsSummary());
 }
 
+const METRICS_SERVICE_NAME = "cursor/internal/bridge.MetricsService";
+
+export function getTokenPricing() {
+  return withApiLogging("GetTokenPricing", undefined, () =>
+    Call.ByName(`${METRICS_SERVICE_NAME}.GetTokenPricing`),
+  );
+}
+
 export function startProxyService() {
   return withApiLogging("StartProxy", undefined, () => StartProxy());
 }

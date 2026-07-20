@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -52,7 +53,7 @@ var releaseAssets = []assetSpec{
 
 func main() {
 	if len(os.Args) < 2 {
-		exitf("usage: go run ./scripts/release <version|notes|manifest|keypair|sign> [flags]")
+		exitf("usage: go run ./scripts/release <version|notes|manifest|keypair|sign|verify-versions> [flags]")
 	}
 
 	switch os.Args[1] {
@@ -66,6 +67,8 @@ func main() {
 		runKeypair(os.Args[2:])
 	case "sign":
 		runSign(os.Args[2:])
+	case "verify-versions":
+		runVerifyVersions(os.Args[2:])
 	default:
 		exitf("unknown subcommand: %s", os.Args[1])
 	}
@@ -365,4 +368,62 @@ func loadSigningKey(path string) (ed25519.PrivateKey, error) {
 		return ed25519.PrivateKey(seed), nil
 	}
 	return nil, fmt.Errorf("invalid signing key length %d (want %d seed or %d private key)", len(seed), ed25519.SeedSize, ed25519.PrivateKeySize)
+}
+
+// runVerifyVersions 校验 build/config.yml 的版本号与 windows/info.json、wails.exe.manifest 三处一致。
+// 不一致时非零退出，供 CI 在发版前卡住版本漂移。config.yml 为单一事实源。
+func runVerifyVersions(args []string) {
+	flags := flag.NewFlagSet("verify-versions", flag.ExitOnError)
+	configPath := flags.String("config", "build/config.yml", "path to build config")
+	_ = flags.Parse(args)
+
+	version, err := readVersion(*configPath)
+	if err != nil {
+		exitErr(err)
+	}
+	configDir := filepath.Dir(*configPath)
+
+	// info.json: fixed.file_version + info.*.ProductVersion
+	infoPath := filepath.Join(configDir, "windows", "info.json")
+	raw, err := os.ReadFile(infoPath)
+	if err != nil {
+		exitErr(fmt.Errorf("read info.json: %w", err))
+	}
+	var info struct {
+		Fixed struct {
+			FileVersion string `json:"file_version"`
+		} `json:"fixed"`
+		Infos map[string]struct {
+			ProductVersion string `json:"ProductVersion"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal(raw, &info); err != nil {
+		exitErr(fmt.Errorf("parse info.json: %w", err))
+	}
+	if strings.TrimSpace(info.Fixed.FileVersion) != version {
+		exitf("info.json file_version=%q != config.yml version=%q", info.Fixed.FileVersion, version)
+	}
+	for key, entry := range info.Infos {
+		if strings.TrimSpace(entry.ProductVersion) != version {
+			exitf("info.json info.%s.ProductVersion=%q != config.yml version=%q", key, entry.ProductVersion, version)
+		}
+	}
+
+	// wails.exe.manifest: assemblyIdentity version="..."
+	manifestPath := filepath.Join(configDir, "windows", "wails.exe.manifest")
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		exitErr(fmt.Errorf("read wails.exe.manifest: %w", err))
+	}
+	re := regexp.MustCompile(`<assemblyIdentity[^>]*\bversion="([^"]+)"`)
+	matches := re.FindSubmatch(manifest)
+	if len(matches) < 2 {
+		exitf("wails.exe.manifest: no assemblyIdentity version= attribute found")
+	}
+	manifestVersion := string(matches[1])
+	if manifestVersion != version {
+		exitf("wails.exe.manifest version=%q != config.yml version=%q", manifestVersion, version)
+	}
+
+	fmt.Printf("versions OK: %s\n", version)
 }

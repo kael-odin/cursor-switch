@@ -3,17 +3,31 @@ import CacheHitRateChart from "@/components/charts/CacheHitRateChart.vue";
 import Switch from "@/components/ui/Switch.vue";
 import Tooltip from "@/components/ui/Tooltip.vue";
 import { appState, saveIncludeCacheWriteInHitRate } from "@/state/appState";
+import { getTokenPricing } from "@/services/clientApi";
 import { formatCompactInteger, formatInteger } from "@/utils/numberFormat";
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 
 const emit = defineEmits(["refresh"]);
 
-const TOKEN_PRICE_PER_MILLION = {
+// 定价从后端 MetricsService.GetTokenPricing 获取；首次渲染前用本地兜底值避免空白。
+const tokenPricing = ref({
   input: 5,
   output: 25,
   cacheRead: 0.5,
   cacheWrite: 6.25,
-};
+  modelLabel: "Claude Opus 4.7",
+});
+
+onMounted(async () => {
+  try {
+    const pricing = await getTokenPricing();
+    if (pricing && typeof pricing === "object") {
+      tokenPricing.value = pricing;
+    }
+  } catch {
+    // 兜底值已就绪，静默降级。
+  }
+});
 
 const props = defineProps({
   metrics: {
@@ -123,10 +137,10 @@ const completionTokensTotal = computed(() => {
 });
 
 const estimatedTokenCost = computed(() => {
-  const input = priceTokens(inputTokensTotal.value, TOKEN_PRICE_PER_MILLION.input);
-  const output = priceTokens(completionTokensTotal.value, TOKEN_PRICE_PER_MILLION.output);
-  const cacheRead = priceTokens(cacheReadTokensTotal.value, TOKEN_PRICE_PER_MILLION.cacheRead);
-  const cacheWrite = priceTokens(cacheWriteTokensTotal.value, TOKEN_PRICE_PER_MILLION.cacheWrite);
+  const input = priceTokens(inputTokensTotal.value, tokenPricing.value.input);
+  const output = priceTokens(completionTokensTotal.value, tokenPricing.value.output);
+  const cacheRead = priceTokens(cacheReadTokensTotal.value, tokenPricing.value.cacheRead);
+  const cacheWrite = priceTokens(cacheWriteTokensTotal.value, tokenPricing.value.cacheWrite);
   return {
     input,
     output,
@@ -175,13 +189,13 @@ const tokensTooltipContent = computed(() =>
 
 const costTooltipContent = computed(() =>
   [
-    "按 Claude Opus 4.7 价格估算。",
+    `按 ${tokenPricing.value.modelLabel} 价格估算。`,
     `缓存统计策略：${selectedCacheRateModeLabel.value}（${formatRateLabel(selectedCacheHitRate.value)}）`,
     "",
-    `普通输入：${formatMetricValue(inputTokensTotal.value)} × $${TOKEN_PRICE_PER_MILLION.input}/1M = ${formatUSD(estimatedTokenCost.value.input)}`,
-    `模型输出：${formatMetricValue(completionTokensTotal.value)} × $${TOKEN_PRICE_PER_MILLION.output}/1M = ${formatUSD(estimatedTokenCost.value.output)}`,
-    `缓存读取：${formatMetricValue(cacheReadTokensTotal.value)} × $${TOKEN_PRICE_PER_MILLION.cacheRead}/1M = ${formatUSD(estimatedTokenCost.value.cacheRead)}`,
-    `缓存写入：${formatMetricValue(cacheWriteTokensTotal.value)} × $${TOKEN_PRICE_PER_MILLION.cacheWrite}/1M = ${formatUSD(estimatedTokenCost.value.cacheWrite)}`,
+    `普通输入：${formatMetricValue(inputTokensTotal.value)} × $${tokenPricing.value.input}/1M = ${formatUSD(estimatedTokenCost.value.input)}`,
+    `模型输出：${formatMetricValue(completionTokensTotal.value)} × $${tokenPricing.value.output}/1M = ${formatUSD(estimatedTokenCost.value.output)}`,
+    `缓存读取：${formatMetricValue(cacheReadTokensTotal.value)} × $${tokenPricing.value.cacheRead}/1M = ${formatUSD(estimatedTokenCost.value.cacheRead)}`,
+    `缓存写入：${formatMetricValue(cacheWriteTokensTotal.value)} × $${tokenPricing.value.cacheWrite}/1M = ${formatUSD(estimatedTokenCost.value.cacheWrite)}`,
     "",
     `合计：${formatUSD(estimatedTokenCost.value.total)}`,
   ].join("\n"),

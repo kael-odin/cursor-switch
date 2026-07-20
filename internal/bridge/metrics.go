@@ -18,6 +18,16 @@ type HomeMetricsSummary struct {
 	CacheHitRate       *float64 `json:"cacheHitRate"`
 }
 
+// TokenPricing 定义首页成本估算所用的 token 单价（每百万 token，美元）。
+// ponytail: 定价写在 getter 里；定价变动频率低，无需配置文件。若未来按 adapter 差异化定价，挪到 server/config。
+type TokenPricing struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cacheRead"`
+	CacheWrite float64 `json:"cacheWrite"`
+	ModelLabel string  `json:"modelLabel"`
+}
+
 // MetricsService 定义首页统计相关的 Wails service。
 type MetricsService struct{}
 
@@ -47,4 +57,15 @@ func (service *MetricsService) GetHomeMetricsSummary() (HomeMetricsSummary, erro
 		CacheWriteTokens:   summary.CacheWriteTokens,
 		CacheHitRate:       summary.CacheHitRate,
 	}, nil
+}
+
+// GetTokenPricing 返回首页成本估算所用的 token 单价。
+func (service *MetricsService) GetTokenPricing() TokenPricing {
+	return TokenPricing{
+		Input:      5,
+		Output:     25,
+		CacheRead:  0.5,
+		CacheWrite: 6.25,
+		ModelLabel: "Claude Opus 4.7",
+	}
 }

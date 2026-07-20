@@ -76,6 +76,11 @@ jobs:
           go install connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.19.1
           wails3 task common:generate:proto
 
+      - name: Verify version sync
+        # 校验 build/config.yml 与 windows/info.json、wails.exe.manifest 三处版本一致，
+        # 不一致则发版前直接失败，避免资产版本与二进制自报版本错位。
+        run: go run ./scripts/release verify-versions -config ./build/config.yml
+
       - name: Set version (tag trigger)
         if: startsWith(github.ref, 'refs/tags/v')
         run: echo "Building from tag ${{ github.ref_name }}"
