@@ -1,6 +1,9 @@
 package forwarder
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 func TestResolveAndFenceWritePath(t *testing.T) {
 	windowsRoot := `C:\Users\dev\workspace`
@@ -8,11 +11,12 @@ func TestResolveAndFenceWritePath(t *testing.T) {
 	terminals := unixRoot + "/.terminals"
 
 	tests := []struct {
-		name     string
-		path     string
-		ctx      streamPathContext
-		wantOK   bool
-		wantSub  string // resolved must have this suffix (path-sep agnostic) when ok
+		name       string
+		path       string
+		ctx        streamPathContext
+		wantOK     bool
+		wantSub    string // resolved must have this suffix (path-sep agnostic) when ok
+		windowsOnly bool   // 用例依赖 Windows 盘符路径语义（C:\ 绝对路径判定），非 Windows 跳过
 	}{
 		{
 			name: "relative path inside unix workspace",
@@ -47,18 +51,21 @@ func TestResolveAndFenceWritePath(t *testing.T) {
 			path: `C:\Windows\System32\drivers\etc\hosts`,
 			ctx:  streamPathContext{workspacePaths: []string{unixRoot}},
 			wantOK: false,
+			windowsOnly: true,
 		},
 		{
 			name: "windows workspace rejects ssh path",
 			path: `C:\Users\dev\.ssh\authorized_keys`,
 			ctx:  streamPathContext{workspacePaths: []string{windowsRoot}},
 			wantOK: false,
+			windowsOnly: true,
 		},
 		{
 			name: "windows workspace rejects system32 path",
 			path: `C:\Windows\System32\evil.exe`,
 			ctx:  streamPathContext{workspacePaths: []string{windowsRoot}},
 			wantOK: false,
+			windowsOnly: true,
 		},
 		{
 			name: "terminals folder allowed",
@@ -88,6 +95,9 @@ func TestResolveAndFenceWritePath(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.windowsOnly && runtime.GOOS != "windows" {
+				t.Skip("windows-only path semantics")
+			}
 			got, ok := resolveAndFenceWritePath(tc.path, tc.ctx)
 			if ok != tc.wantOK {
 				t.Fatalf("resolveAndFenceWritePath(%q) ok=%v want=%v resolved=%q", tc.path, ok, tc.wantOK, got)
