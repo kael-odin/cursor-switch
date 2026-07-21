@@ -21,6 +21,22 @@ jobs:
           go-version: "1.25"
           cache: true
 
+      - name: Install protoc
+        # gen/（cursor/gen/agentv1 等）由 protoc 生成，不入库（.gitignore）。
+        # CI 干净环境必须先生成，否则 go vet/build 找不到包。
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Generate proto code
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.19.1
+          protoc -I ./proto --go_out=. --go_opt=module=cursor --connect-go_out=. --connect-go_opt=module=cursor ./proto/agent_v1.proto ./proto/aiserver_v1.proto
+
+      - name: Stub frontend/dist
+        # main.go 用 //go:embed all:frontend/dist；CI 不跑完整 vite build，
+        # 用占位文件满足 embed 编译期检查（不验证前端产物，前端另有本地 build 保证）。
+        run: mkdir -p frontend/dist && touch frontend/dist/.embed-stub
+
       - name: go vet
         run: go vet ./...
 
