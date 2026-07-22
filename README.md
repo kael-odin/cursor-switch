@@ -47,7 +47,7 @@
 
 - **模型适配器管理**：GUI 增删改查、单测 / 批量并发测试（并发 10）
 - **两种运行模式**：本地服务模式（默认，请求经本地 backend 转发到你配置的模型）/ 直连 Cursor 模式（放行到官方，默认关闭）
-- **usage 指标**：input / output / cache token、缓存命中率、按 $5 / $25 / $0.5 / $6.25 每百万 token 估算花费
+- **usage 指标**：input / output / cache token、缓存命中率、按内置模型定价估算花费
 - **prompt cache**：Anthropic cache breakpoints、OpenAI prompt_cache_key
 - **thinking / reasoning**：深度思考、reasoning effort 控制、按 provider 差异化注入 disable 字段
 - **会话持久化**：`~/.cursor-local-assistant-v2/` 下 config / history / logs
@@ -56,11 +56,23 @@
 
 ## 安装与使用
 
+### 快速开始
+
 1. 从 [Releases](https://github.com/kael-odin/cursor-byok/releases) 下载 Windows amd64 压缩包
-2. 解压并运行 `windows-64.exe`
+2. 解压到任意目录，双击 `windows-64.exe` 启动插件
 3. 在「模型配置」中添加你的模型适配器（填 baseURL / apiKey / modelID）
 4. 启动本地服务（首次需 UAC 提权安装 CA 证书）
-5. 打开 Cursor，chat / agent 即由你配置的模型驱动
+5. **再启动 Cursor**——顺序很重要：先开插件、装好 CA、配好模型，最后才开 Cursor，流量才会被正确导入
+
+### Cursor IDE 自身更新
+
+Cursor 自身的版本更新与插件**不能同时进行**：插件开着时，Cursor 的更新检查会失败或被代理拦截。正确流程：
+
+1. 关闭 cursor-byok 插件（停止本地服务）
+2. 打开 Cursor，检查并安装更新
+3. 更新完成后重新启动插件，再继续使用
+
+### 详细配置
 
 > 详细配置项与故障排查见 GUI 内的「使用教程」入口（指向本仓库 README）。
 

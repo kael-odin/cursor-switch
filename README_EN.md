@@ -43,7 +43,7 @@ Each model config includes: `baseURL`, `apiKey`, `modelID`, provider type, endpo
 
 - **Model adapter management**: GUI CRUD, single / batch concurrent testing (concurrency 10)
 - **Two run modes**: local service mode (default, requests forwarded through local backend to your model) / direct Cursor mode (passthrough to official, off by default)
-- **Usage metrics**: input / output / cache tokens, cache hit rate, cost estimate at $5 / $25 / $0.5 / $6.25 per million tokens
+- **Usage metrics**: input / output / cache tokens, cache hit rate, cost estimate based on built-in model pricing
 - **Prompt cache**: Anthropic cache breakpoints, OpenAI prompt_cache_key
 - **Thinking / reasoning**: deep thinking, reasoning effort control, provider-specific disable-field injection
 - **Session persistence**: config / history / logs under `~/.cursor-local-assistant-v2/`
@@ -52,11 +52,21 @@ Each model config includes: `baseURL`, `apiKey`, `modelID`, provider type, endpo
 
 ## Install & use
 
+### Quick start
+
 1. Download the Windows amd64 zip from [Releases](https://github.com/kael-odin/cursor-byok/releases)
-2. Extract and run `windows-64.exe`
+2. Extract to any folder and double-click `windows-64.exe` to launch the plugin
 3. Add your model adapter in "Model Config" (fill baseURL / apiKey / modelID)
 4. Start the local service (first run requires UAC elevation to install the CA certificate)
-5. Open Cursor — chat / agent is now driven by your configured model
+5. **Then launch Cursor** — order matters: start the plugin, install the CA, configure the model, and only then open Cursor, so traffic is captured correctly
+
+### Updating Cursor IDE itself
+
+Cursor's own version updates **cannot run while the plugin is active** — with the plugin running, Cursor's update check fails or gets intercepted by the proxy. Correct flow:
+
+1. Quit cursor-byok (stop the local service)
+2. Open Cursor, check for and install updates
+3. Restart the plugin after the update, then resume use
 
 ## Build
 
