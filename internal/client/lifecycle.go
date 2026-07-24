@@ -11,7 +11,6 @@ import (
 	"cursor/internal/logger"
 	"cursor/internal/mitm"
 	"cursor/internal/netproxy"
-	localruntime "cursor/internal/runtime"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -86,9 +85,11 @@ func (s *ProxyService) StartProxy() (ProxyState, error) {
 		return fail("ensure_proxy", err)
 	}
 
-	// 启动时注入账号信息
-	if err := cursor.InjectCursorUserInfo(localruntime.InjectAccountEmail, localruntime.InjectAuthToken); err != nil {
-		logger.Errorf("injectCursorUserInfo failed: %v", err)
+	// 一次性修复历史遗留的假账号注入：仅当 state.vscdb 完整匹配旧假指纹时，
+	// 才删除仍等于假值的字段并清理相应 Statsig 缓存；绝不创建库、绝不动真实值。
+	// byok 不再写入任何假身份，真实 Cursor 账号是唯一权威。
+	if err := cursor.RepairLegacyInjectedIdentity(); err != nil {
+		logger.Errorf("repairLegacyInjectedIdentity failed: %v", err)
 		// 不阻断启动，仅记录日志
 	}
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -243,14 +244,43 @@ func normalizeListenAddr(value string, defaultValue string, fieldName string) (s
 	if err != nil {
 		return "", fmt.Errorf("%s 必须是 host:port 格式", fieldName)
 	}
-	if strings.TrimSpace(host) == "" {
+	host = strings.TrimSpace(host)
+	if host == "" {
 		return "", fmt.Errorf("%s host 不能为空", fieldName)
 	}
 	parsedPort, err := strconv.Atoi(port)
 	if err != nil || parsedPort < 1 || parsedPort > 65535 {
 		return "", fmt.Errorf("%s port 必须在 1-65535 之间", fieldName)
 	}
+	// backend / proxy 只在本机 loopback 通信，且承载 MITM→backend 的信任 proof 与
+	// 捕获到的真实 Cursor 凭证。绑定到非 loopback 地址会把内部信任面暴露到网络，
+	// 因此强制 loopback。历史通配地址（0.0.0.0 / ::）一次性改写为 127.0.0.1 并保留端口。
+	host = enforceLoopbackHost(host, fieldName)
+	if !isLoopbackHost(host) {
+		return "", fmt.Errorf("%s 必须绑定本机回环地址（127.0.0.1 或 ::1），当前 %q 不被允许", fieldName, host)
+	}
 	return net.JoinHostPort(host, strconv.Itoa(parsedPort)), nil
+}
+
+// enforceLoopbackHost 把历史通配地址一次性归一到 IPv4 loopback；其余原样返回交由校验。
+func enforceLoopbackHost(host, fieldName string) string {
+	switch host {
+	case "0.0.0.0", "::", "[::]":
+		log.Printf("config: %s 原绑定 %q 已被强制改写为 127.0.0.1（仅允许 loopback）", fieldName, host)
+		return "127.0.0.1"
+	default:
+		return host
+	}
+}
+
+// isLoopbackHost 仅接受字面 loopback IP（127.0.0.0/8 或 ::1），拒绝主机名/局域网/公网地址。
+func isLoopbackHost(host string) bool {
+	trimmed := strings.Trim(strings.TrimSpace(host), "[]")
+	ip := net.ParseIP(trimmed)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 func normalizeProviderStreamIdleTimeout(value int) int {

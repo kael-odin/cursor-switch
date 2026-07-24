@@ -1,6 +1,65 @@
+# 1.0.0
+
+## 架构级重构：真实账号 + byok 自定义模型共存
+
+1.0.0 是一次架构级重构。核心变化：**真实 Cursor 账号与 byok 自定义模型共存**。
+
+### 旧版问题
+
+- 伪造 Ultra 假账号写入 Cursor 真实 `state.vscdb`，**覆盖用户真实登录态**——开着 byok 无法登录/退出真实账号
+- marketplace / customize 是 mock 假数据，**能看不能装**（插件卡片显示但安装 404）
+- 假 Ultra 与真实账号混用，UI 状态不一致
+
+### 三条控制面分离
+
+| 控制面 | 处理 | 结果 |
+|---|---|---|
+| 身份 / marketplace / 登录 | 官方透传（真实 Cursor 账号） | 登录/退出/marketplace 浏览/安装/卸载/customize 全功能 |
+| 订阅 / 套餐 / 用量 | 本地 mock（无限制 Pro） | 模型选择器不锁 auto |
+| 模型推理 / 数据面 | byok 本地 | 自定义模型路由 + 成本统计 |
+
+### 凭证链路重构
+
+- 新增 `internal/relayauth`：进程级随机 proof 走私有头 `X-Cursor-BYOK-Relay-Proof`，不再占用 `Authorization`
+- MITM 保留原始 `Authorization`/`Cookie`/`x-cursor-checksum` → backend 捕获到 `ctx.Credentials` 并从请求头剥离 → 仅 `CredentialOriginalCursor` 策略在目标校验通过后恢复给官方 `*.cursor.sh`
+- 真实凭证绝不发给第三方 provider 或 `tab.leokun.cn`；不跟随重定向
+- backend/proxy 强制只监听 loopback（`127.0.0.1`/`::1`）
+
+### 路由分类
+
+- **官方透传**：`/oauth/token`、`/auth/*`（登录/退出/poll）、`GetMe`/`GetEmail`/`GetUserProfile`、整个 `DashboardService/*`（含 marketplace 安装/卸载/更新/MCP/Skills/Commands/Hooks）、`BootstrapStatsig`、Plugins/Marketplace/Chat/Health/Metrics/BackgroundComposer 服务
+- **本地 mock（无限制）**：`GetUsageLimitStatusAndActiveGrants`（`allowedModelIds:[]`）、`GetPlanInfo`、`GetCurrentPeriodUsage`、`IsOnNewPricing`、stripe 三接口（`full_stripe_profile`/`stripe_profile`/`has_valid_payment_method`）
+- **byok 本地**：`AvailableModels`/`GetDefaultModel`/`RunSSE`/`BidiAppend`/Repository/Upload/`GetTokenUsage`
+
+### 历史假账号清理
+
+- `StartProxy` 不再调 `InjectCursorUserInfo`（不再覆盖真实 `state.vscdb`）
+- 新增 `RepairLegacyInjectedIdentity`：首启检测旧假指纹，安全删除仍等于假值的字段（绝不创建库/删真实值），清理后需重新登录一次
+
+### 文档
+
+- 新增 `docs/接口与架构速查.md` — 全路由分类与调试方法
+- 新增 `docs/架构重构记录.md` — 决策历程与踩坑记录
+
+## 安全增强（继承自 0.0.41）
+
+- **每机器独立 CA**：不再随二进制分发共享 CA 私钥
+- **更新强制签名**：`update.json` ed25519 签名校验
+- **loopback 信任分离**：内部 proof 独立于 `Authorization`
+- **写路径围栏**：LLM 写文件仅限工作区与终端目录
+- **自定义请求头黑名单**：禁止覆盖 `Authorization`/`x-api-key`/`Host`/`Cookie`
+- **prompt 注入面闭合**：XML 特殊字符转义
+
+## 升级须知
+
+从 ≤0.0.41 升级：首启自动清理历史假账号注入，需重新登录一次 Cursor 账号。之后即可同时使用 byok 自定义模型与真实账号 marketplace。
+
+---
+
+# 0.0.41
+
 - 支持 GPT 5.6
-- 移除应用内广告 SDK（首页广告位、广告弹层、远程广告拉取与轮询、设备指纹上报）
-- 移除作者个人露出（作者按钮、bilibili 引流、作者寄语弹窗、docs.leokun.cn 文档站外链）
+- 纯净化
 - 发布目标迁移至 kael-odin/cursor-byok（自动更新、release 资产、README 同步全部指向本 fork）
 - 修复 OpenAI 适配器 thinking disable 不识别小米 MiMo（reasoning=disabled 时 MiMo 仍开思考）
 - 修复 Anthropic 适配器 thinking 配置在 override 路径丢失，与 openai 行为对齐
@@ -31,4 +90,5 @@
 - **CI 检查**：新增 `check.yml`，PR / push 到 main 自动跑 go vet/build/test + 版本同步校验
 - **lint 修复**：修复 proto 消息值拷贝锁的 vet warning，`go vet ./...` 零 warning
 - **贡献者文档**：新增 `docs/DEVELOPMENT.md`（开发循环、proto/bindings 再生、测试范式、留债清单）
+
 

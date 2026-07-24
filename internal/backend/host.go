@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -355,54 +356,29 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 				Name: "default_model_nudge",
 			})),
 		),
-		server.POST("/aiserver.v1.AnalyticsService/BootstrapStatsig",
-			server.Name("bootstrap_statsig"),
+		// GetDefaultModel 返回对话界面当前选中的模型。若命中 AiService/* catch-all 返回 404，
+		// 对话界面会锁 auto 且无法选择 byok 自定义模型，故在此显式本地 mock，返回 byok 默认模型。
+		server.POST("/aiserver.v1.AiService/GetDefaultModel",
+			server.Name("get_default_model"),
 			server.ConnectUnary(),
 			server.Local(upstream.MockProtoAction(routeDeps, upstream.CompatRouteConfig{
-				Name:          "bootstrap_statsig",
+				Name:          "get_default_model",
 				StatusCode:    http.StatusOK,
-				MockProtoType: "aiserver.v1.BootstrapStatsigResponse",
-				MockBuilder:   upstream.BootstrapStatsigMockBuilder,
+				MockProtoType: "aiserver.v1.GetDefaultModelResponse",
+				MockBuilder:   upstream.GetDefaultModelMockBuilder,
 			})),
 			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
-				Name: "bootstrap_statsig",
+				Name: "get_default_model",
 			})),
 		),
-		server.POST("/aiserver.v1.AnalyticsService/GetFirstWindowStatsigDecision",
-			server.Name("first_window_statsig_decision"),
-			server.ConnectUnary(),
-			server.Local(upstream.MockProtoAction(routeDeps, upstream.CompatRouteConfig{
-				Name:          "first_window_statsig_decision",
-				StatusCode:    http.StatusOK,
-				MockProtoType: "aiserver.v1.GetFirstWindowStatsigDecisionResponse",
-				MockBuilder:   upstream.FirstWindowStatsigDecisionMockBuilder,
-			})),
-			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
-				Name: "first_window_statsig_decision",
-			})),
-		),
-		server.POST("/oauth/token",
-			server.Name("oauth_token"),
-			server.HTTP(),
-			server.Local(upstream.MockOAuthAction(routeDeps, upstream.CompatRouteConfig{
-				Name:       "oauth_token",
-				StatusCode: http.StatusOK,
-			})),
-			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
-				Name: "oauth_token",
-			})),
-		),
-		server.POST("/aiserver.v1.AuthService/GetEmail",
-			server.Name("auth_service_get_email"),
-			server.ConnectUnary(),
-			server.Local(upstream.MockAuthEmailAction(routeDeps, upstream.CompatRouteConfig{
-				Name:       "auth_service_get_email",
-				StatusCode: http.StatusOK,
-			})),
-			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
-				Name: "auth_service_get_email",
-			})),
-		),
+		// Statsig 走官方透传：真实账号的 statsig 决定 UI gate 与模型选择器行为。
+		// 此前用本地 mock 会注入 free_user_model_picker/locked_picker 实验，导致对话界面锁 auto、
+		// 且 marketplace 完整 Discover 界面（分类/搜索/browse）因缺少官方 gate 不渲染。
+		// byok 模型路由不依赖 statsig（靠 AvailableModels/GetDefaultModel mock + adapter 配置），切透传安全。
+		officialProcedure("/aiserver.v1.AnalyticsService/BootstrapStatsig", "bootstrap_statsig", server.ConnectUnary(), routeDeps),
+		officialProcedure("/aiserver.v1.AnalyticsService/GetFirstWindowStatsigDecision", "first_window_statsig_decision", server.ConnectUnary(), routeDeps),
+		officialProcedure("/oauth/token", "oauth_token", server.HTTP(), routeDeps),
+		officialProcedure("/aiserver.v1.AuthService/GetEmail", "auth_service_get_email", server.ConnectUnary(), routeDeps),
 		tabServerUpstreamProcedure("/aiserver.v1.AiService/StreamCpp", "ai_stream_cpp", server.ConnectStream(), routeDeps),
 		tabServerUpstreamProcedure("/aiserver.v1.AiService/StreamNextCursorPrediction", "ai_stream_next_cursor_prediction", server.ConnectStream(), routeDeps),
 		tabServerUpstreamProcedure("/aiserver.v1.AiService/GetCppEditClassification", "ai_get_cpp_edit_classification", server.ConnectUnary(), routeDeps),
@@ -485,6 +461,8 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 				Name: "dashboard_glass_early_preview_enrollment",
 			})),
 		),
+		// 权益接口走本地 mock（无限制）：真实账号套餐会用 allowedModelIds 锁定模型选择器，
+		// 导致对话界面锁 auto、byok 模型不可选。mock 成无限制即解锁。marketplace/auth 仍透传。
 		server.POST("/aiserver.v1.DashboardService/GetCurrentPeriodUsage",
 			server.Name("dashboard_current_period_usage"),
 			server.ConnectUnary(),
@@ -498,58 +476,14 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 				Name: "dashboard_current_period_usage",
 			})),
 		),
-		server.POST("/aiserver.v1.DashboardService/GetTeams",
-			server.Name("dashboard_get_teams"),
-			server.ConnectUnary(),
-			server.Local(upstream.MockProtoAction(routeDeps, upstream.CompatRouteConfig{
-				Name:          "dashboard_get_teams",
-				StatusCode:    http.StatusOK,
-				MockProtoType: "aiserver.v1.GetTeamsResponse",
-				MockBuilder:   upstream.DashboardTeamsMockBuilder,
-			})),
-			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
-				Name: "dashboard_get_teams",
-			})),
-		),
-		server.POST("/aiserver.v1.DashboardService/GetManagedSkills",
-			server.Name("dashboard_get_managed_skills"),
-			server.ConnectUnary(),
-			server.Local(upstream.MockProtoAction(routeDeps, upstream.CompatRouteConfig{
-				Name:          "dashboard_get_managed_skills",
-				StatusCode:    http.StatusOK,
-				MockProtoType: "aiserver.v1.GetManagedSkillsResponse",
-				MockBuilder:   upstream.DashboardManagedSkillsMockBuilder,
-			})),
-			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
-				Name: "dashboard_get_managed_skills",
-			})),
-		),
-		server.POST("/aiserver.v1.DashboardService/GetMe",
-			server.Name("dashboard_get_me"),
-			server.ConnectUnary(),
-			server.Local(upstream.MockProtoAction(routeDeps, upstream.CompatRouteConfig{
-				Name:          "dashboard_get_me",
-				StatusCode:    http.StatusOK,
-				MockProtoType: "aiserver.v1.GetMeResponse",
-				MockBuilder:   upstream.DashboardGetMeMockBuilder,
-			})),
-			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
-				Name: "dashboard_get_me",
-			})),
-		),
-		server.POST("/aiserver.v1.DashboardService/GetUserPrivacyMode",
-			server.Name("dashboard_user_privacy_mode"),
-			server.ConnectUnary(),
-			server.Local(upstream.MockProtoAction(routeDeps, upstream.CompatRouteConfig{
-				Name:          "dashboard_user_privacy_mode",
-				StatusCode:    http.StatusOK,
-				MockProtoType: "aiserver.v1.GetUserPrivacyModeResponse",
-				MockBuilder:   upstream.DashboardUserPrivacyModeMockBuilder,
-			})),
-			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
-				Name: "dashboard_user_privacy_mode",
-			})),
-		),
+		officialProcedure("/aiserver.v1.DashboardService/GetTeams", "dashboard_get_teams", server.ConnectUnary(), routeDeps),
+		officialProcedure("/aiserver.v1.DashboardService/GetManagedSkills", "dashboard_get_managed_skills", server.ConnectUnary(), routeDeps),
+		officialProcedure("/aiserver.v1.DashboardService/GetEffectiveUserPlugins", "dashboard_get_effective_user_plugins", server.ConnectUnary(), routeDeps),
+		officialProcedure("/aiserver.v1.DashboardService/ListMarketplaces", "dashboard_list_marketplaces", server.ConnectUnary(), routeDeps),
+		officialProcedure("/aiserver.v1.DashboardService/ListMarketplacePlugins", "dashboard_list_marketplace_plugins", server.ConnectUnary(), routeDeps),
+		officialProcedure("/aiserver.v1.DashboardService/RegisterMarketplaceAndPlugins", "dashboard_register_marketplace_and_plugins", server.ConnectUnary(), routeDeps),
+		officialProcedure("/aiserver.v1.DashboardService/GetMe", "dashboard_get_me", server.ConnectUnary(), routeDeps),
+		officialProcedure("/aiserver.v1.DashboardService/GetUserPrivacyMode", "dashboard_user_privacy_mode", server.ConnectUnary(), routeDeps),
 		server.POST("/aiserver.v1.DashboardService/GetPlanInfo",
 			server.Name("dashboard_plan_info"),
 			server.ConnectUnary(),
@@ -589,18 +523,10 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 				Name: "dashboard_is_on_new_pricing",
 			})),
 		),
-		// tabServerUpstreamProcedure("/aiserver.v1.DashboardService/GetEffectiveUserPlugins", "dashboard_get_effective_user_plugins", server.ConnectUnary(), routeDeps),
-		server.Any("/aiserver.v1.DashboardService/*",
-			server.Name("dashboard"),
-			server.HTTP(),
-			server.Local(func(ctx *server.Context) error {
-				http.NotFound(ctx.Writer, ctx.Request)
-				return nil
-			}),
-			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
-				Name: "dashboard",
-			})),
-		),
+		// Dashboard 控制面兜底：除上面显式声明的本地数据路由（GetTokenUsage / GlassEarlyPreview）外，
+		// 其余全部官方透传，覆盖 InstallUserPlugin / GetAvailableMcpServers / GetTeamCommands /
+		// ClientAction / 卸载 / 更新 / Hooks / Skills 等 customize 接口，无需逐个补 mock。
+		officialAnyProcedure("/aiserver.v1.DashboardService/*", "dashboard", server.HTTP(), routeDeps),
 		server.Any("/aiserver.v1.NetworkService/*",
 			server.Name("network_service"),
 			server.HTTP(),
@@ -623,29 +549,45 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 				Name: "in_app_ad",
 			})),
 		),
-		server.GET("/auth/full_stripe_profile",
+		// Stripe 订阅状态走本地 mock（Pro + active + 付费有效），与 GetPlanInfo/GetCurrentPeriodUsage
+		// 保持一致的无限制套餐。若走透传，真实账号套餐会与本地 mock 的无限制用量矛盾，
+		// 触发 Cursor 疯狂轮询 stripe_profile/GetTeams 并重新锁定模型选择器（锁 auto）。
+		// 身份接口 GetMe/GetEmail 仍透传真实账号（不携带套餐字段，不矛盾、不闪动）。
+		server.Any("/auth/full_stripe_profile",
 			server.Name("auth_full_stripe_profile"),
 			server.HTTP(),
-			server.Local(upstream.MockAuthFullStripeProfileAction(routeDeps, upstream.CompatRouteConfig{
+			server.Local(upstream.MockJSONAction(routeDeps, upstream.CompatRouteConfig{
 				Name:       "auth_full_stripe_profile",
 				StatusCode: http.StatusOK,
+				JSONBody: map[string]any{
+					"membershipType":          "pro",
+					"subscriptionStatus":      "active",
+					"lastPaymentFailed":       false,
+					"pendingCancellationDate": "",
+					"daysRemainingOnTrial":    0,
+					"paymentId":               "local_ultra",
+				},
 			})),
 			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
 				Name: "auth_full_stripe_profile",
 			})),
 		),
-		server.GET("/auth/stripe_profile",
+		// stripe_profile 返回原始 paymentId 字符串（非 JSON 对象），用直接写入。
+		server.Any("/auth/stripe_profile",
 			server.Name("auth_stripe_profile"),
 			server.HTTP(),
-			server.Local(upstream.MockAuthStripeProfileAction(routeDeps, upstream.CompatRouteConfig{
-				Name:       "auth_stripe_profile",
-				StatusCode: http.StatusOK,
-			})),
+			server.Local(func(ctx *server.Context) error {
+				body, _ := json.Marshal("local_ultra")
+				ctx.Writer.Header().Set("content-type", "application/json")
+				ctx.Writer.WriteHeader(http.StatusOK)
+				_, _ = ctx.Writer.Write(body)
+				return nil
+			}),
 			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
 				Name: "auth_stripe_profile",
 			})),
 		),
-		server.GET("/auth/has_valid_payment_method",
+		server.Any("/auth/has_valid_payment_method",
 			server.Name("auth_has_valid_payment_method"),
 			server.HTTP(),
 			server.Local(upstream.MockJSONAction(routeDeps, upstream.CompatRouteConfig{
@@ -659,39 +601,20 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 				Name: "auth_has_valid_payment_method",
 			})),
 		),
-		server.Any("/auth/poll",
-			server.Name("auth_poll"),
-			server.HTTP(),
-			server.Local(upstream.MockAuthPollAction(routeDeps, upstream.CompatRouteConfig{
-				Name:       "auth_poll",
-				StatusCode: http.StatusOK,
-			})),
-			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
-				Name: "auth_poll",
-			})),
-		),
-		server.POST("/auth/logout",
-			server.Name("auth_logout"),
-			server.HTTP(),
-			server.Local(upstream.FixedStatusAction(routeDeps, upstream.CompatRouteConfig{
-				Name:       "auth_logout",
-				StatusCode: http.StatusNoContent,
-			})),
-			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
-				Name: "auth_logout",
-			})),
-		),
-		server.Any("/auth/*",
-			server.Name("auth_proxy"),
-			server.HTTP(),
-			server.Local(func(ctx *server.Context) error {
-				http.NotFound(ctx.Writer, ctx.Request)
-				return nil
-			}),
-			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
-				Name: "auth_proxy",
-			})),
-		),
+		officialAnyProcedure("/auth/poll", "auth_poll", server.HTTP(), routeDeps),
+		officialAnyProcedure("/auth/logout", "auth_logout", server.HTTP(), routeDeps),
+		// /auth/* 兜底：登录回调、profile、支付、poll、logout 等全部官方透传，
+		// 使 byok 开启时也能正常登录 / 退出 / 重新登录真实 Cursor 账号。
+		officialAnyProcedure("/auth/*", "auth_proxy", server.HTTP(), routeDeps),
+		// 未被 byok 接管的官方 Cursor 控制面服务：统一官方透传，恢复真实登录态。
+		// 覆盖 customize 相关的 plugins / marketplace / background composer / chat 等服务，
+		// 无需逐个补 mock，未来 Cursor 新增接口也自动透传。
+		officialAnyProcedure("/aiserver.v1.PluginsService/*", "official_plugins_service", server.HTTP(), routeDeps),
+		officialAnyProcedure("/aiserver.v1.MarketplaceService/*", "official_marketplace_service", server.HTTP(), routeDeps),
+		officialAnyProcedure("/aiserver.v1.ChatService/*", "official_chat_service", server.HTTP(), routeDeps),
+		officialAnyProcedure("/aiserver.v1.HealthService/*", "official_health_service", server.HTTP(), routeDeps),
+		officialAnyProcedure("/aiserver.v1.MetricsService/*", "official_metrics_service", server.HTTP(), routeDeps),
+		officialAnyProcedure("/aiserver.v1.BackgroundComposerService/*", "official_background_composer_service", server.HTTP(), routeDeps),
 	)
 
 	return nil
@@ -709,6 +632,36 @@ func directUpstreamProcedure(pattern string, name string, protocol server.RouteO
 		return direct(ctx)
 	}
 	return server.POST(pattern,
+		server.Name(name),
+		protocol,
+		server.Local(action),
+		server.Upstream(action),
+	)
+}
+
+// officialProcedure 注册一个官方控制面透传路由：无论 local / upstream 模式，
+// 都以 CredentialOriginalCursor 策略回源到 Cursor 官方后端，恢复用户真实登录态。
+// 用于 marketplace / customize / 账号 / 登录 等接口，让 byok 不再 mock 官方身份。
+func officialProcedure(pattern string, name string, protocol server.RouteOption, deps upstream.Dependencies) server.Option {
+	action := upstream.DirectAction(deps, upstream.CompatRouteConfig{
+		Name:       name,
+		Credential: upstream.CredentialOriginalCursor,
+	})
+	return server.POST(pattern,
+		server.Name(name),
+		protocol,
+		server.Local(action),
+		server.Upstream(action),
+	)
+}
+
+// officialAnyProcedure 与 officialProcedure 相同，但匹配所有 HTTP 方法（含 GET / catch-all）。
+func officialAnyProcedure(pattern string, name string, protocol server.RouteOption, deps upstream.Dependencies) server.Option {
+	action := upstream.DirectAction(deps, upstream.CompatRouteConfig{
+		Name:       name,
+		Credential: upstream.CredentialOriginalCursor,
+	})
+	return server.Any(pattern,
 		server.Name(name),
 		protocol,
 		server.Local(action),

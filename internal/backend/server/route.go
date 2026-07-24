@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"cursor/internal/logger"
+
 	"github.com/go-chi/chi/v5"
 )
 
@@ -162,10 +164,39 @@ func (app *App) buildRouteHandler(route Route) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		trackedWriter := newTrackedResponseWriter(writer)
 		ctx := newContext(trackedWriter, request, route)
-		if err := final(ctx); err != nil {
+		err := final(ctx)
+		if err != nil {
 			writeServerError(trackedWriter, err)
 		}
+		// 请求级诊断日志：记录每个命中路由的 method/path/name/mode/status，便于排查
+		// agent window marketplace 等面板卡在哪个请求。
+		mode := ModeLocal
+		if ctx != nil {
+			mode = ctx.Mode
+		}
+		logRouteDispatch(request, route, mode, trackedWriter.StatusCode(), err)
 	}
+}
+
+func logRouteDispatch(request *http.Request, route Route, mode ExecutionMode, statusCode int, err error) {
+	if request == nil {
+		return
+	}
+	path := request.URL.Path
+	if path == "" {
+		path = request.RequestURI
+	}
+	routeName := route.Name
+	if routeName == "" {
+		routeName = "<unnamed>"
+	}
+	if err != nil {
+		logger.Infof("route.dispatch method=%s path=%s name=%s mode=%s status=%d err=%v",
+			request.Method, path, routeName, mode, statusCode, err)
+		return
+	}
+	logger.Infof("route.dispatch method=%s path=%s name=%s mode=%s status=%d",
+		request.Method, path, routeName, mode, statusCode)
 }
 
 func shouldUseUpstreamAction(ctx *Context, route Route) bool {

@@ -21,5 +21,9 @@ func ParseAndValidateRawURL(raw string) (*url.URL, error) {
 	if strings.TrimSpace(parsed.Host) == "" {
 		return nil, fmt.Errorf("empty host")
 	}
+	// 拒绝携带 userinfo 的 URL，避免凭证绑定与目标校验被 user:pass@host 形式绕过。
+	if parsed.User != nil {
+		return nil, fmt.Errorf("raw url must not contain userinfo")
+	}
 	return parsed, nil
 }

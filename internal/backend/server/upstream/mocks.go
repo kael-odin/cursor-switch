@@ -2,7 +2,6 @@ package upstream
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"html"
 	"strings"
@@ -17,12 +16,12 @@ const (
 
 	modelRuntimeThinkingEffortParameterID = "thinking_effort"
 
-	localUltraMembershipType       = "ultra"
-	localUltraPaymentID            = "local_ultra"
-	localUltraSubscriptionStatus   = "active"
-	localUltraPlanIncludedCents    = 20000
-	localUltraDashboardUserID      = 1
-	localUltraBillingCycleDuration = 30 * 24 * time.Hour
+	// localUltraPaymentID 仅作为 Statsig bootstrap mock 的稳定匿名用户 ID（非账号身份）。
+	localUltraPaymentID = "local_ultra"
+
+	// localStatsigUserEmail 是 Statsig bootstrap mock 使用的匿名占位 email。
+	// byok 不再注入真实/假账号身份，Statsig 仅需一个稳定匿名 ID 即可返回本地 gate。
+	localStatsigUserEmail = "local@cursor-byok.local"
 
 	bootstrapStatsigGlassModeAvailableGate           = "glass_mode_available"
 	bootstrapStatsigGlassOpenAgentInWindowGate       = "glass.enable_open_agent_in_window"
@@ -143,7 +142,7 @@ var bootstrapStatsigTemplate = statsigBootstrapTemplate{
 		bootstrapStatsigEnableMultitaskMode:              buildEnabledStatsigGate(bootstrapStatsigEnableMultitaskMode),
 		bootstrapStatsigDecomposeAlwaysLocalExtHostGate:  buildDisabledStatsigGate(bootstrapStatsigDecomposeAlwaysLocalExtHostGate),
 		bootstrapStatsigCursorExtensionsIsolationV2Gate:  buildDisabledStatsigGate(bootstrapStatsigCursorExtensionsIsolationV2Gate),
-		bootstrapStatsigCursorAgentWorkerExtension:       buildDisabledStatsigGate(bootstrapStatsigCursorAgentWorkerExtension),
+		bootstrapStatsigCursorAgentWorkerExtension:       buildEnabledStatsigGate(bootstrapStatsigCursorAgentWorkerExtension),
 	},
 	DynamicConfigs: map[string]statsigDynamicConfigTemplate{
 		bootstrapStatsigExperimentName: buildStatsigDynamicConfig(
@@ -328,7 +327,7 @@ var bootstrapStatsigTemplate = statsigBootstrapTemplate{
 	LayerConfigs: map[string]map[string]any{},
 	User: map[string]any{
 		"userID": localUltraPaymentID,
-		"email":  legacyruntime.InjectAccountEmail,
+		"email":  localStatsigUserEmail,
 		"customIDs": map[string]string{
 			"localUserID": localUltraPaymentID,
 		},
@@ -486,6 +485,27 @@ func buildDefaultModelNudgeDataPayload(reqCtx *RequestContext) (map[string]any, 
 	}, nil
 }
 
+// buildGetDefaultModelPayload 返回对话界面当前选中的默认模型。
+// Cursor 用 GetDefaultModel 确定下拉里高亮/选中的模型；若该接口 404，
+// 对话界面会回退到 auto 且无法选择 byok 自定义模型。这里返回 byok 第一个模型，
+// 与 AvailableModels 的 defaultModel 保持一致，使 byok 模型成为默认选中项。
+func buildGetDefaultModelPayload(reqCtx *RequestContext) (map[string]any, error) {
+	adapters, err := loadConfiguredModelAdapters(reqCtx)
+	if err != nil {
+		return nil, err
+	}
+	defaultModel := ""
+	if refs := collectModelAdapterRefs(adapters); len(refs) > 0 {
+		defaultModel = refs[0]
+	}
+	return map[string]any{
+		"model":              defaultModel,
+		"thinkingModel":      defaultModel,
+		"maxMode":            false,
+		"nextDefaultSetDate": "",
+	}, nil
+}
+
 func buildBootstrapStatsigPayload(reqCtx *RequestContext) (map[string]any, error) {
 	generatedAtMs := uint64(time.Now().UnixMilli())
 	authID := resolveBootstrapStatsigAuthID(reqCtx)
@@ -506,26 +526,56 @@ func buildFirstWindowStatsigDecisionPayload(*RequestContext) (map[string]any, er
 	}, nil
 }
 
+// 权益接口本地 mock：这几个接口若走官方透传，真实账号套餐会用 allowedModelIds/
+// allowedModelTags 把模型选择器锁定（锁 auto），使 byok 自定义模型不可选。
+// 因此 mock 成「无限制」：allowedModelIds/allowedModelTags 为空 = 不限制可用模型。
+// 这与 byok 定位一致——用用户自己的 key/模型，不依赖 Cursor 套餐权益。
+// marketplace/auth/login 仍走官方透传，不受影响。
+
+func buildDashboardUsageLimitStatusAndActiveGrantsPayload(*RequestContext) (map[string]any, error) {
+	return map[string]any{
+		"usageLimitPolicyStatus": map[string]any{
+			"isInSlowPool":           false,
+			"features":               map[string]string{},
+			"canConfigureSpendLimit": true,
+			"hasPendingRequest":      false,
+			"allowedModelIds":        []string{}, // 空 = 不限制可选模型（解锁 key）
+			"allowedModelTags":       []string{}, // 空 = 不限制可选模型标签
+		},
+		"activeGrants": []map[string]any{},
+	}, nil
+}
+
+func buildDashboardPlanInfoPayload(*RequestContext) (map[string]any, error) {
+	return map[string]any{
+		"planInfo": map[string]any{
+			"planName":            "Cursor Pro",
+			"includedAmountCents": 0,
+			"price":               "",
+			"billingCycleEnd":     time.Now().Add(10 * 365 * 24 * time.Hour).UnixMilli(),
+		},
+	}, nil
+}
+
 func buildDashboardCurrentPeriodUsagePayload(*RequestContext) (map[string]any, error) {
-	billingCycleStart := time.Now().Add(-localUltraBillingCycleDuration).UnixMilli()
+	billingCycleStart := time.Now().Add(-30 * 24 * time.Hour).UnixMilli()
 	billingCycleEnd := time.Now().Add(10 * 365 * 24 * time.Hour).UnixMilli()
 	return map[string]any{
-		"autoModelSelectedDisplayMessage":  "Ultra plan active",
+		"autoModelSelectedDisplayMessage":  "",
 		"billingCycleEnd":                  billingCycleEnd,
 		"billingCycleStart":                billingCycleStart,
-		"displayMessage":                   "Ultra plan active",
+		"displayMessage":                   "",
 		"displayThreshold":                 99999999,
-		"enabled":                          true,
-		"namedModelSelectedDisplayMessage": "Ultra plan active",
+		"enabled":                          false,
+		"namedModelSelectedDisplayMessage": "",
 		"planUsage": map[string]any{
 			"apiPercentUsed":   0,
 			"apiSpend":         0,
 			"autoPercentUsed":  0,
 			"autoSpend":        0,
-			"bonusTooltip":     "Ultra local account mock is active.",
-			"includedSpend":    localUltraPlanIncludedCents,
-			"limit":            localUltraPlanIncludedCents,
-			"remaining":        localUltraPlanIncludedCents,
+			"includedSpend":    0,
+			"limit":            0,
+			"remaining":        0,
 			"remainingBonus":   false,
 			"totalPercentUsed": 0,
 			"totalSpend":       0,
@@ -536,36 +586,31 @@ func buildDashboardCurrentPeriodUsagePayload(*RequestContext) (map[string]any, e
 	}, nil
 }
 
-func buildDashboardTeamsPayload(*RequestContext) (map[string]any, error) {
+// buildDashboardIsOnNewPricingPayload：定价状态走本地 mock。真实账号若返回旧定价（isOnNewPricing=false），
+// 会触发旧的模型限制策略，重新锁定模型选择器。mock 成新定价 + 自动溢出，与无限制模型策略一致。
+func buildDashboardIsOnNewPricingPayload(*RequestContext) (map[string]any, error) {
 	return map[string]any{
-		"teams": []map[string]any{},
+		"isOnNewPricing":                  true,
+		"isOptedOut":                      false,
+		"hasAutoSpillover":                true,
+		"hasTieredSelfServeTeamSpillover": false,
 	}, nil
 }
 
-func buildDashboardManagedSkillsPayload(*RequestContext) (map[string]any, error) {
-	return map[string]any{
-		"skills": []map[string]any{},
-	}, nil
-}
+// 说明：stripe 订阅状态走本地静态 mock（host.go 的 MockJSONAction + JSONBody），
+// 与 GetPlanInfo/GetCurrentPeriodUsage 保持一致的 Pro + active + 无限制。
+// GetMe 走官方透传（真实账号身份），不在此 mock，避免左下角账号名闪动。
+// GetMeResponse 不含套餐字段，透传真实身份不与本地 mock 的订阅状态矛盾。
 
-func buildDashboardGetMePayload(reqCtx *RequestContext) (map[string]any, error) {
-	authID := ""
-	if reqCtx != nil {
-		authID = authIDFromBearer(reqCtx.Headers.Get("authorization"))
-	}
-	if authID == "" {
-		authID = authIDFromJWT(legacyruntime.InjectAuthToken)
-	}
-	if authID == "" {
-		authID = localUltraPaymentID
-	}
-
+func buildDashboardGetMePayload(*RequestContext) (map[string]any, error) {
+	// 不伪造具体身份：email/姓名留空，Cursor 会用真实登录态显示。
+	// 此接口仅用于满足「已登录」结构，真正身份由 /auth/* 透传提供。
 	return map[string]any{
-		"authId":            authID,
-		"userId":            localUltraDashboardUserID,
-		"email":             legacyruntime.InjectAccountEmail,
-		"firstName":         "Cursor",
-		"lastName":          "Local",
+		"authId":            localUltraPaymentID,
+		"userId":            1,
+		"email":             "",
+		"firstName":         "",
+		"lastName":          "",
 		"createdAt":         time.Now().UTC().Format(time.RFC3339),
 		"isEnterpriseUser":  false,
 		"teamName":          "",
@@ -575,50 +620,7 @@ func buildDashboardGetMePayload(reqCtx *RequestContext) (map[string]any, error) 
 	}, nil
 }
 
-func buildDashboardUserPrivacyModePayload(*RequestContext) (map[string]any, error) {
-	return map[string]any{
-		"privacyMode":                          "PRIVACY_MODE_NO_STORAGE",
-		"hoursRemainingInGracePeriod":          0,
-		"isEnforcedByTeam":                     false,
-		"isNotMigratedToServerSourceOfTruth":   false,
-		"partnerDataShare":                     false,
-		"hasAcknowledgedGracePeriodDisclaimer": true,
-	}, nil
-}
-
-func buildDashboardPlanInfoPayload(*RequestContext) (map[string]any, error) {
-	return map[string]any{
-		"planInfo": map[string]any{
-			"planName":            "Ultra Plan",
-			"includedAmountCents": localUltraPlanIncludedCents,
-			"price":               "$200/mo",
-			"billingCycleEnd":     time.Now().Add(10 * 365 * 24 * time.Hour).UnixMilli(),
-		},
-	}, nil
-}
-
-func buildDashboardUsageLimitStatusAndActiveGrantsPayload(*RequestContext) (map[string]any, error) {
-	return map[string]any{
-		"usageLimitPolicyStatus": map[string]any{
-			"isInSlowPool":           false,
-			"features":               map[string]string{},
-			"canConfigureSpendLimit": true,
-			"hasPendingRequest":      false,
-			"allowedModelIds":        []string{},
-			"allowedModelTags":       []string{},
-		},
-		"activeGrants": []map[string]any{},
-	}, nil
-}
-
-func buildDashboardIsOnNewPricingPayload(*RequestContext) (map[string]any, error) {
-	return map[string]any{
-		"isOnNewPricing":   true,
-		"isOptedOut":       false,
-		"hasAutoSpillover": true,
-		"dashboardUserId":  localUltraDashboardUserID,
-	}, nil
-}
+// 说明：其余 Dashboard 账号/marketplace 接口仍走官方透传（真实 Cursor 账号）。
 
 func loadConfiguredModelAdapters(reqCtx *RequestContext) ([]legacyruntime.ModelAdapterConfig, error) {
 	if reqCtx == nil || reqCtx.Deps == nil || reqCtx.Deps.SystemSettingService == nil {
@@ -824,45 +826,12 @@ func collectModelAdapterRefs(adapters []legacyruntime.ModelAdapterConfig) []stri
 }
 
 func resolveBootstrapStatsigAuthID(reqCtx *RequestContext) string {
-	if reqCtx != nil {
-		if authID := authIDFromBearer(reqCtx.Headers.Get("authorization")); authID != "" {
-			return authID
-		}
-	}
-	if authID := authIDFromJWT(legacyruntime.InjectAuthToken); authID != "" {
-		return authID
-	}
+	// byok 不再有假账号；中间件也已剥离 Authorization。Statsig bootstrap 只需稳定匿名 ID。
 	return localUltraPaymentID
 }
 
-func authIDFromBearer(authorization string) string {
-	authorization = strings.TrimSpace(authorization)
-	if len(authorization) >= len("Bearer ") && strings.EqualFold(authorization[:len("Bearer ")], "Bearer ") {
-		authorization = strings.TrimSpace(authorization[len("Bearer "):])
-	}
-	return authIDFromJWT(authorization)
-}
-
-func authIDFromJWT(token string) string {
-	parts := strings.Split(strings.TrimSpace(token), ".")
-	if len(parts) < 2 {
-		return ""
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		payload, err = base64.URLEncoding.DecodeString(parts[1])
-		if err != nil {
-			return ""
-		}
-	}
-	var claims struct {
-		Sub string `json:"sub"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(claims.Sub)
-}
+// 说明：authIDFromBearer / authIDFromJWT 已移除——它们曾从假账号 JWT 解析 sub 作为 Statsig ID。
+// 现在中间件已剥离 Authorization，Statsig 仅用稳定匿名 ID。
 
 func buildBootstrapStatsigConfigJSON(nowMs int64, authID string) ([]byte, error) {
 	authID = strings.TrimSpace(authID)
@@ -873,7 +842,7 @@ func buildBootstrapStatsigConfigJSON(nowMs int64, authID string) ([]byte, error)
 	template.Time = nowMs
 	template.User = map[string]any{
 		"userID": authID,
-		"email":  legacyruntime.InjectAccountEmail,
+		"email":  localStatsigUserEmail,
 		"customIDs": map[string]string{
 			"localUserID": authID,
 		},

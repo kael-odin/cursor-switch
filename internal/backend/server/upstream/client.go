@@ -2,23 +2,18 @@ package upstream
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"cursor/gen/aiserverv1"
-	"cursor/internal/backend/server"
 	"cursor/internal/logger"
 	"cursor/internal/netproxy"
-	legacyruntime "cursor/internal/runtime"
+	"cursor/internal/relayauth"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -87,24 +82,88 @@ func buildUpstreamRequest(reqCtx *RequestContext, body []byte, options ForwardOp
 	}
 	upstreamRequest.Host = reqCtx.TargetURL.Host
 
-	if reqCtx.Mode == server.ModeLocal && shouldRewriteHost(reqCtx.TargetURL.Hostname()) {
-		auth := formatBearerAuthorization(legacyruntime.LocalRelayToken)
-		if auth == "" {
-			return nil, nil, legacyruntime.ErrInvalidSystemSetting
-		}
-		upstreamRequest.Header.Set("Authorization", auth)
-		upstreamRequest.Header.Set("x-cursor-checksum", BuildCursorChecksum(auth))
-	}
 	if options.PatchHeaders != nil {
 		options.PatchHeaders(upstreamRequest.Header)
 	}
 
+	// 无论上游是谁，先无条件剥离所有敏感/内部头，防止通过 copied headers 或 PatchHeaders 泄漏。
+	// backend 中间件已从入站请求删除这些头，此处是纵深防御，也覆盖 PatchHeaders 误注入。
+	scrubReservedHeaders(upstreamRequest.Header)
+
+	// 仅当策略为 OriginalCursor 且目标校验通过时，恢复捕获的 Cursor 真实凭证。
+	if options.Credential == CredentialOriginalCursor {
+		if err := restoreOriginalCursorCredentials(upstreamRequest, reqCtx); err != nil {
+			return nil, nil, err
+		}
+	}
+
 	upstreamClient := reqCtx.Deps.HTTPClient
 	if upstreamClient == nil {
-		upstreamClient = netproxy.NewHTTPClient(0)
+		// 恢复真实凭证的官方转发使用不跟随重定向的客户端，避免凭证随重定向外泄。
+		if options.Credential == CredentialOriginalCursor {
+			upstreamClient = netproxy.NewHTTPClientNoRedirect(0)
+		} else {
+			upstreamClient = netproxy.NewHTTPClient(0)
+		}
 	}
 
 	return upstreamRequest, upstreamClient, nil
+}
+
+// scrubReservedHeaders 删除永不应通过默认转发链外泄的敏感/内部头。
+func scrubReservedHeaders(header http.Header) {
+	header.Del("Authorization")
+	header.Del("Cookie")
+	header.Del("x-cursor-checksum")
+	header.Del(HeaderRawServerURL)
+	header.Del(relayauth.HeaderRelayProof)
+	header.Del("Proxy-Authorization")
+}
+
+// restoreOriginalCursorCredentials 在严格校验最终上游目标后，把捕获的 Cursor 真实凭证
+// 恢复到出站请求。目标必须为 HTTPS、主机为 cursor.sh/*.cursor.sh、端口缺省或 443，
+// 且与凭证绑定目标一致；任一不满足则拒绝恢复（fail-closed），凭证保持剥离状态。
+func restoreOriginalCursorCredentials(upstreamRequest *http.Request, reqCtx *RequestContext) error {
+	target := reqCtx.TargetURL
+	if target == nil {
+		return fmt.Errorf("original-cursor credential policy requires a target url")
+	}
+	if !strings.EqualFold(target.Scheme, "https") {
+		return fmt.Errorf("refuse to restore cursor credentials to non-https target")
+	}
+	if !isCursorHost(target.Hostname()) {
+		return fmt.Errorf("refuse to restore cursor credentials to non-cursor host")
+	}
+	if port := target.Port(); port != "" && port != "443" {
+		return fmt.Errorf("refuse to restore cursor credentials to non-standard port")
+	}
+	bound := strings.ToLower(target.Scheme) + "://" + strings.ToLower(target.Host)
+	creds := reqCtx.Credentials
+	if creds.BoundTarget == "" || creds.BoundTarget != bound {
+		return fmt.Errorf("credential bound target mismatch")
+	}
+	if creds.AuthorizationPresent {
+		upstreamRequest.Header.Set("Authorization", creds.Authorization)
+	}
+	if len(creds.Cookies) > 0 {
+		for _, cookie := range creds.Cookies {
+			upstreamRequest.Header.Add("Cookie", cookie)
+		}
+	}
+	// 原样保留 checksum，包括「原本不存在」的情形；绝不为假 token 重算 checksum。
+	if creds.ChecksumPresent {
+		upstreamRequest.Header.Set("x-cursor-checksum", creds.Checksum)
+	}
+	return nil
+}
+
+// isCursorHost 判断主机是否为 cursor.sh 或其子域。
+func isCursorHost(host string) bool {
+	normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if normalized == "" {
+		return false
+	}
+	return normalized == "cursor.sh" || strings.HasSuffix(normalized, ".cursor.sh")
 }
 
 func copyResponse(writer io.Writer, reader io.Reader) (int64, error) {
@@ -178,49 +237,9 @@ func copyResponseHeadersToClient(target http.Header, source http.Header) {
 	}
 }
 
-func shouldRewriteHost(host string) bool {
-	normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
-	if normalized == "" {
-		return false
-	}
-	return normalized == "cursor.sh" || strings.HasSuffix(normalized, ".cursor.sh")
-}
-
-func BuildCursorChecksum(authorization string) string {
-	const (
-		checksumTimestampDivisor = 1_000_000
-		checksumInitialSeed      = 165
-	)
-	timestamp := time.Now().UnixMilli() / checksumTimestampDivisor
-	timestampBytes := make([]byte, 6)
-	timestampBigInt := big.NewInt(timestamp)
-	for index := 0; index < len(timestampBytes); index++ {
-		shift := uint((len(timestampBytes) - 1 - index) * 8)
-		timestampBytes[index] = byte(new(big.Int).Rsh(timestampBigInt, shift).Uint64() & 0xff)
-	}
-	seed := checksumInitialSeed
-	for index := 0; index < len(timestampBytes); index++ {
-		current := int(timestampBytes[index]^byte(seed)) + (index % 256)
-		current &= 0xff
-		timestampBytes[index] = byte(current)
-		seed = current
-	}
-	prefix := strings.TrimRight(base64.StdEncoding.EncodeToString(timestampBytes), "=")
-	hashBytes := sha256.Sum256([]byte(strings.TrimSpace(authorization)))
-	hash := fmt.Sprintf("%x", hashBytes)
-	return prefix + hash[:32]
-}
-
-func formatBearerAuthorization(raw string) string {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return ""
-	}
-	if strings.HasPrefix(strings.ToLower(value), "bearer ") {
-		return value
-	}
-	return "Bearer " + value
-}
+// 说明：shouldRewriteHost / BuildCursorChecksum / formatBearerAuthorization 已移除。
+// 它们曾用于 local 模式覆盖 Authorization 为假 token 并重算 checksum；
+// 现在真实凭证由 CredentialOriginalCursor 策略原样透传，不再需要伪造/重算。
 
 func shouldRequestCarryBody(method string) bool {
 	switch strings.ToUpper(strings.TrimSpace(method)) {
@@ -270,98 +289,8 @@ func handleMockProto(reqCtx *RequestContext, route *Route) error {
 	return nil
 }
 
-func handleMockOAuth(reqCtx *RequestContext, route *Route) error {
-	payload := struct {
-		RefreshToken string `json:"refresh_token"`
-	}{}
-	_ = json.Unmarshal(reqCtx.RequestBody, &payload)
-	responseBody, err := marshalJSONBody(map[string]any{
-		"access_token": payload.RefreshToken,
-		"id_token":     payload.RefreshToken,
-		"shouldLogout": false,
-	})
-	if err != nil {
-		return err
-	}
-	reqCtx.ResponseWriter.Header().Set("content-type", "application/json")
-	reqCtx.ResponseWriter.WriteHeader(http.StatusOK)
-	_, _ = reqCtx.ResponseWriter.Write(responseBody)
-	return nil
-}
-
-func handleMockAuthFullStripeProfile(reqCtx *RequestContext, route *Route) error {
-	_ = route
-	responseBody, err := marshalJSONBody(map[string]any{
-		"membershipType":          localUltraMembershipType,
-		"subscriptionStatus":      localUltraSubscriptionStatus,
-		"lastPaymentFailed":       false,
-		"pendingCancellationDate": "",
-		"daysRemainingOnTrial":    0,
-		"paymentId":               localUltraPaymentID,
-	})
-	if err != nil {
-		return err
-	}
-	reqCtx.ResponseWriter.Header().Set("content-type", "application/json")
-	reqCtx.ResponseWriter.WriteHeader(http.StatusOK)
-	_, _ = reqCtx.ResponseWriter.Write(responseBody)
-	return nil
-}
-
-func handleMockAuthStripeProfile(reqCtx *RequestContext, route *Route) error {
-	_ = route
-	responseBody, err := json.Marshal(localUltraPaymentID)
-	if err != nil {
-		return err
-	}
-	reqCtx.ResponseWriter.Header().Set("content-type", "application/json")
-	reqCtx.ResponseWriter.WriteHeader(http.StatusOK)
-	_, _ = reqCtx.ResponseWriter.Write(responseBody)
-	return nil
-}
-
-func handleMockAuthPoll(reqCtx *RequestContext, route *Route) error {
-	_ = route
-	responseBody, err := marshalJSONBody(map[string]any{
-		"accessToken":  legacyruntime.InjectAuthToken,
-		"refreshToken": legacyruntime.InjectAuthToken,
-		"authId":       "local_auth",
-	})
-	if err != nil {
-		return err
-	}
-	reqCtx.ResponseWriter.Header().Set("content-type", "application/json")
-	reqCtx.ResponseWriter.WriteHeader(http.StatusOK)
-	_, _ = reqCtx.ResponseWriter.Write(responseBody)
-	return nil
-}
-
-func handleMockAuthEmail(reqCtx *RequestContext, route *Route) error {
-	_ = route
-	responseBody := encodeAuthGetEmailResponse(legacyruntime.InjectAccountEmail)
-	reqCtx.ResponseWriter.Header().Set("content-type", "application/proto")
-	reqCtx.ResponseWriter.Header().Set("content-length", strconv.Itoa(len(responseBody)))
-	reqCtx.ResponseWriter.WriteHeader(http.StatusOK)
-	_, _ = reqCtx.ResponseWriter.Write(responseBody)
-	return nil
-}
-
-func encodeAuthGetEmailResponse(email string) []byte {
-	output := make([]byte, 0, len(email)+8)
-	output = append(output, 0x0a)
-	output = appendProtoVarint(output, uint64(len(email)))
-	output = append(output, []byte(email)...)
-	output = append(output, 0x10, 0x03) // GetEmailResponse.SignUpType.SIGN_UP_TYPE_GOOGLE
-	return output
-}
-
-func appendProtoVarint(output []byte, value uint64) []byte {
-	for value >= 0x80 {
-		output = append(output, byte(value)|0x80)
-		value >>= 7
-	}
-	return append(output, byte(value))
-}
+// 说明：假 OAuth / Stripe / auth-poll / GetEmail mock handler 已全部移除。
+// 这些接口现在走官方透传（真实 Cursor 账号），byok 不再伪造登录态与订阅信息。
 
 func handleFixedStatus(reqCtx *RequestContext, route *Route) error {
 	if route != nil && route.ConsoleLog {
@@ -407,6 +336,8 @@ func newProtoMessage(typeName string) (proto.Message, error) {
 		return &aiserverv1.GetServerConfigResponse{}, nil
 	case "aiserver.v1.AvailableModelsResponse":
 		return &aiserverv1.AvailableModelsResponse{}, nil
+	case "aiserver.v1.GetDefaultModelResponse":
+		return &aiserverv1.GetDefaultModelResponse{}, nil
 	case "aiserver.v1.GetDefaultModelNudgeDataResponse":
 		return &aiserverv1.GetDefaultModelNudgeDataResponse{}, nil
 	case "aiserver.v1.BootstrapStatsigResponse":
@@ -427,6 +358,16 @@ func newProtoMessage(typeName string) (proto.Message, error) {
 		return &aiserverv1.GetUsageLimitStatusAndActiveGrantsResponse{}, nil
 	case "aiserver.v1.IsOnNewPricingResponse":
 		return &aiserverv1.IsOnNewPricingResponse{}, nil
+	case "aiserver.v1.GetManagedSkillsResponse":
+		return &aiserverv1.GetManagedSkillsResponse{}, nil
+	case "aiserver.v1.GetEffectiveUserPluginsResponse":
+		return &aiserverv1.GetEffectiveUserPluginsResponse{}, nil
+	case "aiserver.v1.ListMarketplacesResponse":
+		return &aiserverv1.ListMarketplacesResponse{}, nil
+	case "aiserver.v1.ListMarketplacePluginsResponse":
+		return &aiserverv1.ListMarketplacePluginsResponse{}, nil
+	case "aiserver.v1.RegisterMarketplaceAndPluginsResponse":
+		return &aiserverv1.RegisterMarketplaceAndPluginsResponse{}, nil
 	default:
 		return nil, fmt.Errorf("unsupported proto message type %q", typeName)
 	}

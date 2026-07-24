@@ -78,6 +78,15 @@ func (writer *trackedResponseWriter) ResponseWritten() bool {
 	return writer != nil && writer.wroteHeader
 }
 
+// StatusCode 返回最终写入的状态码；未写头时返回 0。
+// 用于请求级别的诊断日志。
+func (writer *trackedResponseWriter) StatusCode() int {
+	if writer == nil {
+		return 0
+	}
+	return writer.statusCode
+}
+
 func responseWriterHasWrittenHeader(writer http.ResponseWriter) bool {
 	for writer != nil {
 		if tracker, ok := writer.(responseWrittenTracker); ok {

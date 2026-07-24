@@ -46,6 +46,19 @@ func NewHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
+// NewHTTPClientNoRedirect 与 NewHTTPClient 相同，但不自动跟随 3xx 重定向；
+// 首个响应（含 Location / Set-Cookie）原样返回。用于恢复 Cursor 真实凭证的官方控制面转发，
+// 避免服务端跟随重定向把凭证带到未校验的目标。
+func NewHTTPClientNoRedirect(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport: NewTransport(nil),
+		Timeout:   timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 // NewTransport clones the given transport and installs proxy resolution on it.
 // When base is nil, it clones Go's original default transport.
 func NewTransport(base *http.Transport) *http.Transport {

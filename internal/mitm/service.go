@@ -20,7 +20,7 @@ import (
 	"cursor/internal/certs"
 	"cursor/internal/logger"
 	"cursor/internal/netproxy"
-	"cursor/internal/runtime"
+	"cursor/internal/relayauth"
 
 	"github.com/elazarl/goproxy"
 )
@@ -45,6 +45,9 @@ type ProxyServer struct {
 
 	// upstreamClient 表示当前声明中的 upstreamClient。
 	upstreamClient *http.Client
+
+	// relayProof 承载 MITM→backend 的进程级信任 proof。
+	relayProof *relayauth.Proof
 
 	// proxy 表示当前声明中的 proxy。
 	proxy *goproxy.ProxyHttpServer
@@ -185,11 +188,17 @@ func NewProxyServer(addr, baseURL, _ string, _ string, certManager *certs.Manage
 		return nil, err
 	}
 
+	proof, err := relayauth.New()
+	if err != nil {
+		return nil, fmt.Errorf("初始化 relay proof 失败: %w", err)
+	}
+
 	s := &ProxyServer{
 		addr:         addr,
 		baseURL:      normalizedBaseURL,
 		certManager:  certManager,
 		baseEndpoint: u,
+		relayProof:   proof,
 		upstreamClient: &http.Client{
 			Transport: &http.Transport{
 				DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -222,6 +231,10 @@ func parseBaseURL(baseURL string) (*url.URL, string, error) {
 	if strings.TrimSpace(u.Host) == "" {
 		return nil, "", errors.New("base URL host is empty")
 	}
+	// backend endpoint 承载 MITM→backend 的信任 proof 与真实 Cursor 凭证，必须是本机 loopback。
+	if !isLoopbackURLHost(u.Hostname()) {
+		return nil, "", fmt.Errorf("backend base URL host %q 必须是本机回环地址", u.Hostname())
+	}
 
 	base := *u
 	base.Path = ""
@@ -234,6 +247,16 @@ func parseBaseURL(baseURL string) (*url.URL, string, error) {
 		return nil, "", errors.New("base URL is empty")
 	}
 	return &base, normalizedBaseURL, nil
+}
+
+// isLoopbackURLHost 仅接受字面回环 IP（127.0.0.0/8 或 ::1），拒绝主机名/局域网/公网。
+func isLoopbackURLHost(host string) bool {
+	trimmed := strings.Trim(strings.TrimSpace(host), "[]")
+	ip := net.ParseIP(trimmed)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 // UpdateBaseURL 用于处理与 UpdateBaseURL 相关的逻辑。
@@ -477,10 +500,16 @@ func (s *ProxyServer) forwardToServer(incoming *http.Request) (*http.Response, e
 	}
 	serverReq.ContentLength = incoming.ContentLength
 	copyHeaders(serverReq.Header, incoming.Header)
+	// 删除任何调用方伪造的内部头，随后由本进程注入可信 proof。
+	serverReq.Header.Del(HeaderServerUpstreamURL)
+	serverReq.Header.Del(relayauth.HeaderRelayProof)
 	serverReq.Header.Set(HeaderServerUpstreamURL, rawURL)
-	// 用进程级 loopback token 覆盖 Authorization，backend 中间件据此校验请求确实来自本进程 mitm，
-	// 拒绝本机其它进程未经 mitm 直接调用 backend 的 cursor.sh 兼容路由。
-	serverReq.Header.Set("Authorization", runtime.LoopbackAuthorization())
+	// 用独立私有 proof 头证明请求来自本进程 mitm，backend 中间件据此校验并拒绝本机其它进程裸调。
+	// 关键：不再覆盖 Authorization —— Cursor 客户端的真实 Authorization / Cookie / x-cursor-checksum
+	// 原样保留，供 backend 捕获到上下文，仅在 OriginalCursor 出站策略下恢复给官方 cursor.sh。
+	if s.relayProof != nil {
+		serverReq.Header.Set(relayauth.HeaderRelayProof, s.relayProof.HeaderValue())
+	}
 	removeHopByHop(serverReq.Header)
 
 	resp, err := s.upstreamClient.Do(serverReq)
@@ -573,12 +602,13 @@ func rawURLForRelay(r *http.Request) (string, error) {
 
 // copyHeaders 用于处理与 copyHeaders 相关的逻辑。
 func copyHeaders(dst, src http.Header) {
-	removeHopByHop(src)
 	for k, vv := range src {
 		for _, v := range vv {
 			dst.Add(k, v)
 		}
 	}
+	// 在目标上剥离 hop-by-hop，避免改动 incoming（源）请求头。
+	removeHopByHop(dst)
 }
 
 // removeHopByHop 用于处理与 removeHopByHop 相关的逻辑。

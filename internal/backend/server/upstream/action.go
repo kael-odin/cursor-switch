@@ -17,6 +17,10 @@ type CompatRouteConfig struct {
 	MockProtoType string
 	MockBuilder   func(*RequestContext) (map[string]any, error)
 	ConsoleLog    bool
+	// Credential 作用于 DirectAction：指定回源上游时的凭证策略。
+	// CredentialOriginalCursor 恢复真实 Cursor 登录态（仅原始 HTTPS *.cursor.sh 生效），
+	// 供 marketplace / 账号 / customize 等官方控制面接口透传登录态。
+	Credential CredentialPolicy
 }
 
 func DirectAction(deps Dependencies, cfg CompatRouteConfig) server.HandlerFunc {
@@ -25,7 +29,9 @@ func DirectAction(deps Dependencies, cfg CompatRouteConfig) server.HandlerFunc {
 		if err != nil {
 			return err
 		}
-		return handleDirect(reqCtx, route)
+		_ = route
+		_, err = ForwardToUpstream(reqCtx, ForwardOptions{Credential: cfg.Credential})
+		return err
 	}
 }
 
@@ -46,56 +52,6 @@ func MockJSONAction(deps Dependencies, cfg CompatRouteConfig) server.HandlerFunc
 			return err
 		}
 		return handleMockJSON(reqCtx, route)
-	}
-}
-
-func MockOAuthAction(deps Dependencies, cfg CompatRouteConfig) server.HandlerFunc {
-	return func(ctx *server.Context) error {
-		reqCtx, route, err := newCompatRouteObjects(ctx, deps, cfg)
-		if err != nil {
-			return err
-		}
-		return handleMockOAuth(reqCtx, route)
-	}
-}
-
-func MockAuthFullStripeProfileAction(deps Dependencies, cfg CompatRouteConfig) server.HandlerFunc {
-	return func(ctx *server.Context) error {
-		reqCtx, route, err := newCompatRouteObjects(ctx, deps, cfg)
-		if err != nil {
-			return err
-		}
-		return handleMockAuthFullStripeProfile(reqCtx, route)
-	}
-}
-
-func MockAuthStripeProfileAction(deps Dependencies, cfg CompatRouteConfig) server.HandlerFunc {
-	return func(ctx *server.Context) error {
-		reqCtx, route, err := newCompatRouteObjects(ctx, deps, cfg)
-		if err != nil {
-			return err
-		}
-		return handleMockAuthStripeProfile(reqCtx, route)
-	}
-}
-
-func MockAuthPollAction(deps Dependencies, cfg CompatRouteConfig) server.HandlerFunc {
-	return func(ctx *server.Context) error {
-		reqCtx, route, err := newCompatRouteObjects(ctx, deps, cfg)
-		if err != nil {
-			return err
-		}
-		return handleMockAuthPoll(reqCtx, route)
-	}
-}
-
-func MockAuthEmailAction(deps Dependencies, cfg CompatRouteConfig) server.HandlerFunc {
-	return func(ctx *server.Context) error {
-		reqCtx, route, err := newCompatRouteObjects(ctx, deps, cfg)
-		if err != nil {
-			return err
-		}
-		return handleMockAuthEmail(reqCtx, route)
 	}
 }
 
@@ -136,6 +92,7 @@ func newCompatRouteObjects(ctx *server.Context, deps Dependencies, cfg CompatRou
 		Mode:           ctx.Mode,
 		Deps:           &deps,
 		HTTPRequestID:  resolveHTTPRequestID(ctx.Request),
+		Credentials:    ctx.Credentials,
 	}
 	route := &Route{
 		Name:               cfg.Name,
@@ -165,6 +122,31 @@ func DefaultModelNudgeMockBuilder(reqCtx *RequestContext) (map[string]any, error
 	return buildDefaultModelNudgeDataPayload(reqCtx)
 }
 
+func GetDefaultModelMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
+	return buildGetDefaultModelPayload(reqCtx)
+}
+
+// 权益接口 mock（无限制），防止真实账号套餐锁定模型选择器。
+func DashboardUsageLimitStatusAndActiveGrantsMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
+	return buildDashboardUsageLimitStatusAndActiveGrantsPayload(reqCtx)
+}
+
+func DashboardPlanInfoMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
+	return buildDashboardPlanInfoPayload(reqCtx)
+}
+
+func DashboardCurrentPeriodUsageMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
+	return buildDashboardCurrentPeriodUsagePayload(reqCtx)
+}
+
+func DashboardGetMeMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
+	return buildDashboardGetMePayload(reqCtx)
+}
+
+func DashboardIsOnNewPricingMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
+	return buildDashboardIsOnNewPricingPayload(reqCtx)
+}
+
 func BootstrapStatsigMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
 	return buildBootstrapStatsigPayload(reqCtx)
 }
@@ -173,37 +155,9 @@ func FirstWindowStatsigDecisionMockBuilder(reqCtx *RequestContext) (map[string]a
 	return buildFirstWindowStatsigDecisionPayload(reqCtx)
 }
 
-func DashboardCurrentPeriodUsageMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
-	return buildDashboardCurrentPeriodUsagePayload(reqCtx)
-}
-
-func DashboardTeamsMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
-	return buildDashboardTeamsPayload(reqCtx)
-}
-
-func DashboardManagedSkillsMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
-	return buildDashboardManagedSkillsPayload(reqCtx)
-}
-
-func DashboardGetMeMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
-	return buildDashboardGetMePayload(reqCtx)
-}
-
-func DashboardUserPrivacyModeMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
-	return buildDashboardUserPrivacyModePayload(reqCtx)
-}
-
-func DashboardPlanInfoMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
-	return buildDashboardPlanInfoPayload(reqCtx)
-}
-
-func DashboardUsageLimitStatusAndActiveGrantsMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
-	return buildDashboardUsageLimitStatusAndActiveGrantsPayload(reqCtx)
-}
-
-func DashboardIsOnNewPricingMockBuilder(reqCtx *RequestContext) (map[string]any, error) {
-	return buildDashboardIsOnNewPricingPayload(reqCtx)
-}
+// 说明：Dashboard 账号/套餐/marketplace 相关的 MockBuilder 已全部移除。
+// 这些接口现在走官方透传（host.go 的 officialProcedure/officialAnyProcedure），
+// 由真实 Cursor 账号响应，不再由 byok 伪造。仅保留模型/兼容层与 Statsig 的本地 mock builder。
 
 func resolveHTTPRequestID(request *http.Request) string {
 	requestID := strings.TrimSpace(request.Header.Get("x-request-id"))

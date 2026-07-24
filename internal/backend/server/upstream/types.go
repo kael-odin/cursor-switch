@@ -44,11 +44,28 @@ type RequestContext struct {
 	Mode           server.ExecutionMode
 	Deps           *Dependencies
 	HTTPRequestID  string
+	// Credentials 是 backend 中间件捕获的 Cursor 真实凭证，供 CredentialOriginalCursor 恢复。
+	Credentials server.CapturedCredentials
 }
+
+// CredentialPolicy 决定出站上游请求如何携带鉴权凭证。
+type CredentialPolicy uint8
+
+const (
+	// CredentialNone 默认策略：不携带任何 Cursor 凭证（Authorization / Cookie / checksum 均剥离）。
+	// 适用于本地模型/数据面、第三方 provider、tab 服务等，防止凭证泄漏。
+	CredentialNone CredentialPolicy = iota
+	// CredentialOriginalCursor：恢复 backend 捕获的 Cursor 真实凭证，
+	// 仅当最终上游目标为原始 HTTPS *.cursor.sh 且与凭证绑定目标一致时生效。
+	// 用于官方账号/marketplace/customize 等控制面接口的登录态透传。
+	CredentialOriginalCursor
+)
 
 type ForwardOptions struct {
 	BodyOverride []byte
 	PatchHeaders func(headers http.Header)
+	// Credential 指定出站凭证策略。默认 CredentialNone。
+	Credential CredentialPolicy
 }
 
 type ForwardMeta struct {

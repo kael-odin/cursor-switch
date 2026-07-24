@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	serverconfig "cursor/internal/backend/server/config"
+	"cursor/internal/relayauth"
 	legacyruntime "cursor/internal/runtime"
 )
 
@@ -34,6 +35,8 @@ func ServerContext() Middleware {
 			if err := ctx.ParseUpstreamURL(); err != nil {
 				return err
 			}
+			// 捕获 Cursor 真实凭证到 ctx 并从请求头剥离，本地 handler 不可见。
+			ctx.CaptureAndStripCredentials()
 			return next(ctx)
 		}
 	}
@@ -52,21 +55,32 @@ func PolicyMiddleware(configs *serverconfig.Manager) Middleware {
 // healthzPath 与 internal/backend/host.go 的 healthPath 保持一致，loopback 鉴权对其放行。
 const loopbackAuthExemptPath = "/healthz"
 
-// LoopbackAuth 校验请求携带的进程级 loopback token，拒绝本机其它进程未经 mitm 直接调用 backend 的 cursor.sh 兼容路由。
-// mitm 在 forwardToServer 中注入 Authorization: Bearer <runtime.LoopbackToken()>，故合法中继请求必然通过。
+// ErrRelayUnauthorized 表示请求缺少或携带无效的 MITM relay proof。映射到 401。
+var ErrRelayUnauthorized = errors.New("relay auth: unauthorized")
+
+// LoopbackAuth 校验请求携带的进程级 relay proof 私有头，拒绝本机其它进程未经 mitm 直接
+// 调用 backend 的 cursor.sh 兼容路由。校验通过后立即删除 proof 头，避免其泄漏到下游或上游。
+//
+// 关键变更：不再用 Authorization 承载内部信任 —— Cursor 客户端的真实 Authorization 保留，
+// 由 ServerContext 捕获到 ctx.Credentials。
 func LoopbackAuth() Middleware {
-	expected := legacyruntime.LoopbackAuthorization()
+	proof, err := relayauth.New()
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx *Context) error {
 			if ctx == nil || ctx.Request == nil {
-				return fmt.Errorf("loopback auth: nil request")
+				return fmt.Errorf("relay auth: nil request")
 			}
 			if ctx.Request.URL.Path == loopbackAuthExemptPath {
 				return next(ctx)
 			}
-			provided := strings.TrimSpace(ctx.Request.Header.Get("Authorization"))
-			if provided == "" || !strings.EqualFold(provided, expected) {
-				return fmt.Errorf("loopback auth: unauthorized")
+			if err != nil || proof == nil {
+				return fmt.Errorf("relay auth: proof unavailable: %w", ErrRelayUnauthorized)
+			}
+			provided := strings.TrimSpace(ctx.Request.Header.Get(relayauth.HeaderRelayProof))
+			// proof 头无论校验结果都必须删除，绝不能进入 handler 或转发链。
+			ctx.Request.Header.Del(relayauth.HeaderRelayProof)
+			if !proof.Verify(provided) {
+				return fmt.Errorf("%w", ErrRelayUnauthorized)
 			}
 			return next(ctx)
 		}
@@ -104,6 +118,9 @@ func writeServerError(writer http.ResponseWriter, err error) {
 	case err == nil:
 		status = http.StatusOK
 		message = ""
+	case errors.Is(err, ErrRelayUnauthorized):
+		status = http.StatusUnauthorized
+		message = "unauthorized"
 	case strings.TrimSpace(err.Error()) == "empty raw url":
 		status = http.StatusBadRequest
 		message = "invalid raw url"
