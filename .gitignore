@@ -33,5 +33,7 @@ scripts/release/release.exe
 cursor-tab-server/cursor-tab-server.exe
 
 # release signing private key (never commit)
+.cursor-switch-release.key
+*.cursor-switch-release.key
 .cursor-byok-release.key
 *.cursor-byok-release.key

@@ -122,7 +122,7 @@ func runManifest(args []string) {
 	assetsDir := flags.String("assets-dir", "", "directory containing release assets")
 	outputPath := flags.String("out", "", "manifest output file")
 	repo := flags.String("repo", "", "GitHub repo in owner/repo form")
-	baseName := flags.String("base-name", "cursor-byok", "release asset basename")
+	baseName := flags.String("base-name", "cursor-switch", "release asset basename")
 	notesPath := flags.String("notes", "", "release notes file")
 	_ = flags.Parse(args)
 
@@ -259,11 +259,11 @@ func exitf(format string, args ...any) {
 	os.Exit(1)
 }
 
-// runKeypair 生成一对 ed25519 密钥：私钥写入 --key（默认 ~/.cursor-byok-release.key，0600），
+// runKeypair 生成一对 ed25519 密钥：私钥写入 --key（默认 ~/.cursor-switch-release.key，0600），
 // 公钥以 hex 打印到 stdout（供填入 internal/updater/pubkey.go 的 releasePublicKeyHex）。
 func runKeypair(args []string) {
 	flags := flag.NewFlagSet("keypair", flag.ExitOnError)
-	keyPath := flags.String("key", "", "private key output path (default $HOME/.cursor-byok-release.key)")
+	keyPath := flags.String("key", "", "private key output path (default $HOME/.cursor-switch-release.key)")
 	_ = flags.Parse(args)
 
 	path := strings.TrimSpace(*keyPath)
@@ -272,7 +272,7 @@ func runKeypair(args []string) {
 		if err != nil {
 			exitErr(err)
 		}
-		path = filepath.Join(home, ".cursor-byok-release.key")
+		path = filepath.Join(home, ".cursor-switch-release.key")
 	}
 
 	if _, err := os.Stat(path); err == nil {
@@ -301,7 +301,7 @@ func runKeypair(args []string) {
 func runSign(args []string) {
 	flags := flag.NewFlagSet("sign", flag.ExitOnError)
 	manifestPath := flags.String("manifest", "", "update.json path to sign in-place")
-	keyPath := flags.String("key", "", "private key path (default $HOME/.cursor-byok-release.key)")
+	keyPath := flags.String("key", "", "private key path (default $HOME/.cursor-switch-release.key)")
 	_ = flags.Parse(args)
 
 	if strings.TrimSpace(*manifestPath) == "" {
@@ -313,7 +313,7 @@ func runSign(args []string) {
 		if err != nil {
 			exitErr(err)
 		}
-		path = filepath.Join(home, ".cursor-byok-release.key")
+		path = filepath.Join(home, ".cursor-switch-release.key")
 	}
 
 	priv, err := loadSigningKey(path)

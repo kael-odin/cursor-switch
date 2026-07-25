@@ -43,7 +43,14 @@ git push origin v0.0.41
 
 强制签名后:`update.json` 带 ed25519 签名,二进制内置公钥校验,签名不过一律拒绝更新。即使 release token 泄露,攻击者没有私钥就无法伪造可被接受的更新。
 
-> **当前状态(2026-07-20):已启用。** 公钥已填入 `internal/updater/pubkey.go`(`releasePublicKeyHex`)。私钥在维护者本地 `~/.cursor-byok-release.key`(0600,不入库)。**从此刻起每次发版后必须本地 `sign` 再重传 update.json**(见第 3 步),否则新版客户端会因 `manifest missing required signature` 拒绝更新。
+> **当前状态(2026-07-20):已启用。** 公钥已填入 `internal/updater/pubkey.go`(`releasePublicKeyHex`)。私钥在维护者本地 `~/.cursor-switch-release.key`(0600,不入库)。**从此刻起每次发版后必须本地 `sign` 再重传 update.json**(见第 3 步),否则新版客户端会因 `manifest missing required signature` 拒绝更新。
+>
+> **改名迁移说明(2026-07-26):** 产品由 `cursor-byok` 改名为 `cursor-switch`，签名私钥默认路径从 `~/.cursor-byok-release.key` 迁移到 `~/.cursor-switch-release.key`。**公钥不变**（`pubkey.go` 的 `releasePublicKeyHex` 未改），所以无需重新生成密钥对。维护者只需把现有私钥复制到新路径即可：
+> ```bash
+> cp ~/.cursor-byok-release.key ~/.cursor-switch-release.key
+> chmod 600 ~/.cursor-switch-release.key
+> ```
+> 或在签名时显式指定旧路径：`go run ./scripts/release sign --key ~/.cursor-byok-release.key --manifest ...`
 
 ### 启用步骤(只需做一次)
 
@@ -55,11 +62,11 @@ go run ./scripts/release keypair
 
 输出示例:
 ```
-private key written: /home/you/.cursor-byok-release.key (KEEP SECRET — never commit)
+private key written: /home/you/.cursor-switch-release.key (KEEP SECRET — never commit)
 public key (hex): b7787d81f16782b485c3c659b2ede84164b514babb57c2c3818013f8e0ba8103
 ```
 
-- 私钥 `~/.cursor-byok-release.key`(权限 0600),**永远不要提交、不要分享、不要丢**。丢了就得重新生成公钥并发新版强制所有用户更新到带新公钥的版本。
+- 私钥 `~/.cursor-switch-release.key`(权限 0600),**永远不要提交、不要分享、不要丢**。丢了就得重新生成公钥并发新版强制所有用户更新到带新公钥的版本。
 - 命令拒绝覆盖已存在的私钥(防误删旧 key 导致签名断裂)。
 - 把公钥 hex 复制下来,进第 2 步。
 

@@ -19,7 +19,7 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 75,
+          "line": 88,
           "column": 48
         }
       ]
@@ -89,12 +89,12 @@
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 106,
+          "line": 158,
           "column": 33
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 120,
+          "line": 172,
           "column": 18
         }
       ]
@@ -169,6 +169,18 @@
         }
       ]
     },
+    "072023358eedd1e1": {
+      "source": "当前范围",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 184,
+          "column": 49
+        }
+      ]
+    },
     "092b520558eff5f2": {
       "source": "未测试",
       "kind": "text",
@@ -202,6 +214,18 @@
           "file": "src/components/HomeMetricsCard.vue",
           "line": 122,
           "column": 20
+        }
+      ]
+    },
+    "0a79faf0ba45bd0c": {
+      "source": "条 / 共",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 185,
+          "column": 44
         }
       ]
     },
@@ -342,7 +366,7 @@
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 63,
+          "line": 76,
           "column": 48
         }
       ]
@@ -395,6 +419,18 @@
         }
       ]
     },
+    "1a94caf166b86b83": {
+      "source": "按模型拆分的精确成本（全量累计，不受上方日期范围影响）。「倍率」是你在定价管理里给该模型设的加价倍数（1=按官方原价）； 成本已按各家的计费口径自动校准（OpenAI 系列的 input 已扣除缓存部分，避免重复计费）。",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 113,
+          "column": 49
+        }
+      ]
+    },
     "1af38868896cf53d": {
       "source": "运行模式仅支持 local 或 upstream",
       "kind": "text",
@@ -428,6 +464,18 @@
           "file": "src/views/ModelEditor.vue",
           "line": 101,
           "column": 67
+        }
+      ]
+    },
+    "1c2ef98b023926c9": {
+      "source": "日成本已按各模型精确计算（per-model 价格 × 倍率）。",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 52,
+          "column": 27
         }
       ]
     },
@@ -467,7 +515,7 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 110,
+          "line": 128,
           "column": 63
         }
       ]
@@ -484,18 +532,18 @@
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 106,
+          "line": 158,
           "column": 14
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 117,
+          "line": 169,
           "column": 18
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 173,
-          "column": 63
+          "line": 197,
+          "column": 65
         }
       ]
     },
@@ -518,6 +566,18 @@
           "file": "src/views/ModelEditor.vue",
           "line": 322,
           "column": 22
+        }
+      ]
+    },
+    "2261b06712a3c505": {
+      "source": "近 7 天",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 33,
+          "column": 33
         }
       ]
     },
@@ -603,7 +663,7 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 94,
+          "line": 112,
           "column": 64
         }
       ]
@@ -855,7 +915,7 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 84,
+          "line": 97,
           "column": 64
         }
       ]
@@ -942,12 +1002,12 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 106,
+          "line": 124,
           "column": 63
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 141,
+          "line": 159,
           "column": 63
         }
       ]
@@ -1171,23 +1231,13 @@
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 88,
-          "column": 76
-        },
-        {
-          "file": "src/views/UsageDashboard.vue",
-          "line": 99,
+          "line": 117,
           "column": 78
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 135,
+          "line": 153,
           "column": 81
-        },
-        {
-          "file": "src/views/UsageDashboard.vue",
-          "line": 165,
-          "column": 83
         }
       ]
     },
@@ -1198,12 +1248,12 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 107,
+          "line": 125,
           "column": 63
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 142,
+          "line": 160,
           "column": 63
         }
       ]
@@ -1374,6 +1424,18 @@
         }
       ]
     },
+    "5c55a67935af8f45": {
+      "source": "全部",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 35,
+          "column": 34
+        }
+      ]
+    },
     "5d1687a4a41883fd": {
       "source": "停止中...",
       "kind": "text",
@@ -1405,7 +1467,7 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 134,
+          "line": 152,
           "column": 64
         }
       ]
@@ -1465,17 +1527,17 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 57,
+          "line": 70,
           "column": 48
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 108,
+          "line": 126,
           "column": 63
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 143,
+          "line": 161,
           "column": 63
         }
       ]
@@ -1521,18 +1583,18 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 106,
+          "line": 158,
           "column": 40
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 122,
+          "line": 174,
           "column": 15
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 176,
-          "column": 63
+          "line": 200,
+          "column": 65
         }
       ]
     },
@@ -1581,6 +1643,18 @@
           "file": "src/state/appState.js",
           "line": 983,
           "column": 14
+        }
+      ]
+    },
+    "660c12bf0c33d4c7": {
+      "source": "成本折线（虚线）含近似值（部分日期缺模型维度，按均价估算）；精确成本见下方模型统计。",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 99,
+          "column": 49
         }
       ]
     },
@@ -1661,18 +1735,6 @@
         }
       ]
     },
-    "6a9a26a25dffd310": {
-      "source": "「真实消耗 Tokens」是你实际「烧掉」的 token 总量，= 本次新输入 + 模型输出 + 缓存写入 + 缓存读取， 是衡量用量的最准数字。「总成本」按各模型的官方单价 × 你设的倍率估算（美元），仅供参考， 实际账单以 provider 为准。带「≈」的日成本是近似值（按当天所有模型的均价估算），精确成本看下方「模型统计」。",
-      "kind": "text",
-      "placeholders": 0,
-      "refs": [
-        {
-          "file": "src/views/UsageDashboard.vue",
-          "line": 36,
-          "column": 53
-        }
-      ]
-    },
     "6aa8f49cc992dfd7": {
       "source": "测试",
       "kind": "text",
@@ -1732,6 +1794,18 @@
         }
       ]
     },
+    "6af7392b44fb41d2": {
+      "source": "带「≈」的日成本是近似值 （当天数据缺模型维度，按均价估算）；升级后新数据已精确按模型计算。",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 50,
+          "column": 65
+        }
+      ]
+    },
     "6cee61e046061f5d": {
       "source": "真实消耗 Tokens",
       "kind": "text",
@@ -1739,7 +1813,7 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 45,
+          "line": 58,
           "column": 48
         }
       ]
@@ -1799,7 +1873,7 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 26,
+          "line": 32,
           "column": 22
         }
       ]
@@ -1837,6 +1911,23 @@
           "file": "src/views/ModelConfig.vue",
           "line": 45,
           "column": 10
+        }
+      ]
+    },
+    "7526c64a4a321237": {
+      "source": "该范围内暂无数据",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 106,
+          "column": 76
+        },
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 188,
+          "column": 83
         }
       ]
     },
@@ -2038,7 +2129,7 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 27,
+          "line": 38,
           "column": 17
         }
       ]
@@ -2221,7 +2312,7 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 69,
+          "line": 82,
           "column": 48
         }
       ]
@@ -2247,6 +2338,18 @@
           "file": "src/components/ui/Switch.vue",
           "line": 9,
           "column": 41
+        }
+      ]
+    },
+    "8a8542f6964852dc": {
+      "source": "下一页",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 235,
+          "column": 17
         }
       ]
     },
@@ -2281,8 +2384,8 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 170,
-          "column": 62
+          "line": 194,
+          "column": 64
         }
       ]
     },
@@ -2300,18 +2403,6 @@
           "file": "src/views/PricingPanel.vue",
           "line": 92,
           "column": 51
-        }
-      ]
-    },
-    "8b923b6ed79f1673": {
-      "source": "成本折线（虚线）是按当天各模型均价估算的近似值，仅供参考趋势；精确成本见下方模型统计。",
-      "kind": "text",
-      "placeholders": 0,
-      "refs": [
-        {
-          "file": "src/views/UsageDashboard.vue",
-          "line": 85,
-          "column": 49
         }
       ]
     },
@@ -2348,6 +2439,18 @@
           "file": "src/components/ModelAdapterTestCard.vue",
           "line": 25,
           "column": 14
+        }
+      ]
+    },
+    "8c932f987c21bf0a": {
+      "source": "每页",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 222,
+          "column": 20
         }
       ]
     },
@@ -2596,6 +2699,18 @@
           "file": "src/components/HomeMetricsCard.vue",
           "line": 208,
           "column": 5
+        }
+      ]
+    },
+    "97157db1f92082b6": {
+      "source": "「真实消耗 Tokens」是你实际「烧掉」的 token 总量，= 本次新输入 + 模型输出 + 缓存写入 + 缓存读取， 是衡量用量的最准数字。「总成本」按各模型的官方单价 × 你设的倍率估算（美元），仅供参考， 实际账单以 provider 为准。",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 47,
+          "column": 53
         }
       ]
     },
@@ -3101,18 +3216,18 @@
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 106,
+          "line": 158,
           "column": 26
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 119,
+          "line": 171,
           "column": 18
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 175,
-          "column": 63
+          "line": 199,
+          "column": 65
         }
       ]
     },
@@ -3147,7 +3262,7 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 27,
+          "line": 38,
           "column": 17
         }
       ]
@@ -3320,18 +3435,6 @@
           "file": "src/views/ModelEditor.vue",
           "line": 194,
           "column": 54
-        }
-      ]
-    },
-    "baf19d44ee15f63c": {
-      "source": "按模型拆分的精确成本。「倍率」是你在定价管理里给该模型设的加价倍数（1=按官方原价）； 成本已按各家的计费口径自动校准（OpenAI 系列的 input 已扣除缓存部分，避免重复计费）。",
-      "kind": "text",
-      "placeholders": 0,
-      "refs": [
-        {
-          "file": "src/views/UsageDashboard.vue",
-          "line": 95,
-          "column": 49
         }
       ]
     },
@@ -3547,13 +3650,25 @@
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 104,
+          "line": 122,
           "column": 62
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 171,
-          "column": 62
+          "line": 195,
+          "column": 64
+        }
+      ]
+    },
+    "c9b9ae7a61444ab7": {
+      "source": "上一页",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 228,
+          "column": 17
         }
       ]
     },
@@ -3677,6 +3792,18 @@
         }
       ]
     },
+    "d24d3c99460c7e3a": {
+      "source": "页",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 222,
+          "column": 86
+        }
+      ]
+    },
     "d3209b935ae86797": {
       "source": "模型配置不存在，无法删除",
       "kind": "text",
@@ -3749,6 +3876,18 @@
           "file": "src/views/ModelEditor.vue",
           "line": 370,
           "column": 22
+        }
+      ]
+    },
+    "d5f5a7a010731feb": {
+      "source": "今天",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 32,
+          "column": 36
         }
       ]
     },
@@ -3834,8 +3973,8 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 196,
-          "column": 49
+          "line": 240,
+          "column": 51
         }
       ]
     },
@@ -3882,7 +4021,7 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 51,
+          "line": 64,
           "column": 48
         }
       ]
@@ -3896,6 +4035,18 @@
           "file": "src/views/Config.vue",
           "line": 51,
           "column": 48
+        }
+      ]
+    },
+    "dfff79c31cb70aca": {
+      "source": "条，第",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 222,
+          "column": 42
         }
       ]
     },
@@ -3918,7 +4069,7 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 36,
+          "line": 47,
           "column": 39
         }
       ]
@@ -3988,6 +4139,18 @@
         }
       ]
     },
+    "e8129af3936b108d": {
+      "source": "请求日志",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 183,
+          "column": 61
+        }
+      ]
+    },
     "e890654a112fc15e": {
       "source": "均价/请求",
       "kind": "text",
@@ -3995,8 +4158,20 @@
       "refs": [
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 109,
+          "line": 127,
           "column": 63
+        }
+      ]
+    },
+    "e98cffa9b33cdac2": {
+      "source": "成本折线（虚线）已按当天各模型精确计算（per-model 价格 × 倍率）。",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 102,
+          "column": 29
         }
       ]
     },
@@ -4093,6 +4268,18 @@
           "file": "src/layouts/MainLayout.vue",
           "line": 48,
           "column": 9
+        }
+      ]
+    },
+    "f004f1d84cf962dc": {
+      "source": "条",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 185,
+          "column": 79
         }
       ]
     },
@@ -4242,6 +4429,18 @@
         }
       ]
     },
+    "f729bb3d3f7ef33c": {
+      "source": "近 30 天",
+      "kind": "text",
+      "placeholders": 0,
+      "refs": [
+        {
+          "file": "src/views/UsageDashboard.vue",
+          "line": 34,
+          "column": 34
+        }
+      ]
+    },
     "f935cb74442865bb": {
       "source": "内置标准价目表来自公开模型定价；点「编辑」可改任意模型价格，点「+ 添加自定义模型」可为你接入的第三方模型设价。",
       "kind": "text",
@@ -4251,18 +4450,6 @@
           "file": "src/views/PricingPanel.vue",
           "line": 78,
           "column": 49
-        }
-      ]
-    },
-    "f9dc49d575bd826a": {
-      "source": "请求日志（最近 500 条）",
-      "kind": "text",
-      "placeholders": 0,
-      "refs": [
-        {
-          "file": "src/views/UsageDashboard.vue",
-          "line": 164,
-          "column": 64
         }
       ]
     },
@@ -4315,18 +4502,18 @@
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 106,
+          "line": 158,
           "column": 20
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 118,
+          "line": 170,
           "column": 18
         },
         {
           "file": "src/views/UsageDashboard.vue",
-          "line": 174,
-          "column": 63
+          "line": 198,
+          "column": 65
         }
       ]
     },

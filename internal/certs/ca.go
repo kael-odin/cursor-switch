@@ -264,7 +264,7 @@ func EnsureMachineCA(certPath, keyPath string) (certPEM, keyPEM []byte, err erro
 	machineTag := machineTag()
 	subject := pkix.Name{
 		CommonName:   "Cursor Local Machine CA",
-		Organization: []string{"cursor-byok"},
+		Organization: []string{"cursor-switch"},
 		OrganizationalUnit: []string{machineTag},
 	}
 

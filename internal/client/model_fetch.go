@@ -21,6 +21,7 @@ import (
 
 	modeladapter "cursor/internal/backend/agent/model"
 	serverconfig "cursor/internal/backend/server/config"
+	"cursor/internal/appdata"
 	"cursor/internal/modelchannel"
 	"cursor/internal/netproxy"
 )
@@ -28,7 +29,7 @@ import (
 const (
 	modelFetchTimeout        = 20 * time.Second
 	modelFetchMaxBodyBytes   = 1 << 20 // 1MiB，模型列表通常很小，截断防止异常大响应
-	modelFetchUserAgent      = "cursor-byok/1.0 model-fetch"
+	modelFetchUserAgent      = "cursor-switch/1.0 model-fetch"
 	modelFetchAnthropicVer   = "2023-06-01"
 )
 
@@ -85,7 +86,7 @@ func (s *ProxyService) FetchProviderModels(adapter serverconfig.ModelAdapterConf
 	for _, candidate := range candidates {
 		models, fetchErr := fetchModelsFromCandidate(client, candidate, providerType, apiKey, customHeadersEnabled, customHeadersJSON)
 		if fetchErr == nil {
-			enrichWithContextWindow(models)
+			enrichWithContextWindow(models, appdata.HistoryRootPath())
 			return FetchedModelsPayload{Models: models, SourceURL: candidate}, nil
 		}
 		lastErr = fetchErr
@@ -238,15 +239,28 @@ func parseModelsResponse(body []byte) ([]FetchedModel, error) {
 }
 
 // enrichWithContextWindow 用内置上下文窗口表给每个拉回的模型回填 ContextWindowTokens。
-// provider 的 /v1/models 几乎都不返回窗口；这里用 models.dev 缓存表 + 候选匹配反查，
-// 命中则填入，未命中保持 0（前端显示「需手填」）。免去用户逐个手填上下文窗口的负担。
-func enrichWithContextWindow(models []FetchedModel) {
+// provider 的 /v1/models 几乎都不返回窗口；这里先用 models.dev 缓存表 + 候选匹配反查，
+// 静态表未命中的模型再走 models.dev 在线回退（best-effort，失败保持 0）。
+func enrichWithContextWindow(models []FetchedModel, cacheRoot string) {
+	// 第一遍：静态表回填，同时收集未命中的索引。
+	var missed []int
 	for i := range models {
 		if models[i].ContextWindowTokens > 0 {
 			continue
 		}
 		if v := lookupContextWindowTokens(models[i].ID); v > 0 {
 			models[i].ContextWindowTokens = v
+		} else {
+			missed = append(missed, i)
+		}
+	}
+	// 第二遍：对静态表 miss 的模型，统一走 models.dev 在线回退。
+	// loadModelsDevCache 内部有内存+落盘缓存，整批只拉取一次。
+	if len(missed) > 0 {
+		for _, i := range missed {
+			if v := lookupContextWindowOnline(models[i].ID, cacheRoot); v > 0 {
+				models[i].ContextWindowTokens = v
+			}
 		}
 	}
 }

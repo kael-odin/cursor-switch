@@ -58,6 +58,9 @@ type UsageDashboardDaily struct {
 	TotalTokens     int64   `json:"totalTokens"`
 	RealTotalTokens int64   `json:"realTotalTokens"`
 	CostUSD         float64 `json:"costUSD"`
+	// CostApproximate 为 true 表示该日成本是加权均价近似（旧版 usage.json 无 daily.by_model），
+	// false 表示按 per-model 价格×倍率精确计算。
+	CostApproximate bool `json:"costApproximate"`
 }
 
 // UsageDashboardModelStat 是单模型统计（含成本 + 平均成本/请求）。
@@ -247,8 +250,9 @@ func aggregateDashboardByProvider(byModel []UsageDashboardModelStat) []UsageDash
 func buildDashboardDaily(daily []historymetrics.UsageDashboardRawDaily, pricing PricingSnapshot, adapterMultipliers map[string]float64, defaultMultiplier float64) []UsageDashboardDaily {
 	out := make([]UsageDashboardDaily, 0, len(daily))
 	for _, d := range daily {
-		// daily 聚合没有按模型拆分，无法精确套 per-model 价；用全局默认倍率 + 加权平均价近似。
-		// 精确按模型日成本需要 daily 维度存 by_model，留作后续 rollup 优化。
+		// daily.ByModel 存在时按 per-model 价格×倍率精确算日成本；
+		// 旧版 usage.json 无此字段，回退到加权均价近似。
+		cost, precise := computeDailyCost(d, pricing, adapterMultipliers, defaultMultiplier)
 		out = append(out, UsageDashboardDaily{
 			Date:             d.Date,
 			ProviderCalls:    d.ProviderCalls,
@@ -258,11 +262,38 @@ func buildDashboardDaily(daily []historymetrics.UsageDashboardRawDaily, pricing 
 			CacheWriteTokens: d.CacheWriteTokens,
 			TotalTokens:      d.TotalTokens,
 			RealTotalTokens:  realTotalTokens(d.InputTokens, d.OutputTokens, d.CacheReadTokens, d.CacheWriteTokens),
-			CostUSD:          estimateDailyCost(d, pricing, defaultMultiplier),
+			CostUSD:          cost,
+			CostApproximate:  !precise,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Date < out[j].Date })
 	return out
+}
+
+// computeDailyCost 优先用 daily.ByModel 按模型精确算成本；无 by_model 时回退加权均价近似。
+// 第二返回值表示是否精确（true=精确，false=近似）。
+func computeDailyCost(d historymetrics.UsageDashboardRawDaily, pricing PricingSnapshot, adapterMultipliers map[string]float64, defaultMultiplier float64) (float64, bool) {
+	if len(d.ByModel) == 0 {
+		return estimateDailyCost(d, pricing, defaultMultiplier), false
+	}
+	var total float64
+	anyMatched := false
+	for _, dm := range d.ByModel {
+		price := findPrice(pricing.Models, dm.ModelID)
+		multiplier := defaultMultiplier
+		if am, ok := adapterMultipliers[strings.ToLower(strings.TrimSpace(dm.ModelID))]; ok && am > 0 {
+			multiplier = am
+		}
+		input := float64(billableInputTokens(dm.InputTokens, dm.CacheReadTokens, dm.CacheWriteTokens, price.InputTokenSemantics)) / 1_000_000 * price.InputPerMillion
+		output := float64(dm.OutputTokens) / 1_000_000 * price.OutputPerMillion
+		cacheRead := float64(dm.CacheReadTokens) / 1_000_000 * price.CacheReadPerMillion
+		cacheWrite := float64(dm.CacheWriteTokens) / 1_000_000 * price.CacheWritePerMillion
+		total += (input + output + cacheRead + cacheWrite) * multiplier
+		anyMatched = true
+	}
+	// by_model 存在但全部未命中定价时，仍标记为精确（按 0 计），不回退近似——
+	// 因为 token 已精确归属，只是无价目；近似反而会引入虚假成本。
+	return total, anyMatched || len(d.ByModel) > 0
 }
 
 // estimateDailyCost 用全局默认倍率 + 所有已配定价的加权均价近似日成本。

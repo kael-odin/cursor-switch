@@ -1,14 +1,14 @@
 <div align="center">
 
-# Cursor助手 · cursor-byok
+# Cursor助手 · cursor-switch
 
 ### 把任意 LLM API key 接入 Cursor IDE，同时保留真实 Cursor 账号的 marketplace / customize 全功能
 
 **比上游原版更强大的 Cursor 本地代理 + byok 模型路由 + 成本统计内核**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/kael-odin/cursor-byok?include_prereleases)](https://github.com/kael-odin/cursor-byok/releases)
-[![CI](https://img.shields.io/github/actions/workflow/status/kael-odin/cursor-byok/check.yml?branch=main&label=CI)](https://github.com/kael-odin/cursor-byok/actions)
+[![Release](https://img.shields.io/github/v/release/kael-odin/cursor-switch?include_prereleases)](https://github.com/kael-odin/cursor-switch/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/kael-odin/cursor-switch/check.yml?branch=main&label=CI)](https://github.com/kael-odin/cursor-switch/actions)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#-安装与使用)
 
 📚 [English](./README_EN.md) · 中文 · [接口与架构速查](./docs/接口与架构速查.md) · [架构重构记录](./docs/架构重构记录.md) · [发版与签名](./docs/RELEASE_SIGNING.md)
@@ -141,7 +141,7 @@
 
 ### 快速开始
 
-1. 从 [Releases](https://github.com/kael-odin/cursor-byok/releases) 下载对应平台压缩包
+1. 从 [Releases](https://github.com/kael-odin/cursor-switch/releases) 下载对应平台压缩包
 2. 解压到任意目录，启动应用
 3. 在「模型配置」中添加你的模型适配器（填 baseURL / apiKey / modelID，或点「获取模型列表」一键拉取）
 4. 启动本地服务（首次需 UAC 提权安装 CA 证书）
@@ -153,7 +153,7 @@
 > 顺序错误是最常见的"不工作"原因。
 
 ```
-1. 启动 cursor-byok 插件
+1. 启动 cursor-switch 插件
 2. 首次启动会申请 UAC 安装本地 CA 证书 → 同意
 3. 在「模型配置」添加你的 provider（点「获取模型列表」可一键拉取并多选批量添加）→ 测试连通
 4. 启动本地服务（开关打到"启动"）
@@ -169,7 +169,7 @@
 
 Cursor 自身的版本更新与插件**不能同时进行**：插件开着时，Cursor 的更新检查会失败或被代理拦截。正确流程：
 
-1. 关闭 cursor-byok 插件（停止本地服务）
+1. 关闭 cursor-switch 插件（停止本地服务）
 2. 打开 Cursor，检查并安装更新
 3. 更新完成后重新启动插件，再继续使用
 
@@ -253,6 +253,7 @@ docs/                    文档（架构速查 / 重构记录 / 发版签名 / �
 - [架构重构记录](./docs/架构重构记录.md) — 1.0.0 三条控制面分离的决策与踩坑历程
 - [发版与签名](./docs/RELEASE_SIGNING.md) — 发版前置、ed25519 签名、旧 CA 处理
 - [开发指南](./docs/DEVELOPMENT.md) — 开发循环、proto/bindings 再生、测试范式
+- [新模型上线 SOP](./docs/NEW_MODEL_SOP.md) — 新模型发布时如何加定价 + 上下文窗口
 
 ## 🤝 贡献
 

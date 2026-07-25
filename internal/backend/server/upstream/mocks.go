@@ -21,7 +21,7 @@ const (
 
 	// localStatsigUserEmail 是 Statsig bootstrap mock 使用的匿名占位 email。
 	// byok 不再注入真实/假账号身份，Statsig 仅需一个稳定匿名 ID 即可返回本地 gate。
-	localStatsigUserEmail = "local@cursor-byok.local"
+	localStatsigUserEmail = "local@cursor-switch.local"
 
 	bootstrapStatsigGlassModeAvailableGate           = "glass_mode_available"
 	bootstrapStatsigGlassOpenAgentInWindowGate       = "glass.enable_open_agent_in_window"

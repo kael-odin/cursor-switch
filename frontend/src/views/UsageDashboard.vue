@@ -17,6 +17,12 @@ const autoRefresh = ref(true);
 const refreshInterval = ref(30); // 秒
 let timer = null;
 
+// 日期范围：today / 7d / 30d / all。作用于趋势图与请求日志。
+const dateRange = ref("all");
+// 请求日志分页
+const eventPage = ref(1);
+const eventPageSize = 20;
+
 async function refresh() {
   loading.value = true;
   errorMsg.value = "";
@@ -53,12 +59,43 @@ function toggleAutoRefresh() {
   autoRefresh.value = !autoRefresh.value;
   startTimer();
 }
+function onDateRangeChange() {
+  eventPage.value = 1;
+}
+
+// 日期范围边界（本地时区当天 00:00）
+function rangeStart() {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (dateRange.value === "today") return today;
+  if (dateRange.value === "7d") return new Date(today.getTime() - 6 * 86400000);
+  if (dateRange.value === "30d") return new Date(today.getTime() - 29 * 86400000);
+  return null; // all
+}
+function inRange(t) {
+  const start = rangeStart();
+  if (!start) return true;
+  return new Date(t) >= start;
+}
+// daily 的 date 是 "YYYY-MM-DD" UTC；转成本地日期对象比较
+function dateStrInRange(dateStr) {
+  const start = rangeStart();
+  if (!start) return true;
+  if (!dateStr) return false;
+  // dateStr 是 UTC 日，用本地 00:00 解析近似（趋势图按日聚合，跨时区误差 1 天可接受）
+  const parts = dateStr.split("-").map(Number);
+  if (parts.length !== 3) return true;
+  const d = new Date(parts[0], parts[1] - 1, parts[2]);
+  return d >= start;
+}
 
 const totals = computed(() => dashboard.value?.totals ?? null);
-const daily = computed(() => dashboard.value?.daily ?? []);
+const dailyAll = computed(() => dashboard.value?.daily ?? []);
+const daily = computed(() => dailyAll.value.filter((r) => dateStrInRange(r.date)));
 const byModel = computed(() => dashboard.value?.byModel ?? []);
 const byProvider = computed(() => dashboard.value?.byProvider ?? []);
-const recentEvents = computed(() => dashboard.value?.recentEvents ?? []);
+const recentEventsAll = computed(() => dashboard.value?.recentEvents ?? []);
+const recentEvents = computed(() => recentEventsAll.value.filter((e) => inRange(e.at)));
 const updatedAt = computed(() => {
   const t = dashboard.value?.updatedAt;
   if (!t) return "";
@@ -68,6 +105,21 @@ const updatedAt = computed(() => {
     return String(t);
   }
 });
+
+// 是否有任意一天的日成本是近似的（旧 usage.json 无 daily.by_model）
+const hasApproximateDaily = computed(() => daily.value.some((r) => r.costApproximate));
+
+// 请求日志分页
+const eventTotalPages = computed(() => Math.max(1, Math.ceil(recentEvents.value.length / eventPageSize)));
+const eventPaged = computed(() => {
+  const start = (eventPage.value - 1) * eventPageSize;
+  return recentEvents.value.slice(start, start + eventPageSize);
+});
+function goEventPage(delta) {
+  const next = eventPage.value + delta;
+  if (next < 1 || next > eventTotalPages.value) return;
+  eventPage.value = next;
+}
 
 function fmtNum(n) {
   const v = Number(n) || 0;
@@ -173,6 +225,17 @@ function seriesArea(name, data, color) {
             <option :value="30">30s</option>
             <option :value="60">60s</option>
           </select>
+          <!-- 日期范围选择器 -->
+          <select
+            v-model="dateRange"
+            class="h-6 rounded-[4px] border border-[#3f3f3f] bg-[#232323] px-1 text-xs text-[#d4d4d4] outline-none"
+            @change="onDateRangeChange"
+          >
+            <option value="today">今天</option>
+            <option value="7d">近 7 天</option>
+            <option value="30d">近 30 天</option>
+            <option value="all">全部</option>
+          </select>
           <Button variant="text" :disabled="loading" @click="refresh">
             {{ loading ? "刷新中…" : "刷新" }}
           </Button>
@@ -186,7 +249,9 @@ function seriesArea(name, data, color) {
         <span class="text-[#d4d4d4]">怎么看这张表：</span>
         「真实消耗 Tokens」是你实际「烧掉」的 token 总量，= 本次新输入 + 模型输出 + 缓存写入 + 缓存读取，
         是衡量用量的最准数字。「总成本」按各模型的官方单价 × 你设的倍率估算（美元），仅供参考，
-        实际账单以 provider 为准。带「≈」的日成本是近似值（按当天所有模型的均价估算），精确成本看下方「模型统计」。
+        实际账单以 provider 为准。<template v-if="hasApproximateDaily">带「≈」的日成本是近似值
+        （当天数据缺模型维度，按均价估算）；升级后新数据已精确按模型计算。</template>
+        <template v-else>日成本已按各模型精确计算（per-model 价格 × 倍率）。</template>
       </section>
 
       <!-- Hero: 真实消耗 token 板 -->
@@ -233,9 +298,14 @@ function seriesArea(name, data, color) {
       <section class="mb-6 rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] p-4">
         <h2 class="mb-1 text-base font-medium text-[#e5e5e5]">使用趋势（按日）</h2>
         <p class="mb-3 text-xs text-[#737373]">
-          成本折线（虚线）是按当天各模型均价估算的近似值，仅供参考趋势；精确成本见下方模型统计。
+          <template v-if="hasApproximateDaily">
+            成本折线（虚线）含近似值（部分日期缺模型维度，按均价估算）；精确成本见下方模型统计。
+          </template>
+          <template v-else>
+            成本折线（虚线）已按当天各模型精确计算（per-model 价格 × 倍率）。
+          </template>
         </p>
-        <div v-if="!daily.length" class="py-8 text-center text-[#737373]">暂无数据</div>
+        <div v-if="!daily.length" class="py-8 text-center text-[#737373]">该范围内暂无数据</div>
         <EChart v-else :option="trendOption" height="320px" />
       </section>
 
@@ -243,7 +313,7 @@ function seriesArea(name, data, color) {
       <section class="mb-6">
         <h2 class="mb-1 text-base font-medium text-[#e5e5e5]">模型统计</h2>
         <p class="mb-3 text-xs text-[#737373]">
-          按模型拆分的精确成本。「倍率」是你在定价管理里给该模型设的加价倍数（1=按官方原价）；
+          按模型拆分的精确成本（全量累计，不受上方日期范围影响）。「倍率」是你在定价管理里给该模型设的加价倍数（1=按官方原价）；
           成本已按各家的计费口径自动校准（OpenAI 系列的 input 已扣除缓存部分，避免重复计费）。
         </p>
         <div v-if="!byModel.length" class="py-4 text-center text-[#737373]">暂无数据</div>
@@ -311,41 +381,68 @@ function seriesArea(name, data, color) {
 
       <!-- 请求日志 -->
       <section class="mb-6">
-        <h2 class="mb-3 text-base font-medium text-[#e5e5e5]">请求日志（最近 500 条）</h2>
-        <div v-if="!recentEvents.length" class="py-4 text-center text-[#737373]">暂无数据</div>
-        <div v-else class="max-h-96 overflow-y-auto rounded-lg border border-[#2a2a2a]">
-          <table class="w-full text-xs">
-            <thead class="sticky top-0 bg-[#222] text-[#a3a3a3]">
-              <tr>
-                <th class="px-3 py-2 text-left font-medium">时间</th>
-                <th class="px-3 py-2 text-left font-medium">模型</th>
-                <th class="px-3 py-2 text-left font-medium">Provider</th>
-                <th class="px-3 py-2 text-right font-medium">输入</th>
-                <th class="px-3 py-2 text-right font-medium">输出</th>
-                <th class="px-3 py-2 text-right font-medium">缓存读</th>
-                <th class="px-3 py-2 text-right font-medium">成本</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="e in recentEvents"
-                :key="e.eventId"
-                class="border-t border-[#2a2a2a] hover:bg-[#1f1f1f]"
-              >
-                <td class="px-3 py-2 whitespace-nowrap text-[#8f8f8f]">{{ fmtTime(e.at) }}</td>
-                <td class="px-3 py-2 font-mono">{{ e.modelName || e.modelId || "—" }}</td>
-                <td class="px-3 py-2 text-[#8f8f8f]">{{ e.provider || "—" }}</td>
-                <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(e.inputTokens) }}</td>
-                <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(e.outputTokens) }}</td>
-                <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(e.cacheReadTokens) }}</td>
-                <td class="px-3 py-2 text-right tabular-nums text-[#10AD5D]">{{ fmtUsd(e.costUSD) }}</td>
-              </tr>
-            </tbody>
-          </table>
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="text-base font-medium text-[#e5e5e5]">请求日志</h2>
+          <span class="text-xs text-[#737373]">
+            当前范围 {{ recentEvents.length }} 条 / 共 {{ recentEventsAll.length }} 条
+          </span>
         </div>
-        <p class="mt-2 text-xs text-[#737373]">
-          recent_events 仅保留最近 500 条；历史累计见上方 Hero 与模型/Provider 统计。
-        </p>
+        <div v-if="!recentEvents.length" class="py-4 text-center text-[#737373]">该范围内暂无数据</div>
+        <div v-else>
+          <div class="max-h-96 overflow-y-auto rounded-lg border border-[#2a2a2a]">
+            <table class="w-full text-xs">
+              <thead class="sticky top-0 bg-[#222] text-[#a3a3a3]">
+                <tr>
+                  <th class="px-3 py-2 text-left font-medium">时间</th>
+                  <th class="px-3 py-2 text-left font-medium">模型</th>
+                  <th class="px-3 py-2 text-left font-medium">Provider</th>
+                  <th class="px-3 py-2 text-right font-medium">输入</th>
+                  <th class="px-3 py-2 text-right font-medium">输出</th>
+                  <th class="px-3 py-2 text-right font-medium">缓存读</th>
+                  <th class="px-3 py-2 text-right font-medium">成本</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="e in eventPaged"
+                  :key="e.eventId"
+                  class="border-t border-[#2a2a2a] hover:bg-[#1f1f1f]"
+                >
+                  <td class="px-3 py-2 whitespace-nowrap text-[#8f8f8f]">{{ fmtTime(e.at) }}</td>
+                  <td class="px-3 py-2 font-mono">{{ e.modelName || e.modelId || "—" }}</td>
+                  <td class="px-3 py-2 text-[#8f8f8f]">{{ e.provider || "—" }}</td>
+                  <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(e.inputTokens) }}</td>
+                  <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(e.outputTokens) }}</td>
+                  <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(e.cacheReadTokens) }}</td>
+                  <td class="px-3 py-2 text-right tabular-nums text-[#10AD5D]">{{ fmtUsd(e.costUSD) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <!-- 分页 -->
+          <div class="mt-2 flex items-center justify-between text-xs text-[#737373]">
+            <span>每页 {{ eventPageSize }} 条，第 {{ eventPage }} / {{ eventTotalPages }} 页</span>
+            <div class="flex items-center gap-2">
+              <button
+                class="rounded border border-[#3f3f3f] px-2 py-0.5 disabled:opacity-40"
+                :disabled="eventPage <= 1"
+                @click="goEventPage(-1)"
+              >
+                上一页
+              </button>
+              <button
+                class="rounded border border-[#3f3f3f] px-2 py-0.5 disabled:opacity-40"
+                :disabled="eventPage >= eventTotalPages"
+                @click="goEventPage(1)"
+              >
+                下一页
+              </button>
+            </div>
+          </div>
+          <p class="mt-2 text-xs text-[#737373]">
+            recent_events 仅保留最近 500 条；历史累计见上方 Hero 与模型/Provider 统计。
+          </p>
+        </div>
       </section>
     </div>
   </div>

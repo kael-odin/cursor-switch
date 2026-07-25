@@ -43,6 +43,20 @@ type usageFileDaily struct {
 	CacheReadTokens   int64  `json:"cache_read_tokens"`
 	CacheWriteTokens  int64  `json:"cache_write_tokens"`
 	TotalTokens       int64  `json:"total_tokens"`
+	// ByModel 是该日按 model_id 拆分的 token 用量，用于精确按模型日成本计算。
+	// 旧版 usage.json 此字段为空，仪表盘会回退到加权均价近似。
+	ByModel map[string]usageFileDailyModel `json:"by_model,omitempty"`
+}
+
+// usageFileDailyModel 是单日单模型的 token 聚合（与 forwarder.usageFileDailyModel 对齐）。
+type usageFileDailyModel struct {
+	ModelID          string `json:"model_id"`
+	ProviderCalls    int64  `json:"provider_calls"`
+	InputTokens      int64  `json:"input_tokens"`
+	OutputTokens     int64  `json:"output_tokens"`
+	CacheReadTokens  int64  `json:"cache_read_tokens"`
+	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	TotalTokens      int64  `json:"total_tokens"`
 }
 
 type usageFileEvent struct {

@@ -30,7 +30,7 @@ const title = computed(() => {
 });
 const directlyClose = computed(() => route.meta.directlyClose === true);
 const showFooter = computed(() => route.path === "/");
-const usageDocsURL = "https://github.com/kael-odin/cursor-byok#readme";
+const usageDocsURL = "https://github.com/kael-odin/cursor-switch#readme";
 let proxyStateTimer = null;
 const proxyStatePollIntervalMs = 10000;
 const netProxyEndpoint = computed(

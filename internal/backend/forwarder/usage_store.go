@@ -72,6 +72,21 @@ type usageFileDaily struct {
 	CacheReadTokens   int64  `json:"cache_read_tokens"`
 	CacheWriteTokens  int64  `json:"cache_write_tokens"`
 	TotalTokens       int64  `json:"total_tokens"`
+	// ByModel 是该日按 model_id 拆分的 token 用量，用于精确按模型日成本计算。
+	// 旧版 usage.json 此字段为空，仪表盘会回退到加权均价近似。
+	ByModel map[string]usageFileDailyModel `json:"by_model,omitempty"`
+}
+
+// usageFileDailyModel 是单日单模型的 token 聚合（不含 provider/model_name 等展示字段，
+// 这些从顶层 by_model 取；这里只保留成本计算所需的四类 token + 调用数）。
+type usageFileDailyModel struct {
+	ModelID         string `json:"model_id"`
+	ProviderCalls   int64  `json:"provider_calls"`
+	InputTokens     int64  `json:"input_tokens"`
+	OutputTokens    int64  `json:"output_tokens"`
+	CacheReadTokens int64  `json:"cache_read_tokens"`
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
+	TotalTokens     int64  `json:"total_tokens"`
 }
 
 type usageFileEvent struct {
@@ -327,6 +342,12 @@ func negateUsageFileDelta(value usageFileDelta) usageFileDelta {
 		cacheReadTokens:   -value.cacheReadTokens,
 		cacheWriteTokens:  -value.cacheWriteTokens,
 		totalTokens:       -value.totalTokens,
+		// modelID/modelName/provider 保留原值（不取负）：daily by_model 与顶层 by_model
+		// 聚合都按 modelID 路由，negate 只需把 token/调用数取负，归属字段必须保留，
+		// 否则旧事件回滚时 daily by_model 不会被扣减，导致日成本虚高。
+		modelID:   value.modelID,
+		modelName: value.modelName,
+		provider:  value.provider,
 	}
 }
 
@@ -350,13 +371,36 @@ func applyUsageFileDelta(doc *usageFileDocument, at time.Time, delta usageFileDe
 			continue
 		}
 		applyUsageDailyDelta(&doc.Daily[index], delta)
+		applyUsageDailyModelDelta(&doc.Daily[index], delta)
 		applyUsageModelDelta(doc, delta)
 		return
 	}
 	item := usageFileDaily{Date: date}
 	applyUsageDailyDelta(&item, delta)
+	applyUsageDailyModelDelta(&item, delta)
 	doc.Daily = append(doc.Daily, item)
 	applyUsageModelDelta(doc, delta)
+}
+
+// applyUsageDailyModelDelta 维护单日按模型的 token 聚合。仅当 delta 携带 modelID 时更新。
+// 这是 daily 成本精确化的关键：让日趋势图能按 per-model 价格×倍率精确算成本，而非加权均价近似。
+func applyUsageDailyModelDelta(item *usageFileDaily, delta usageFileDelta) {
+	if item == nil || strings.TrimSpace(delta.modelID) == "" {
+		return
+	}
+	if item.ByModel == nil {
+		item.ByModel = make(map[string]usageFileDailyModel)
+	}
+	key := strings.ToLower(strings.TrimSpace(delta.modelID))
+	dm := item.ByModel[key]
+	dm.ModelID = delta.modelID
+	dm.ProviderCalls = clampNonNegativeInt64(dm.ProviderCalls + delta.providerCalls)
+	dm.InputTokens = clampNonNegativeInt64(dm.InputTokens + delta.inputTokens)
+	dm.OutputTokens = clampNonNegativeInt64(dm.OutputTokens + delta.outputTokens)
+	dm.CacheReadTokens = clampNonNegativeInt64(dm.CacheReadTokens + delta.cacheReadTokens)
+	dm.CacheWriteTokens = clampNonNegativeInt64(dm.CacheWriteTokens + delta.cacheWriteTokens)
+	dm.TotalTokens = clampNonNegativeInt64(dm.TotalTokens + delta.totalTokens)
+	item.ByModel[key] = dm
 }
 
 // applyUsageModelDelta 维护按模型的 token 聚合。仅当 delta 携带 modelID 时更新。

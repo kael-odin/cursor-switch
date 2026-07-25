@@ -252,7 +252,7 @@ func (m *Manager) downloadUpdate(ctx context.Context, info *UpdateInfo) (string,
 		return "", fmt.Errorf("download request failed: %s", resp.Status)
 	}
 
-	tempFile, err := os.CreateTemp("", "cursor-byok-update-*"+archiveSuffix(info.Asset.URL))
+	tempFile, err := os.CreateTemp("", "cursor-switch-update-*"+archiveSuffix(info.Asset.URL))
 	if err != nil {
 		return "", err
 	}
@@ -339,7 +339,7 @@ func (m *Manager) spawnDarwinInstaller(archivePath string) error {
 		return err
 	}
 
-	scriptPath, err := writeHelperScript("cursor-byok-update-*.sh", darwinInstallerScript)
+	scriptPath, err := writeHelperScript("cursor-switch-update-*.sh", darwinInstallerScript)
 	if err != nil {
 		return err
 	}
@@ -364,7 +364,7 @@ func (m *Manager) spawnWindowsInstaller(archivePath string) error {
 		return err
 	}
 
-	scriptPath, err := writeHelperScript("cursor-byok-update-*.ps1", windowsInstallerScript)
+	scriptPath, err := writeHelperScript("cursor-switch-update-*.ps1", windowsInstallerScript)
 	if err != nil {
 		return err
 	}
@@ -402,7 +402,7 @@ func (m *Manager) spawnLinuxInstaller(archivePath string) error {
 		return fmt.Errorf("当前 Linux 安装目录不可写，无法执行原地更新: %w", err)
 	}
 
-	scriptPath, err := writeHelperScript("cursor-byok-update-*.sh", linuxInstallerScript)
+	scriptPath, err := writeHelperScript("cursor-switch-update-*.sh", linuxInstallerScript)
 	if err != nil {
 		return err
 	}
@@ -589,7 +589,7 @@ func ensureWritableDirectory(dir string) error {
 		return errors.New("target directory is empty")
 	}
 
-	probe, err := os.CreateTemp(dir, ".cursor-byok-writecheck-*")
+	probe, err := os.CreateTemp(dir, ".cursor-switch-writecheck-*")
 	if err != nil {
 		return err
 	}
@@ -665,7 +665,7 @@ const windowsInstallerScript = `param(
 
 $ErrorActionPreference = "Stop"
 $TargetDir = Split-Path -Parent $TargetExecutable
-$TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("cursor-byok-update-" + [System.Guid]::NewGuid().ToString("N"))
+$TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("cursor-switch-update-" + [System.Guid]::NewGuid().ToString("N"))
 
 New-Item -ItemType Directory -Path $TempDir | Out-Null
 

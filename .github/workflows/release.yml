@@ -24,19 +24,19 @@ jobs:
           - target: macos-arm64
             runner: macos-latest
             task: release:build:macos:arm64
-            artifact: cursor-byok-*-macos-arm64.tar.gz
+            artifact: cursor-switch-*-macos-arm64.tar.gz
           - target: macos-amd64
             runner: macos-latest
             task: release:build:macos:amd64
-            artifact: cursor-byok-*-macos-amd64.tar.gz
+            artifact: cursor-switch-*-macos-amd64.tar.gz
           - target: windows-amd64
             runner: windows-latest
             task: release:build:windows:amd64
-            artifact: cursor-byok-*-windows-amd64.zip
+            artifact: cursor-switch-*-windows-amd64.zip
           - target: linux-amd64
             runner: ubuntu-latest
             task: release:build:linux:amd64
-            artifact: cursor-byok-*-linux-amd64.tar.gz
+            artifact: cursor-switch-*-linux-amd64.tar.gz
 
     steps:
       - uses: actions/checkout@v5
@@ -101,7 +101,7 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.target }}
-          path: bin/release/*/cursor-byok-*
+          path: bin/release/*/cursor-switch-*
 
   release:
     name: publish release
@@ -122,18 +122,17 @@ jobs:
       - name: Flatten assets
         shell: bash
         run: |
-          find assets -type f -name 'cursor-byok-*' -exec mv {} assets/ \;
+          find assets -type f -name 'cursor-switch-*' -exec mv {} assets/ \;
           find assets -type f | head
 
       - name: Generate update.json
-        # The manifest generated here is UNSIGNED. To enable signature enforcement,
-        # a maintainer runs locally after the release is created:
-        #   go run ./scripts/release keypair            # once, keep private key secret
+        # The manifest generated here is UNSIGNED. The ed25519 public key is
+        # already populated in internal/updater/pubkey.go (releasePublicKeyHex),
+        # so clients REJECT unsigned manifests. A maintainer MUST run locally
+        # after each release to sign and re-upload update.json:
         #   go run ./scripts/release sign -manifest <downloaded update.json>
-        #   # paste the public key into internal/updater/pubkey.go releasePublicKeyHex
-        #   # re-upload the signed update.json to the release
-        # Until releasePublicKeyHex is populated, the updater accepts unsigned manifests
-        # (checksum-only) for backward compatibility.
+        #   gh release upload v<x.y.z> update.json --clobber
+        # See docs/RELEASE_SIGNING.md.
         run: |
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
           VERSION="${VERSION#v}"
@@ -141,8 +140,8 @@ jobs:
             -config ./build/config.yml \
             -assets-dir assets \
             -out assets/update.json \
-            -repo "kael-odin/cursor-byok" \
-            -base-name "cursor-byok" \
+            -repo "kael-odin/cursor-switch" \
+            -base-name "cursor-switch" \
             -notes release-notes.md || echo "manifest generation skipped"
 
       - name: Create release
@@ -151,7 +150,7 @@ jobs:
           tag_name: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
           name: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
           files: |
-            assets/cursor-byok-*
+            assets/cursor-switch-*
             assets/update.json
           prerelease: ${{ contains(github.event.inputs.version || github.ref_name, 'beta') }}
           body_path: release-notes.md

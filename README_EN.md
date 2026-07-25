@@ -1,14 +1,14 @@
 <div align="center">
 
-# Cursor Assistant · cursor-byok
+# Cursor Assistant · cursor-switch
 
 ### Connect any LLM API key to Cursor IDE while keeping your real Cursor account's marketplace / customize fully functional
 
 **A more powerful Cursor local proxy + byok model routing + cost-stats core than the upstream original**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/kael-odin/cursor-byok?include_prereleases)](https://github.com/kael-odin/cursor-byok/releases)
-[![CI](https://img.shields.io/github/actions/workflow/status/kael-odin/cursor-byok/check.yml?branch=main&label=CI)](https://github.com/kael-odin/cursor-byok/actions)
+[![Release](https://img.shields.io/github/v/release/kael-odin/cursor-switch?include_prereleases)](https://github.com/kael-odin/cursor-switch/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/kael-odin/cursor-switch/check.yml?branch=main&label=CI)](https://github.com/kael-odin/cursor-switch/actions)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#-installation--usage)
 
 📚 English · [中文](./README.md) · [API & architecture reference](./docs/接口与架构速查.md) · [Refactor notes](./docs/架构重构记录.md) · [Release & signing](./docs/RELEASE_SIGNING.md)
@@ -141,7 +141,7 @@ Each model config includes: `baseURL`, `apiKey`, `modelID`, provider type, endpo
 
 ### Quick start
 
-1. Download the package for your platform from [Releases](https://github.com/kael-odin/cursor-byok/releases)
+1. Download the package for your platform from [Releases](https://github.com/kael-odin/cursor-switch/releases)
 2. Extract to any directory and launch
 3. In "Model Config", add your model adapter (fill baseURL / apiKey / modelID, or click "Fetch model list" for one-click pull)
 4. Start the local service (first run needs UAC elevation to install the CA cert)
@@ -153,7 +153,7 @@ Each model config includes: `baseURL`, `apiKey`, `modelID`, provider type, endpo
 > Wrong order is the most common "it doesn't work" cause.
 
 ```
-1. Start the cursor-byok plugin
+1. Start the cursor-switch plugin
 2. First launch requests UAC to install the local CA cert → approve
 3. Add your provider in "Model Config" (click "Fetch model list" for one-click pull + multi-select batch add) → test connectivity
 4. Start the local service (toggle to "start")
@@ -169,7 +169,7 @@ If the chat UI is locked to auto and you can't pick a byok model, **check that y
 
 Cursor's own version updates and the plugin **cannot run at the same time**: with the plugin on, Cursor's update check fails or gets intercepted by the proxy. Correct flow:
 
-1. Close the cursor-byok plugin (stop the local service)
+1. Close the cursor-switch plugin (stop the local service)
 2. Open Cursor, check for and install updates
 3. After the update, restart the plugin and continue
 
@@ -253,6 +253,7 @@ docs/                    docs (architecture ref / refactor notes / release signi
 - [架构重构记录](./docs/架构重构记录.md) — 1.0.0 three-control-plane decision & pitfall history
 - [发版与签名 RELEASE_SIGNING](./docs/RELEASE_SIGNING.md) — release prerequisites, ed25519 signing, old CA handling
 - [开发指南 DEVELOPMENT](./docs/DEVELOPMENT.md) — dev loop, proto/bindings regen, test paradigms
+- [新模型上线 SOP](./docs/NEW_MODEL_SOP.md) — how to add pricing + context window when a new model launches
 
 ## 🤝 Contributing
 

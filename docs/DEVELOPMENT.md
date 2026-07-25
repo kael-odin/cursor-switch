@@ -120,7 +120,7 @@ go test ./internal/... ./scripts/...
 见 [RELEASE_SIGNING.md](./RELEASE_SIGNING.md)。要点:
 
 - 发版后 `update.json` 是**未签名**的(CI 不持有私钥),**发版后必须本地 `scripts/release sign` 再重传**,否则新版客户端拒绝更新。
-- 私钥 `~/.cursor-byok-release.key`(0600,不入库)。丢了就得重新生成公钥并发强制更新版。
+- 私钥 `~/.cursor-switch-release.key`(0600,不入库)。丢了就得重新生成公钥并发强制更新版。
 
 ---
 

@@ -18,7 +18,7 @@
 
 当前实现不再支持：
 
-- Pro / `cursor-byok`
+- Pro / `cursor-switch`
 - HTTP/protocol trace debug UI
 - DB-backed store、会话索引和 searchable conversation memory
 
