@@ -75,7 +75,7 @@ func Run(resources EmbeddedResources) error {
 		return err
 	}
 	proxyService := bridge.NewProxyService(proxyServer, certManager, certPEM)
-	metricsService := bridge.NewMetricsService()
+	metricsService := bridge.NewMetricsService(proxyService.ConfigStore())
 	windowService := bridge.NewWindowService()
 	var updateManager *updater.Manager
 

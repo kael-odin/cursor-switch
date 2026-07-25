@@ -44,13 +44,10 @@ func (s *ProxyService) ApplyCursorSettings() error {
 }
 
 // ClearCursorSettings 用于处理与 ClearCursorSettings 相关的逻辑。
+// 注意：停止服务时不再卸载 CA 证书——CA 是每机器独立的，保留信任锚可让下次启动
+// 直接复用、避免每次开关都弹 UAC。CA 仅在 byok 运行时被代理使用，停止后无法被利用。
+// 如需彻底移除 CA，调用 UninstallCACert 手动卸载。
 func (s *ProxyService) ClearCursorSettings() error {
-	// best-effort 卸载系统信任的 CA，失败仅日志，不阻断退出。
-	if s.caCertPEM != nil {
-		if err := cursor.UninstallCACert(s.caCertPEM); err != nil {
-			fmt.Printf("uninstall ca cert (best-effort): %v\n", err)
-		}
-	}
 	if goruntime.GOOS == "darwin" {
 		if err := cursor.ClearSystemNodeExtraCACerts(); err != nil {
 			return err
@@ -61,6 +58,15 @@ func (s *ProxyService) ClearCursorSettings() error {
 	}
 	s.setCursorSettingsApplied(false)
 	return nil
+}
+
+// UninstallCACert 手动从系统信任存储移除本机 CA（best-effort，需 UAC 提权）。
+// 供 GUI「卸载证书」按钮调用，停止服务时不再自动卸载。
+func (s *ProxyService) UninstallCACert() error {
+	if s.caCertPEM == nil {
+		return fmt.Errorf("ca cert not available")
+	}
+	return cursor.UninstallCACert(s.caCertPEM)
 }
 
 // GetDeviceID 用于处理与 GetDeviceID 相关的逻辑。

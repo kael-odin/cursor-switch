@@ -17,7 +17,17 @@ import Logo from "@/assets/logo.png";
 const route = useRoute();
 const message = useMessage();
 const showIcon = computed(() => route.meta.showIcon !== false);
-const title = computed(() => route.meta.title ?? "Cursor助手");
+// 强制转成原始字符串：LocalizedText(extends String) 直接被 {{ }} 插值时，
+// 若其 toString() 意外返回对象会触发 Vue "Cannot convert object to primitive value"。
+// 这里 String() + try/catch 兜底，保证模板永远拿到 primitive。
+const title = computed(() => {
+  const raw = route.meta.title ?? "Cursor助手";
+  try {
+    return String(raw);
+  } catch {
+    return "Cursor助手";
+  }
+});
 const directlyClose = computed(() => route.meta.directlyClose === true);
 const showFooter = computed(() => route.path === "/");
 const usageDocsURL = "https://github.com/kael-odin/cursor-byok#readme";

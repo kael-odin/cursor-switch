@@ -42,6 +42,8 @@ type ModelAdapterConfig struct {
 	AnthropicMaxTokens          int    `json:"anthropicMaxTokens" yaml:"anthropicMaxTokens"`
 	AnthropicThinkingEffort     string `json:"anthropicThinkingEffort,omitempty" yaml:"anthropicThinkingEffort,omitempty"`
 	ThinkingBudgetTokens        int    `json:"thinkingBudgetTokens" yaml:"thinkingBudgetTokens"`
+	// CostMultiplier 是该适配器的成本倍率覆盖（字符串，如 "1.5"）。空则用全局默认倍率。
+	CostMultiplier string `json:"costMultiplier,omitempty" yaml:"costMultiplier,omitempty"`
 }
 
 type RoutingConfig struct {
@@ -60,6 +62,7 @@ type Config struct {
 	ModelAdapters             []ModelAdapterConfig `json:"modelAdapters" yaml:"modelAdapters"`
 	Routing                   RoutingConfig        `json:"routing" yaml:"routing"`
 	HomeMetrics               HomeMetricsConfig    `json:"homeMetrics" yaml:"homeMetrics"`
+	Pricing                   PricingConfig        `json:"pricing" yaml:"pricing"`
 	LastAgentModelHash        string               `json:"lastAgentModelHash" yaml:"lastAgentModelHash"`
 }
 
@@ -91,6 +94,7 @@ func NormalizeConfig(input Config) (Config, error) {
 	output.BackendListenAddr = backendListenAddr
 	output.ProxyListenAddr = proxyListenAddr
 	output.HomeMetrics.IncludeCacheWriteInHitRate = input.HomeMetrics.IncludeCacheWriteInHitRate
+	output.Pricing = normalizePricingConfig(input.Pricing)
 	output.LastAgentModelHash = strings.TrimSpace(input.LastAgentModelHash)
 	output.Routing.Mode = normalizeRoutingMode(input.Routing.Mode)
 	if output.Routing.Mode == "" {
@@ -141,6 +145,7 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 		}
 		next.CustomHeadersEnabled = item.CustomHeadersEnabled
 		next.CustomHeadersJSON = strings.TrimSpace(item.CustomHeadersJSON)
+		next.CostMultiplier = strings.TrimSpace(item.CostMultiplier)
 		switch {
 		case next.DisplayName == "":
 			return nil, errors.New("模型适配器 displayName 不能为空")

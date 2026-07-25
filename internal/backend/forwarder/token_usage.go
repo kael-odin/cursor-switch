@@ -351,6 +351,8 @@ func (service *Service) recordTurnUsageSnapshot(stream *ActiveStream, conversati
 			CacheReadTokens:  usage.CacheReadTokens,
 			CacheWriteTokens: usage.CacheWriteTokens,
 			UsagePresent:     usage.UsagePresent,
+			ModelID:          modelID,
+			ModelName:        modelName,
 		}); err != nil {
 			return err
 		}

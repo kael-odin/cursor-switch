@@ -85,6 +85,11 @@ func (s *ProxyService) GetDeviceID() (string, error) {
 	return s.core.GetDeviceID()
 }
 
+// ConfigStore 返回底层配置存储，供 MetricsService 等共享读写 config.yaml。
+func (s *ProxyService) ConfigStore() *serverconfig.Store {
+	return s.core.ConfigStore()
+}
+
 // ApplyCursorSettings 用于处理与 ApplyCursorSettings 相关的逻辑。
 func (s *ProxyService) ApplyCursorSettings() error {
 	return s.core.ApplyCursorSettings()
@@ -93,6 +98,11 @@ func (s *ProxyService) ApplyCursorSettings() error {
 // ClearCursorSettings 用于处理与 ClearCursorSettings 相关的逻辑。
 func (s *ProxyService) ClearCursorSettings() error {
 	return s.core.ClearCursorSettings()
+}
+
+// UninstallCACert 手动卸载本机 CA（供 GUI「卸载证书」按钮调用）。
+func (s *ProxyService) UninstallCACert() error {
+	return s.core.UninstallCACert()
 }
 
 // ShutdownForQuit 用于处理与 ShutdownForQuit 相关的逻辑。

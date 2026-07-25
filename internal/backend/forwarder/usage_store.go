@@ -31,6 +31,21 @@ type usageFileDocument struct {
 	Daily         []usageFileDaily          `json:"daily"`
 	RecentEvents  []usageFileEvent          `json:"recent_events"`
 	EventIndex    map[string]usageFileEvent `json:"event_index,omitempty"`
+	// ByModel 是按 model_id 聚合的 token 用量（仅 provider_call 计 token，turn 不计）。
+	// 用于按模型计算成本。key 为归一化后的 model_id（小写去空白）。
+	ByModel map[string]usageFileModelAggregate `json:"by_model,omitempty"`
+}
+
+// usageFileModelAggregate 是单模型的 token 聚合。
+type usageFileModelAggregate struct {
+	ModelID         string `json:"model_id"`
+	ModelName       string `json:"model_name,omitempty"`
+	ProviderCalls   int64  `json:"provider_calls"`
+	InputTokens     int64  `json:"input_tokens"`
+	OutputTokens    int64  `json:"output_tokens"`
+	CacheReadTokens int64  `json:"cache_read_tokens"`
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
+	TotalTokens     int64  `json:"total_tokens"`
 }
 
 type usageFileTotals struct {
@@ -69,6 +84,10 @@ type usageFileEvent struct {
 	CacheWriteTokens int64     `json:"cache_write_tokens"`
 	TotalTokens      int64     `json:"total_tokens"`
 	UsagePresent     bool      `json:"usage_present"`
+	// ModelID 是该次调用的模型标识（用于按模型聚合成本）。空表示未归属。
+	ModelID string `json:"model_id,omitempty"`
+	// ModelName 是模型显示名（与 ModelID 同源，仅用于展示）。
+	ModelName string `json:"model_name,omitempty"`
 }
 
 type usageFileDelta struct {
@@ -81,6 +100,9 @@ type usageFileDelta struct {
 	cacheReadTokens   int64
 	cacheWriteTokens  int64
 	totalTokens       int64
+	// modelID/modelName 仅在 provider_call 事件携带 token 时设置，用于按模型聚合。
+	modelID   string
+	modelName string
 }
 
 func NewUsageFileStore(historyRoot string) *UsageFileStore {
@@ -171,6 +193,13 @@ func (store *UsageFileStore) LookupEvent(needle string) (usageFileEvent, bool, e
 		}
 		if event.At.After(aggregate.At) {
 			aggregate.At = event.At
+		}
+		// 模型归属：优先取非空 ModelID（provider_call 事件携带），使 turn 聚合也能继承模型。
+		if strings.TrimSpace(aggregate.ModelID) == "" {
+			aggregate.ModelID = event.ModelID
+		}
+		if strings.TrimSpace(aggregate.ModelName) == "" {
+			aggregate.ModelName = event.ModelName
 		}
 		aggregate.InputTokens += nonNegativeInt64(event.InputTokens)
 		aggregate.OutputTokens += nonNegativeInt64(event.OutputTokens)
@@ -275,6 +304,8 @@ func usageFileEventDelta(event usageFileEvent) usageFileDelta {
 			cacheReadTokens:  nonNegativeInt64(event.CacheReadTokens),
 			cacheWriteTokens: nonNegativeInt64(event.CacheWriteTokens),
 			totalTokens:      nonNegativeInt64(event.TotalTokens),
+			modelID:          strings.TrimSpace(event.ModelID),
+			modelName:        strings.TrimSpace(event.ModelName),
 		}
 	}
 }
@@ -313,11 +344,36 @@ func applyUsageFileDelta(doc *usageFileDocument, at time.Time, delta usageFileDe
 			continue
 		}
 		applyUsageDailyDelta(&doc.Daily[index], delta)
+		applyUsageModelDelta(doc, delta)
 		return
 	}
 	item := usageFileDaily{Date: date}
 	applyUsageDailyDelta(&item, delta)
 	doc.Daily = append(doc.Daily, item)
+	applyUsageModelDelta(doc, delta)
+}
+
+// applyUsageModelDelta 维护按模型的 token 聚合。仅当 delta 携带 modelID 时更新。
+func applyUsageModelDelta(doc *usageFileDocument, delta usageFileDelta) {
+	if doc == nil || strings.TrimSpace(delta.modelID) == "" {
+		return
+	}
+	if doc.ByModel == nil {
+		doc.ByModel = make(map[string]usageFileModelAggregate)
+	}
+	key := strings.ToLower(strings.TrimSpace(delta.modelID))
+	agg := doc.ByModel[key]
+	agg.ModelID = delta.modelID
+	if strings.TrimSpace(delta.modelName) != "" && strings.TrimSpace(agg.ModelName) == "" {
+		agg.ModelName = delta.modelName
+	}
+	agg.ProviderCalls = clampNonNegativeInt64(agg.ProviderCalls + delta.providerCalls)
+	agg.InputTokens = clampNonNegativeInt64(agg.InputTokens + delta.inputTokens)
+	agg.OutputTokens = clampNonNegativeInt64(agg.OutputTokens + delta.outputTokens)
+	agg.CacheReadTokens = clampNonNegativeInt64(agg.CacheReadTokens + delta.cacheReadTokens)
+	agg.CacheWriteTokens = clampNonNegativeInt64(agg.CacheWriteTokens + delta.cacheWriteTokens)
+	agg.TotalTokens = clampNonNegativeInt64(agg.TotalTokens + delta.totalTokens)
+	doc.ByModel[key] = agg
 }
 
 func applyUsageDailyDelta(item *usageFileDaily, delta usageFileDelta) {

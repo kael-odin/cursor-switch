@@ -27,6 +27,7 @@ type WindowService struct {
 	updater           *updater.Manager
 	modelConfigWindow *application.WebviewWindow
 	modelEditorWindow *application.WebviewWindow
+	pricingWindow     *application.WebviewWindow
 	editorCtx         *modelEditorContext
 	mu                sync.RWMutex
 }
@@ -216,6 +217,67 @@ func (s *WindowService) OpenModelEditorWindow(index int, adapterJSON string) {
 	})
 
 	s.modelEditorWindow = win
+}
+
+// OpenPricingWindow 打开成本定价独立窗口。如果窗口已存在则聚焦。
+func (s *WindowService) OpenPricingWindow() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.app == nil {
+		return
+	}
+
+	if s.pricingWindow != nil {
+		s.pricingWindow.Show()
+		s.pricingWindow.Focus()
+		return
+	}
+
+	win := s.app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Title:               "成本定价",
+		Width:               980,
+		Height:              700,
+		MinWidth:            820,
+		MinHeight:           560,
+		DisableResize:       false,
+		Frameless:           goruntime.GOOS == "windows",
+		URL:                 "/#/pricing",
+		Hidden:              false,
+		HideOnEscape:        false,
+		MinimiseButtonState: application.ButtonEnabled,
+		MaximiseButtonState: application.ButtonEnabled,
+		CloseButtonState:    application.ButtonEnabled,
+		BackgroundColour:    application.RGBA{Red: 25, Green: 25, Blue: 25, Alpha: 255},
+		Mac: application.MacWindow{
+			Backdrop:      application.MacBackdropLiquidGlass,
+			DisableShadow: false,
+			TitleBar: application.MacTitleBar{
+				AppearsTransparent:   true,
+				Hide:                 false,
+				HideTitle:            true,
+				FullSizeContent:      true,
+				UseToolbar:           false,
+				HideToolbarSeparator: true,
+			},
+			WebviewPreferences: application.MacWebviewPreferences{
+				FullscreenEnabled:                   u.True,
+				TextInteractionEnabled:              u.True,
+				AllowsBackForwardNavigationGestures: u.False,
+			},
+		},
+		Windows: application.WindowsWindow{
+			HiddenOnTaskbar: false,
+		},
+	})
+
+	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.pricingWindow = nil
+	})
+
+	s.pricingWindow = win
 }
 
 // GetModelEditorContext 返回当前编辑器窗口的初始化上下文。

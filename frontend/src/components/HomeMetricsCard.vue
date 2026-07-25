@@ -6,8 +6,15 @@ import { appState, saveIncludeCacheWriteInHitRate } from "@/state/appState";
 import { getTokenPricing } from "@/services/clientApi";
 import { formatCompactInteger, formatInteger } from "@/utils/numberFormat";
 import { computed, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 
 const emit = defineEmits(["refresh"]);
+const router = useRouter();
+
+function goToPricing() {
+  // 在主窗口内路由跳转，复用主窗口已验证能渲染的 webview，避免独立窗口黑屏问题。
+  router.push("/pricing");
+}
 
 // 定价从后端 MetricsService.GetTokenPricing 获取；首次渲染前用本地兜底值避免空白。
 const tokenPricing = ref({
@@ -333,6 +340,14 @@ async function toggleIncludeCacheWriteInHitRate(value) {
           <div class="center-row justify-start gap-1 text-xs text-[#7f7f7f]">
             <span>价值估算</span>
             <Tooltip :content="costTooltipContent" />
+            <button
+              type="button"
+              class="ml-auto !text-[#a3a3a3] hover:text-[#10AD5D] transition-colors cursor-pointer"
+              title="管理模型定价与倍率"
+              @click="goToPricing"
+            >
+              定价管理
+            </button>
           </div>
           <div>
             <div

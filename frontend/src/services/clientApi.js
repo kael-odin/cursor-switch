@@ -72,6 +72,31 @@ export function getTokenPricing() {
   );
 }
 
+// 定价管理（照搬 cc-switch 的成本定价：预设价目 + 自定义 CRUD + 倍率）
+export function getPricingSnapshot() {
+  return withApiLogging("GetPricingSnapshot", undefined, () =>
+    Call.ByName(`${METRICS_SERVICE_NAME}.GetPricingSnapshot`),
+  );
+}
+
+export function updateModelPricing(pricing) {
+  return withApiLogging("UpdateModelPricing", pricing, () =>
+    Call.ByName(`${METRICS_SERVICE_NAME}.UpdateModelPricing`, pricing),
+  );
+}
+
+export function deleteModelPricing(modelId) {
+  return withApiLogging("DeleteModelPricing", modelId, () =>
+    Call.ByName(`${METRICS_SERVICE_NAME}.DeleteModelPricing`, modelId),
+  );
+}
+
+export function setDefaultCostMultiplier(value) {
+  return withApiLogging("SetDefaultCostMultiplier", value, () =>
+    Call.ByName(`${METRICS_SERVICE_NAME}.SetDefaultCostMultiplier`, value),
+  );
+}
+
 export function startProxyService() {
   return withApiLogging("StartProxy", undefined, () => StartProxy());
 }
@@ -102,6 +127,14 @@ export function installReadyUpdate() {
 
 export function openModelConfig() {
   return withApiLogging("OpenModelConfigWindow", undefined, () => OpenModelConfigWindow());
+}
+
+const WINDOW_SERVICE_NAME = "cursor/internal/bridge.WindowService";
+
+export function openPricing() {
+  return withApiLogging("OpenPricingWindow", undefined, () =>
+    Call.ByName(`${WINDOW_SERVICE_NAME}.OpenPricingWindow`),
+  );
 }
 
 export function openModelEditor(index, adapterJSON) {

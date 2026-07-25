@@ -10,6 +10,20 @@ type Summary struct {
 	CacheReadTokens    int64    `json:"cacheReadTokens"`
 	CacheWriteTokens   int64    `json:"cacheWriteTokens"`
 	CacheHitRate       *float64 `json:"cacheHitRate"`
+	// ByModel 按模型聚合的 token 用量，用于按模型成本估算。
+	ByModel []ModelUsage `json:"byModel"`
+}
+
+// ModelUsage 是单模型的 token 聚合。
+type ModelUsage struct {
+	ModelID         string `json:"modelId"`
+	ModelName       string `json:"modelName,omitempty"`
+	ProviderCalls   int64  `json:"providerCalls"`
+	InputTokens     int64  `json:"inputTokens"`
+	OutputTokens    int64  `json:"outputTokens"`
+	CacheReadTokens int64  `json:"cacheReadTokens"`
+	CacheWriteTokens int64 `json:"cacheWriteTokens"`
+	TotalTokens     int64  `json:"totalTokens"`
 }
 
 type Totals struct {

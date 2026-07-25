@@ -19,6 +19,16 @@ type usageFileDocument struct {
 		CacheWriteTokens  int64 `json:"cache_write_tokens"`
 		TotalTokens       int64 `json:"total_tokens"`
 	} `json:"totals"`
+	ByModel map[string]struct {
+		ModelID         string `json:"model_id"`
+		ModelName       string `json:"model_name,omitempty"`
+		ProviderCalls   int64  `json:"provider_calls"`
+		InputTokens     int64  `json:"input_tokens"`
+		OutputTokens    int64  `json:"output_tokens"`
+		CacheReadTokens int64  `json:"cache_read_tokens"`
+		CacheWriteTokens int64 `json:"cache_write_tokens"`
+		TotalTokens     int64  `json:"total_tokens"`
+	} `json:"by_model,omitempty"`
 }
 
 func LoadUsageSummary(path string) (Summary, error) {
@@ -41,6 +51,19 @@ func LoadUsageSummary(path string) (Summary, error) {
 		PromptTokensTotal:  doc.Totals.InputTokens + doc.Totals.CacheReadTokens + doc.Totals.CacheWriteTokens,
 		RequestTokensTotal: doc.Totals.TotalTokens,
 	}
+	byModel := make([]ModelUsage, 0, len(doc.ByModel))
+	for _, m := range doc.ByModel {
+		byModel = append(byModel, ModelUsage{
+			ModelID:          m.ModelID,
+			ModelName:        m.ModelName,
+			ProviderCalls:    m.ProviderCalls,
+			InputTokens:      m.InputTokens,
+			OutputTokens:     m.OutputTokens,
+			CacheReadTokens:  m.CacheReadTokens,
+			CacheWriteTokens: m.CacheWriteTokens,
+			TotalTokens:      m.TotalTokens,
+		})
+	}
 	return Summary{
 		ProviderCallsTotal: int(doc.Totals.ProviderCalls),
 		TurnsTotal:         int(doc.Totals.TurnsTotal),
@@ -51,5 +74,6 @@ func LoadUsageSummary(path string) (Summary, error) {
 		CacheReadTokens:    totals.CacheReadTokens,
 		CacheWriteTokens:   totals.CacheWriteTokens,
 		CacheHitRate:       cacheHitRateFromTotals(totals),
+		ByModel:            byModel,
 	}, nil
 }

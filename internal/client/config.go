@@ -12,6 +12,14 @@ import (
 // UserConfig 定义了当前模块中的 UserConfig 类型。
 type UserConfig = serverconfig.Config
 
+// ConfigStore 返回底层配置存储，供其它服务（如 MetricsService 的定价 CRUD）共享读写 config.yaml。
+func (s *ProxyService) ConfigStore() *serverconfig.Store {
+	if s == nil {
+		return nil
+	}
+	return s.store
+}
+
 // LoadUserConfig 用于处理与 LoadUserConfig 相关的逻辑。
 func (s *ProxyService) LoadUserConfig() (UserConfig, error) {
 	if s == nil {
