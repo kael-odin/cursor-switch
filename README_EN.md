@@ -1,10 +1,6 @@
 <div align="center">
 
-# Cursor Assistant · cursor-switch
-
-### Connect any LLM API key to Cursor IDE while keeping your real Cursor account's marketplace / customize fully functional
-
-**A more powerful Cursor local proxy + byok model routing + cost-stats core than the upstream original**
+<img src="./assets/readme/hero.en.svg" alt="cursor-switch — route any LLM API key into Cursor IDE, keep the real-account marketplace, with precise cost stats" width="100%">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/kael-odin/cursor-switch?include_prereleases)](https://github.com/kael-odin/cursor-switch/releases)
@@ -58,6 +54,12 @@ Cursor's requests are split into three non-interfering planes:
 | **Identity / marketplace / login** | Official passthrough (real Cursor account) | login/logout/marketplace browse/install/uninstall/customize all work |
 | **Subscription / plan / usage** | Local mock (unlimited Pro) | Model selector **not locked to auto**, not constrained by the real plan |
 | **Model inference / data plane** | byok local (your provider key) | Custom model routing + cost stats |
+
+<div align="center">
+
+<img src="./assets/readme/architecture.en.svg" alt="cursor-switch three-plane architecture: client requests are split by the local classifier into the identity plane (official passthrough), subscription plane (local mock), and inference plane (byok routing + cost stats)" width="100%">
+
+</div>
 
 **Effect**: with byok on, you can use your own key/models, still use the real Cursor account's full marketplace, and log in/out normally.
 

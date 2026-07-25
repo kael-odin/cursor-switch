@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="520" viewBox="0 0 1200 520"
+     role="img" aria-labelledby="archTitleEN archDescEN">
+  <title id="archTitleEN">cursor-switch three-plane control-plane separation architecture</title>
+  <desc id="archDescEN">Cursor client requests enter the local cursor-switch and are split into three isolated planes: identity/marketplace passthrough, subscription local mock, and model-inference byok routing with cost stats.</desc>
+
+  <defs>
+    <marker id="aGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/>
+    </marker>
+    <marker id="aPurple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/>
+    </marker>
+    <marker id="aMuted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7d8590"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="520" rx="16" fill="#0b0e14"/>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" text-rendering="geometricPrecision">
+
+    <rect x="40" y="200" width="180" height="100" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1.2"/>
+    <text x="130" y="232" font-size="16" fill="#e6edf3" text-anchor="middle" font-weight="600">Cursor client</text>
+    <text x="130" y="252" font-size="12" fill="#7d8590" text-anchor="middle">IDE / agent window</text>
+    <text x="130" y="272" font-size="12" fill="#7d8590" text-anchor="middle">all requests via local proxy</text>
+
+    <rect x="320" y="60" width="240" height="400" rx="14" fill="#0d2818" stroke="#3fb950" stroke-width="1.4" opacity="0.55"/>
+    <rect x="320" y="60" width="240" height="44" rx="14" fill="#0d2818" stroke="#3fb950" stroke-width="1.4"/>
+    <text x="440" y="88" font-size="16" fill="#3fb950" text-anchor="middle" font-weight="700">cursor-switch (local)</text>
+
+    <rect x="345" y="130" width="190" height="50" rx="10" fill="#0b0e14" stroke="#3fb950" stroke-width="1"/>
+    <text x="440" y="152" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="600">request classifier</text>
+    <text x="440" y="170" font-size="11" fill="#7d8590" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">/aiserver · /proxy · /cursor</text>
+
+    <rect x="345" y="210" width="190" height="60" rx="9" fill="#0b0e14" stroke="#3fb950" stroke-width="1" stroke-dasharray="3 3"/>
+    <text x="440" y="234" font-size="12.5" fill="#3fb950" text-anchor="middle" font-weight="600">identity plane</text>
+    <text x="440" y="252" font-size="11" fill="#7d8590" text-anchor="middle">marketplace · login · customize</text>
+
+    <rect x="345" y="290" width="190" height="60" rx="9" fill="#0b0e14" stroke="#7d8590" stroke-width="1" stroke-dasharray="3 3"/>
+    <text x="440" y="314" font-size="12.5" fill="#c9d1d9" text-anchor="middle" font-weight="600">subscription plane</text>
+    <text x="440" y="332" font-size="11" fill="#7d8590" text-anchor="middle">plan · usage · model gating</text>
+
+    <rect x="345" y="370" width="190" height="60" rx="9" fill="#1a1530" stroke="#a371f7" stroke-width="1.2"/>
+    <text x="440" y="394" font-size="12.5" fill="#a371f7" text-anchor="middle" font-weight="600">inference plane</text>
+    <text x="440" y="412" font-size="11" fill="#7d8590" text-anchor="middle">byok routing · agent · stats</text>
+
+    <rect x="680" y="215" width="200" height="50" rx="10" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+    <text x="780" y="237" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="600">official cursor.sh</text>
+    <text x="780" y="254" font-size="11" fill="#7d8590" text-anchor="middle">real-account passthrough</text>
+
+    <rect x="680" y="295" width="200" height="50" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+    <text x="780" y="317" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="600">local mock response</text>
+    <text x="780" y="334" font-size="11" fill="#7d8590" text-anchor="middle">unlimited Pro · no auto-lock</text>
+
+    <rect x="680" y="375" width="200" height="50" rx="10" fill="#1a1530" stroke="#a371f7" stroke-width="1.4"/>
+    <text x="780" y="397" font-size="13" fill="#a371f7" text-anchor="middle" font-weight="600">your LLM provider</text>
+    <text x="780" y="414" font-size="11" fill="#7d8590" text-anchor="middle">OpenAI / Anthropic compatible</text>
+
+    <rect x="960" y="370" width="200" height="60" rx="10" fill="#161b22" stroke="#a371f7" stroke-width="1.2" stroke-dasharray="4 3"/>
+    <text x="1060" y="394" font-size="13" fill="#a371f7" text-anchor="middle" font-weight="600">usage.json + dashboard</text>
+    <text x="1060" y="412" font-size="11" fill="#7d8590" text-anchor="middle">per-day / model / provider cost</text>
+
+    <path d="M220 250 H320" stroke="#7d8590" stroke-width="1.8" fill="none" marker-end="url(#aMuted)"/>
+    <text x="270" y="242" font-size="11" fill="#7d8590" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">HTTPS :8413</text>
+
+    <path d="M440 180 V210" stroke="#3fb950" stroke-width="1.4" fill="none" marker-end="url(#aGreen)"/>
+    <path d="M415 180 V290" stroke="#7d8590" stroke-width="1.4" fill="none" marker-end="url(#aMuted)"/>
+    <path d="M465 180 V370" stroke="#a371f7" stroke-width="1.4" fill="none" marker-end="url(#aPurple)"/>
+
+    <path d="M535 240 H680" stroke="#3fb950" stroke-width="1.6" fill="none" marker-end="url(#aGreen)"/>
+    <path d="M535 320 H680" stroke="#7d8590" stroke-width="1.6" fill="none" marker-end="url(#aMuted)"/>
+    <path d="M535 400 H680" stroke="#a371f7" stroke-width="1.6" fill="none" marker-end="url(#aPurple)"/>
+
+    <path d="M880 400 H960" stroke="#a371f7" stroke-width="1.4" fill="none" marker-end="url(#aPurple)" stroke-dasharray="4 3"/>
+    <text x="920" y="392" font-size="10.5" fill="#a371f7" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">token metering</text>
+
+    <g transform="translate(40 478)" font-size="12">
+      <rect x="0" y="-12" width="14" height="14" rx="3" fill="#0b0e14" stroke="#3fb950"/>
+      <text x="22" y="-1" fill="#7d8590">identity: official passthrough</text>
+      <rect x="280" y="-12" width="14" height="14" rx="3" fill="#0b0e14" stroke="#7d8590"/>
+      <text x="302" y="-1" fill="#7d8590">subscription: local mock</text>
+      <rect x="530" y="-12" width="14" height="14" rx="3" fill="#1a1530" stroke="#a371f7"/>
+      <text x="552" y="-1" fill="#7d8590">inference: byok routing + cost stats</text>
+      <text x="860" y="-1" fill="#7d8590" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">— three planes · isolated, login-state untouched —</text>
+    </g>
+  </g>
+</svg>

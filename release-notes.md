@@ -1,3 +1,47 @@
+# 1.1.0
+
+## 成本精确化 · 仪表盘增强 · models.dev 在线回退 · 改名 cursor-switch
+
+1.1.0 在 1.0.0 架构基础上收尾一批成本与可用性优化，并把项目由 `cursor-byok` 改名为 `cursor-switch`。
+
+### 日常成本精确化
+
+- `usage.json` daily rollup 新增 `by_model` 维度，按模型分别累计 token 与成本。
+- 仪表盘成本计算优先按 per-model 价格 × 倍率精确计算；旧 usage.json（无 by_model）回退加权均价近似，并在 UI 标注 `近似`。
+- 顺带修复 `negateUsageFileDelta` 不带 modelID 的遗留 bug：顶层 by_model 在事件 upsert 回滚时漏减。
+
+### 仪表盘：日期范围 + 请求日志分页
+
+- 使用统计仪表盘新增 today / 7d / 30d / 全部 日期范围选择器。
+- 请求日志列表分页（每页 20 条），500 条上限事件可翻页浏览。
+- 纯前端实现，未改后端契约。
+
+### fetch-models：models.dev 在线回退
+
+- 内置静态上下文窗口表 miss 时，自动拉取 `https://models.dev/models.json` 在线查询。
+- 内存 + 落盘 7 天 TTL 缓存（`~/.cursor-local-assistant-v2/models-dev-cache.json`）。
+- 双向候选交集匹配，兼容 `deepseek/deepseek-v4` 等带命名空间/版本号的模型 id。
+- best-effort：在线失败回退 0，不阻断获取模型列表。
+
+### 新模型上线 SOP
+
+- 新增 [docs/NEW_MODEL_SOP.md](./docs/NEW_MODEL_SOP.md)：定价记录 / 上下文窗口 / 候选匹配测试 / release-notes 一条龙步骤。
+
+### 改名 cursor-switch
+
+- 产品由 `cursor-byok` 改名为 `cursor-switch`（GitHub repo 名 + 资产前缀硬切）。
+- 保留不变：`X-Cursor-BYOK-Relay-Proof` header（契约非品牌）、数据目录 `~/.cursor-local-assistant-v2`、模块路径 `cursor`、机器 CA 命名空间 `cursor-byok-ca`（改了会让现有 CA 失效）。
+- 签名公钥不变，私钥默认路径迁移到 `~/.cursor-switch-release.key`（维护者 `cp` 旧私钥即可）。
+
+### README 美化
+
+- 新增 hero.svg（项目标题 + 三控制面分流图）与 architecture.svg（详细三面分离架构）。
+- 中英文 README 同步嵌入，纯 SVG，无外部资源。
+
+**完整改动见 [docs/NEW_MODEL_SOP.md](./docs/NEW_MODEL_SOP.md) 与 git log。**
+
+---
+
 # 1.0.0
 
 ## 架构级重构：真实账号 + byok 自定义模型共存

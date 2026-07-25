@@ -1,10 +1,6 @@
 <div align="center">
 
-# Cursor助手 · cursor-switch
-
-### 把任意 LLM API key 接入 Cursor IDE，同时保留真实 Cursor 账号的 marketplace / customize 全功能
-
-**比上游原版更强大的 Cursor 本地代理 + byok 模型路由 + 成本统计内核**
+<img src="./assets/readme/hero.svg" alt="cursor-switch — 把任意 LLM API key 接入 Cursor IDE，保留真实账号 marketplace，附精确成本统计" width="100%">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/kael-odin/cursor-switch?include_prereleases)](https://github.com/kael-odin/cursor-switch/releases)
@@ -58,6 +54,12 @@
 | **身份 / marketplace / 登录** | 官方透传（真实 Cursor 账号） | 登录/退出/marketplace 浏览/安装/卸载/customize 全功能正常 |
 | **订阅 / 套餐 / 用量** | 本地 mock（无限制 Pro） | 模型选择器**不锁 auto**，不被真实套餐限制 |
 | **模型推理 / 数据面** | byok 本地（你的 provider key） | 自定义模型路由 + 成本统计 |
+
+<div align="center">
+
+<img src="./assets/readme/architecture.svg" alt="cursor-switch 三条控制面分离架构：客户端请求经本地分类器分流到身份面（官方透传）、订阅面（本地 mock）、推理面（byok 路由 + 成本统计）" width="100%">
+
+</div>
 
 **效果**：开着 byok，既能用你自己的 key/模型，又能用真实 Cursor 账号的完整 marketplace，还能正常登录/退出账号。
 

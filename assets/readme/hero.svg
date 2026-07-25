@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="360" viewBox="0 0 1200 360"
+     role="img" aria-labelledby="heroTitle heroDesc">
+  <title id="heroTitle">cursor-switch — 把任意 LLM API key 接入 Cursor，保留真实账号 marketplace，附精确成本统计</title>
+  <desc id="heroDesc">深色技术风 hero：左侧项目名 cursor-switch 与一句话价值主张，右侧三条控制面分流图（身份透传 / 套餐 mock / 模型路由）。</desc>
+
+  <defs>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/>
+    </marker>
+    <marker id="arrowMuted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7d8590"/>
+    </marker>
+  </defs>
+
+  <!-- background -->
+  <rect width="1200" height="360" rx="20" fill="#0b0e14"/>
+
+  <!-- subtle routing baseline -->
+  <g stroke="#1c2230" stroke-width="1" opacity="0.55">
+    <path d="M40 312 H1160"/>
+  </g>
+
+  <!-- LEFT: title block -->
+  <g transform="translate(56 52)" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif">
+    <text x="0" y="0" font-size="15" letter-spacing="2.5" fill="#3fb950" font-weight="600">CURSOR · BYOK · LOCAL PROXY</text>
+    <text x="0" y="56" font-size="58" font-weight="700" fill="#e6edf3">cursor-switch</text>
+    <text x="0" y="100" font-size="19" fill="#c9d1d9">把任意 LLM API key 接入 Cursor IDE</text>
+    <text x="0" y="128" font-size="19" fill="#c9d1d9">同时保留真实账号 marketplace 全功能</text>
+    <text x="0" y="156" font-size="19" fill="#a371f7">+ 精确到模型的成本与用量统计</text>
+    <g transform="translate(0 196)" font-size="14" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#7d8590">
+      <text x="0" y="0">Wails v3 · Go + Vue 3</text>
+      <text x="0" y="22">ed25519 签名更新 · 每机器独立 CA</text>
+      <text x="0" y="44">OpenAI 兼容 / Anthropic 兼容</text>
+    </g>
+  </g>
+
+  <!-- RIGHT: three-plane routing diagram (kept within x: 640..1160) -->
+  <g transform="translate(640 48)" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif">
+    <!-- Cursor client node -->
+    <rect x="80" y="0" width="150" height="44" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+    <text x="155" y="27" font-size="15" fill="#e6edf3" text-anchor="middle" font-weight="600">Cursor 客户端</text>
+
+    <!-- local switch node -->
+    <rect x="80" y="108" width="150" height="48" rx="10" fill="#0d2818" stroke="#3fb950" stroke-width="1.4"/>
+    <text x="155" y="130" font-size="14" fill="#3fb950" text-anchor="middle" font-weight="700">cursor-switch</text>
+    <text x="155" y="148" font-size="11" fill="#7d8590" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">本地分流 + agent</text>
+
+    <!-- arrow: client -> switch -->
+    <path d="M155 44 V104" stroke="#7d8590" stroke-width="1.6" fill="none" marker-end="url(#arrowMuted)"/>
+
+    <!-- plane 1: identity passthrough (top) -->
+    <rect x="288" y="56" width="178" height="40" rx="9" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+    <text x="377" y="74" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="600">身份 / marketplace / 登录</text>
+    <text x="377" y="89" font-size="11" fill="#7d8590" text-anchor="middle">官方透传 · 真实账号</text>
+
+    <!-- plane 2: subscription mock (middle) -->
+    <rect x="288" y="112" width="178" height="40" rx="9" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+    <text x="377" y="130" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="600">订阅 / 套餐 / 用量</text>
+    <text x="377" y="145" font-size="11" fill="#7d8590" text-anchor="middle">本地 mock · 无限制 Pro</text>
+
+    <!-- plane 3: model routing (bottom) -->
+    <rect x="288" y="168" width="178" height="40" rx="9" fill="#1a1530" stroke="#a371f7" stroke-width="1.4"/>
+    <text x="377" y="186" font-size="13" fill="#a371f7" text-anchor="middle" font-weight="600">模型推理 / 数据面</text>
+    <text x="377" y="201" font-size="11" fill="#7d8590" text-anchor="middle">byok · 你的 provider key</text>
+
+    <!-- arrows from switch to three planes -->
+    <path d="M230 124 C 252 124, 266 76, 288 76" stroke="#3fb950" stroke-width="1.5" fill="none" marker-end="url(#arrowGreen)"/>
+    <path d="M230 132 H288" stroke="#7d8590" stroke-width="1.5" fill="none" marker-end="url(#arrowMuted)"/>
+    <path d="M230 140 C 252 140, 266 188, 288 188" stroke="#a371f7" stroke-width="1.5" fill="none" marker-end="url(#arrowPurple)"/>
+
+    <!-- destinations (right of planes) -->
+    <text x="478" y="80" font-size="11.5" fill="#7d8590" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">→ cursor.sh</text>
+    <text x="478" y="136" font-size="11.5" fill="#7d8590" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">→ 本地</text>
+    <text x="478" y="192" font-size="11.5" fill="#a371f7" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">→ 你的 API</text>
+
+    <!-- caption -->
+    <text x="305" y="246" font-size="13" fill="#7d8590" text-anchor="middle">三条控制面分离 · 互不干扰</text>
+  </g>
+</svg>
