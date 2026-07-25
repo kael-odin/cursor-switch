@@ -64,6 +64,13 @@ export function getHomeMetricsSummary() {
   return withApiLogging("GetHomeMetricsSummary", undefined, () => GetHomeMetricsSummary());
 }
 
+// 使用统计仪表盘：返回 totals/daily/byModel/byProvider/recentEvents 完整数据。
+export function getUsageDashboard() {
+  return withApiLogging("GetUsageDashboard", undefined, () =>
+    Call.ByName(`${METRICS_SERVICE_NAME}.GetUsageDashboard`),
+  );
+}
+
 const METRICS_SERVICE_NAME = "cursor/internal/bridge.MetricsService";
 
 export function getTokenPricing() {
@@ -163,5 +170,13 @@ export function testModelAdapter(adapter) {
 export function getModelAdapterTestResults() {
   return withApiLogging("GetModelAdapterTestResults", undefined, () =>
     Call.ByName(`${PROXY_SERVICE_NAME}.GetModelAdapterTestResults`),
+  );
+}
+
+// 一键获取模型列表：根据已填写的 baseURL+apiKey+type 调用 provider 的 /v1/models。
+// adapter 只需 type/baseURL/apiKey（modelID 可空，拉列表发生在选模型之前）。
+export function fetchProviderModels(adapter) {
+  return withApiLogging("FetchProviderModels", adapter, () =>
+    Call.ByName(`${PROXY_SERVICE_NAME}.FetchProviderModels`, adapter),
   );
 }

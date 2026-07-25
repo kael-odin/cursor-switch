@@ -22,18 +22,41 @@ import (
 )
 
 const (
-	compactionAutoReserveTokens      = 10000
 	compactionTriggerRemainingTokens = 8192
 	compactionPreferredTailTurns     = 4
 	compactionMinimumTailTurns       = 1
 	compactionReserveFloorTokens     = 8192
 	compactionSummaryMaxChars        = 12000
-	compactionSummaryOutputMaxTokens = 4096
+	compactionSummaryOutputMaxTokens = 16384
 	compactionTurnSnippetMaxChars    = 900
+
+	// 自动压缩预留 token 比例。按 contextWindow 的 8% 动态计算，floor/ceil 见
+	// compactionReserveTokensFor。参考 Claude Code 在 200K 上下文下约预留 16K(8%)，
+	// 对 1M 上下文则预留 80K，避免摘要模型来不及在窗口用满前完成压缩。
+	compactionReserveRatio  = 0.08
+	compactionReserveMin    = 16384
+	compactionReserveMax    = 80000
+	compactionReserveLegacy = 10000 // 兜底常量，仅当 contextWindow 未知时使用
 
 	autoCompactionPreservedToolResultLimitBytes = 16 * 1024
 	autoCompactionFallbackToolResultLimitBytes  = 4 * 1024
 )
+
+// compactionReserveTokensFor 按 contextWindow 动态计算压缩预留 token：
+// reserve = clamp(contextWindow * 8%, 16384, 80000)。contextWindow<=0 时返回 legacy 兜底。
+func compactionReserveTokensFor(contextWindow int64) int64 {
+	if contextWindow <= 0 {
+		return compactionReserveLegacy
+	}
+	reserve := int64(float64(contextWindow) * compactionReserveRatio)
+	if reserve < compactionReserveMin {
+		reserve = compactionReserveMin
+	}
+	if reserve > compactionReserveMax {
+		reserve = compactionReserveMax
+	}
+	return reserve
+}
 
 const (
 	compactionRequestSourcePromptAsset = "prompt_asset"
@@ -125,7 +148,7 @@ func (service *Service) buildManualCompactionPlan(stream *ActiveStream, conversa
 		ContextTokens:             contextTokens,
 		ContextWindowSize:         contextWindowSize,
 		ContextUsagePercent:       usagePercent,
-		ReserveTokens:             compactionAutoReserveTokens,
+		ReserveTokens:             compactionReserveTokensFor(contextWindowSize),
 		MessageCount:              clampInt64ToInt32(int64(len(compiled.Messages))),
 		IsFirstCompaction:         len(compactionSummaryTexts(conversation)) == 0,
 		ExistingSummary:           existingConversationSummaryText(conversation),
@@ -147,12 +170,12 @@ func (service *Service) buildAutoCompactionPlan(stream *ActiveStream, conversati
 		return nil, nil
 	}
 	estimatedCompiledTokens := estimateCompiledPromptTokens(compiled)
-	reserveTokens := service.resolveCompactionReserveTokens(stream.ModelID)
+	reserveTokens := service.resolveCompactionReserveTokens(stream.ModelID, contextWindowSize)
 	if reserveTokens <= 0 {
 		reserveTokens = conversation.AutoCompactionReserveTokens
 	}
 	if reserveTokens <= 0 {
-		reserveTokens = compactionAutoReserveTokens
+		reserveTokens = compactionReserveTokensFor(contextWindowSize)
 	}
 	budgetTokens := contextWindowSize - reserveTokens
 	preflightExceeded := estimatedCompiledTokens > 0 && estimatedCompiledTokens > budgetTokens
@@ -743,10 +766,10 @@ func compactionContextWindowSize(conversation *ConversationFile) int64 {
 	return projectedConversationMaxTokens
 }
 
-func (service *Service) resolveCompactionReserveTokens(modelID string) int64 {
+func (service *Service) resolveCompactionReserveTokens(modelID string, contextWindow int64) int64 {
 	_ = service
 	_ = modelID
-	return compactionAutoReserveTokens
+	return compactionReserveTokensFor(contextWindow)
 }
 
 func parseManualCompactionDirective(latestUserText string) (string, bool) {

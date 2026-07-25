@@ -21,6 +21,12 @@ type ModelAdapterConfig = serverconfig.ModelAdapterConfig
 // ModelAdapterTestResult 定义一次模型测速结果。
 type ModelAdapterTestResult = client.ModelAdapterTestResult
 
+// FetchedModel 表示从 provider 拉回的单个模型。
+type FetchedModel = client.FetchedModel
+
+// FetchedModelsPayload 是模型列表载荷。
+type FetchedModelsPayload = client.FetchedModelsPayload
+
 // ModelAdapterTestResultsPayload 定义测速结果事件载荷。
 type ModelAdapterTestResultsPayload = client.ModelAdapterTestResultsPayload
 
@@ -78,6 +84,11 @@ func (s *ProxyService) TestModelAdapter(adapter ModelAdapterConfig) (ModelAdapte
 // GetModelAdapterTestResults 用于处理与 GetModelAdapterTestResults 相关的逻辑。
 func (s *ProxyService) GetModelAdapterTestResults() []ModelAdapterTestResult {
 	return s.core.GetModelAdapterTestResults()
+}
+
+// FetchProviderModels 调用 provider 的模型列表端点，供「一键获取模型列表」使用。
+func (s *ProxyService) FetchProviderModels(adapter ModelAdapterConfig) (FetchedModelsPayload, error) {
+	return s.core.FetchProviderModels(adapter)
 }
 
 // GetDeviceID 用于处理与 GetDeviceID 相关的逻辑。

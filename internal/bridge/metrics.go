@@ -37,6 +37,9 @@ type TokenPricing struct {
 	OutputPerMillion  float64 `json:"outputPerMillion"`
 	CacheReadPerMillion  float64 `json:"cacheReadPerMillion"`
 	CacheWritePerMillion float64 `json:"cacheWritePerMillion"`
+	// InputTokenSemantics 控制 input token 成本回算口径（见 config.InputTokenSemantics）。
+	// 空字符串等价 legacy。前端只读展示，编辑暂不开放（口径由 seed 标注）。
+	InputTokenSemantics string `json:"inputTokenSemantics,omitempty"`
 }
 
 // PricingSnapshot 是定价配置的完整快照：全局倍率 + 全部模型定价。
@@ -256,6 +259,7 @@ func toPricingSnapshot(in config.PricingConfig) PricingSnapshot {
 			OutputPerMillion:     parseFloatOr(m.OutputPerMillion, 0),
 			CacheReadPerMillion:  parseFloatOr(m.CacheReadPerMillion, 0),
 			CacheWritePerMillion: parseFloatOr(m.CacheWritePerMillion, 0),
+			InputTokenSemantics:  string(m.InputTokenSemantics),
 		})
 	}
 	return out
@@ -285,7 +289,7 @@ func computeCostByModel(byModel []historymetrics.ModelUsage, pricing PricingSnap
 			CacheWriteTokens: usage.CacheWriteTokens,
 			CostMultiplier:   multiplier,
 		}
-		cost.InputCost = float64(usage.InputTokens) / 1_000_000 * price.InputPerMillion
+		cost.InputCost = float64(billableInputTokens(usage.InputTokens, usage.CacheReadTokens, usage.CacheWriteTokens, price.InputTokenSemantics)) / 1_000_000 * price.InputPerMillion
 		cost.OutputCost = float64(usage.OutputTokens) / 1_000_000 * price.OutputPerMillion
 		cost.CacheReadCost = float64(usage.CacheReadTokens) / 1_000_000 * price.CacheReadPerMillion
 		cost.CacheWriteCost = float64(usage.CacheWriteTokens) / 1_000_000 * price.CacheWritePerMillion
@@ -296,15 +300,56 @@ func computeCostByModel(byModel []historymetrics.ModelUsage, pricing PricingSnap
 	return costs, total
 }
 
-// findPrice 按 modelId 归一化匹配定价，未命中返回零价（成本 0）。
+// findPrice 按候选匹配查定价（移植 cc-switch model_pricing_candidates），
+// 能匹配带命名空间/版本/日期/推理努力后缀的变体。未命中返回零价（成本 0）。
 func findPrice(models []TokenPricing, modelID string) TokenPricing {
-	want := strings.ToLower(strings.TrimSpace(modelID))
+	cfg := config.PricingConfig{Models: make([]config.ModelPricing, 0, len(models))}
 	for _, m := range models {
-		if strings.ToLower(strings.TrimSpace(m.ModelID)) == want {
-			return m
+		cfg.Models = append(cfg.Models, config.ModelPricing{
+			ModelID:             m.ModelID,
+			InputPerMillion:     strconv.FormatFloat(m.InputPerMillion, 'f', -1, 64),
+			OutputPerMillion:    strconv.FormatFloat(m.OutputPerMillion, 'f', -1, 64),
+			CacheReadPerMillion: strconv.FormatFloat(m.CacheReadPerMillion, 'f', -1, 64),
+			CacheWritePerMillion: strconv.FormatFloat(m.CacheWritePerMillion, 'f', -1, 64),
+			InputTokenSemantics: config.InputTokenSemantics(m.InputTokenSemantics),
+		})
+	}
+	if hit := cfg.MatchModelPricing(modelID); hit != nil {
+		return TokenPricing{
+			ModelID:              hit.ModelID,
+			InputPerMillion:      parseFloatOr(hit.InputPerMillion, 0),
+			OutputPerMillion:     parseFloatOr(hit.OutputPerMillion, 0),
+			CacheReadPerMillion:  parseFloatOr(hit.CacheReadPerMillion, 0),
+			CacheWritePerMillion: parseFloatOr(hit.CacheWritePerMillion, 0),
+			InputTokenSemantics:  string(hit.InputTokenSemantics),
 		}
 	}
 	return TokenPricing{ModelID: modelID}
+}
+
+// billableInputTokens 按模型的 input_token_semantics 把原始 input token 数折算成「按 input 价计费」的 token 数。
+//   - FRESH：input 原样计费（缓存部分单独按 cache 价计，不重算）。
+//   - TOTAL：input 已含 cache_read + cache_creation，需减掉两者，否则缓存部分会既按 input 价又按 cache 价重复计费。
+//   - legacy（默认）：input 已含 cache_read，需减掉 cache_read。
+//
+// 参考 cc-switch usage_stats.rs 的 input_token_semantics 回算逻辑。
+func billableInputTokens(input, cacheRead, cacheWrite int64, semantics string) int64 {
+	switch config.InputTokenSemantics(semantics) {
+	case config.InputSemanticsFresh:
+		return input
+	case config.InputSemanticsTotal:
+		billable := input - cacheRead - cacheWrite
+		if billable < 0 {
+			return 0
+		}
+		return billable
+	default: // legacy
+		billable := input - cacheRead
+		if billable < 0 {
+			return 0
+		}
+		return billable
+	}
 }
 
 func parseFloatOr(value string, fallback float64) float64 {

@@ -40,6 +40,7 @@ type usageFileDocument struct {
 type usageFileModelAggregate struct {
 	ModelID         string `json:"model_id"`
 	ModelName       string `json:"model_name,omitempty"`
+	Provider        string `json:"provider,omitempty"`
 	ProviderCalls   int64  `json:"provider_calls"`
 	InputTokens     int64  `json:"input_tokens"`
 	OutputTokens    int64  `json:"output_tokens"`
@@ -88,6 +89,9 @@ type usageFileEvent struct {
 	ModelID string `json:"model_id,omitempty"`
 	// ModelName 是模型显示名（与 ModelID 同源，仅用于展示）。
 	ModelName string `json:"model_name,omitempty"`
+	// Provider 是该次调用命中的 provider 标识（通常为 adapter baseURL 的 host 或 displayName）。
+	// 用于使用统计仪表盘按 provider 聚合。空表示未归属。
+	Provider string `json:"provider,omitempty"`
 }
 
 type usageFileDelta struct {
@@ -100,9 +104,10 @@ type usageFileDelta struct {
 	cacheReadTokens   int64
 	cacheWriteTokens  int64
 	totalTokens       int64
-	// modelID/modelName 仅在 provider_call 事件携带 token 时设置，用于按模型聚合。
+	// modelID/modelName/provider 仅在 provider_call 事件携带 token 时设置，用于按模型聚合。
 	modelID   string
 	modelName string
+	provider  string
 }
 
 func NewUsageFileStore(historyRoot string) *UsageFileStore {
@@ -306,6 +311,7 @@ func usageFileEventDelta(event usageFileEvent) usageFileDelta {
 			totalTokens:      nonNegativeInt64(event.TotalTokens),
 			modelID:          strings.TrimSpace(event.ModelID),
 			modelName:        strings.TrimSpace(event.ModelName),
+			provider:         strings.TrimSpace(event.Provider),
 		}
 	}
 }
@@ -366,6 +372,9 @@ func applyUsageModelDelta(doc *usageFileDocument, delta usageFileDelta) {
 	agg.ModelID = delta.modelID
 	if strings.TrimSpace(delta.modelName) != "" && strings.TrimSpace(agg.ModelName) == "" {
 		agg.ModelName = delta.modelName
+	}
+	if strings.TrimSpace(delta.provider) != "" && strings.TrimSpace(agg.Provider) == "" {
+		agg.Provider = delta.provider
 	}
 	agg.ProviderCalls = clampNonNegativeInt64(agg.ProviderCalls + delta.providerCalls)
 	agg.InputTokens = clampNonNegativeInt64(agg.InputTokens + delta.inputTokens)

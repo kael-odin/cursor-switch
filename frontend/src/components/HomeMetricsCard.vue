@@ -16,6 +16,10 @@ function goToPricing() {
   router.push("/pricing");
 }
 
+function goToUsageDashboard() {
+  router.push("/usage-dashboard");
+}
+
 // 定价从后端 MetricsService.GetTokenPricing 获取；首次渲染前用本地兜底值避免空白。
 const tokenPricing = ref({
   input: 5,
@@ -316,6 +320,14 @@ async function toggleIncludeCacheWriteInHitRate(value) {
           <div class="center-row justify-start gap-1 text-xs text-[#7f7f7f]">
             <span>Token 消耗</span>
             <Tooltip :content="tokensTooltipContent" />
+            <button
+              type="button"
+              class="ml-auto !text-[#a3a3a3] hover:text-[#10AD5D] transition-colors cursor-pointer"
+              title="查看使用统计仪表盘"
+              @click="goToUsageDashboard"
+            >
+              使用统计
+            </button>
           </div>
           <div>
             <div

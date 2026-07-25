@@ -4,7 +4,7 @@ import Input from "@/components/ui/Input.vue";
 import ModelAdapterTestCard from "@/components/ModelAdapterTestCard.vue";
 import Select from "@/components/ui/Select.vue";
 import Tooltip from "@/components/ui/Tooltip.vue";
-import { getModelEditorContext } from "@/services/clientApi";
+import { getModelEditorContext, fetchProviderModels } from "@/services/clientApi";
 import {
   ANTHROPIC_THINKING_EFFORT_DEFAULT,
   appState,
@@ -20,6 +20,7 @@ import {
   OPENAI_ENDPOINT_CUSTOM,
   OPENAI_ENDPOINT_RESPONSES,
   OPENAI_EXTRA_PARAMS_DEFAULT_JSON,
+  appendModelAdaptersBatch,
   runModelAdapterTest,
   saveModelAdapterAt,
   toUserError,
@@ -124,21 +125,167 @@ function ensureAnthropicThinkingEffort() {
 }
 
 const fieldTips = {
-  displayName: "仅用于界面展示，便于你区分不同模型。",
-  modelID: "请求实际发送给服务端的模型名称，例如 gpt-4.1 或 claude-sonnet。",
-  baseURL: "模型服务的 API 根地址，通常为兼容 OpenAI 或 Anthropic 的接口入口。",
-  apiKey: "调用该模型服务需要使用的访问密钥。",
-  contextWindowTokens: "模型单次可接受的最大上下文 Token 数。留空时使用默认值。",
-  reasoningEffort: "推理强度仅对部分支持 reasoning_effort 的模型生效，并不是所有模型都支持。越高通常越稳，但也可能更慢。",
-  maxCompletionTokens: "单次回复允许生成的最大 Token 数。留空时使用默认值。",
+  displayName: "仅用于界面展示，便于你区分不同模型。可随便起名，不影响实际请求。",
+  modelID: "请求实际发送给服务端的模型名称，必须和 provider 上一致，例如 gpt-4.1 或 claude-sonnet。点上方「获取模型列表」可直接拉取可选值。",
+  baseURL: "模型服务的 API 根地址，通常为兼容 OpenAI 或 Anthropic 的接口入口。例如 https://api.openai.com 或 https://api.anthropic.com。",
+  apiKey: "调用该模型服务需要使用的访问密钥（形如 sk-xxx）。仅存在本地，不会上传。",
+  contextWindowTokens: "模型一次能「读懂」多少内容的上限（包含你的提问 + 历史 + 模型回复）。常见值：200000=200K，1000000=1M。留空按默认 200K 处理。填错会导致压缩过早或过晚：填小了对话还没长就被压缩，填大了可能超出模型真实上限报错。获取模型列表时能自动反查的就不用手填。",
+  reasoningEffort: "推理强度仅对部分支持 reasoning_effort 的模型生效，并不是所有模型都支持。越高通常回答越稳，但也更慢、更费 token。日常用 medium，难题用 high。",
+  maxCompletionTokens: "模型单次回复最多能「写」多少内容的上限。常见值 65536~131072。留空按默认 131072（128K）处理。注意这是「思考 + 正文」合计的硬顶，设太大可能撞模型上限被截断。",
   openAIEndpoint: "选择接口协议端点。选“自定义路径”时，请在接口地址栏填写完整请求地址（含 /chat/completions 或 /responses 路径后缀），系统会根据末段自动判断协议形态。",
   openAIExtraParams: "开启后会把 JSON 对象覆盖到 OpenAI 请求体。同名字段以这里为准。OpenAI service_tier 支持 auto、default、flex、scale、priority。",
   customHeaders: "开启后会把 JSON 对象覆盖到最终请求头。同名请求头以这里为准，值必须是字符串。",
   anthropicExtraParams: "开启后会把 JSON 对象覆盖到 Anthropic 请求体。同名字段以这里为准。",
-  anthropicMaxTokens: "Anthropic 模型单次回复允许生成的最大 Token 数。留空时使用默认值。",
-  anthropicThinkingEffort: "Anthropic adaptive thinking 的思考强度。请求会固定使用新版 thinking.type=adaptive。",
-  tooltipData: "模型列表 hover 时显示的备注说明。",
+  anthropicMaxTokens: "Anthropic 模型单次回复允许生成的最大 Token 数。留空按默认 131072（128K）处理。Opus / Sonnet 系列支持 128K，Haiku 为 64K。",
+  anthropicThinkingEffort: "Anthropic adaptive thinking 的思考强度。请求会固定使用新版 thinking.type=adaptive。越高模型「想」得越久，回答质量通常更好但更慢。",
+  tooltipData: "模型列表 hover 时显示的备注说明，写给自己看的备忘。",
 };
+
+// 一键获取模型列表：根据已填的 type/baseURL/apiKey 调 provider 的 /v1/models。
+// 支持多选批量添加：以当前 draft 为模板（继承 baseURL/apiKey/endpoint/extra params/customHeaders），
+// 仅替换每条 modelID + displayName，一次性追加到模型配置。
+const fetchModelsVisible = ref(false);
+const fetchModelsLoading = ref(false);
+const fetchModelsError = ref("");
+const fetchedModels = ref([]);
+const fetchModelsSourceURL = ref("");
+const fetchModelsQuery = ref("");
+const fetchSelectedIDs = ref(new Set());
+const fetchBatchSaving = ref(false);
+const fetchBatchResult = ref(null); // { added:[], skipped:[] }
+
+const filteredFetchedModels = computed(() => {
+  const q = fetchModelsQuery.value.trim().toLowerCase();
+  if (!q) return fetchedModels.value;
+  return fetchedModels.value.filter(
+    (m) =>
+      String(m.id || "").toLowerCase().includes(q) ||
+      String(m.displayName || "").toLowerCase().includes(q),
+  );
+});
+
+const fetchSelectedCount = computed(() => fetchSelectedIDs.value.size);
+
+function toggleFetchSelect(id) {
+  const next = new Set(fetchSelectedIDs.value);
+  if (next.has(id)) {
+    next.delete(id);
+  } else {
+    next.add(id);
+  }
+  fetchSelectedIDs.value = next;
+}
+
+function selectAllFiltered() {
+  const next = new Set(fetchSelectedIDs.value);
+  for (const m of filteredFetchedModels.value) {
+    next.add(m.id);
+  }
+  fetchSelectedIDs.value = next;
+}
+
+function clearFetchSelection() {
+  fetchSelectedIDs.value = new Set();
+}
+
+async function openFetchModels() {
+  // 只要求 type/baseURL/apiKey；modelID 可空（拉列表发生在选模型之前）
+  const missing = [];
+  if (!String(draft.type || "").trim()) missing.push("provider 类型");
+  if (!String(draft.baseURL || "").trim()) missing.push("接口地址");
+  if (!String(draft.apiKey || "").trim()) missing.push("访问密钥");
+  fetchModelsVisible.value = true;
+  fetchBatchResult.value = null;
+  fetchSelectedIDs.value = new Set();
+  fetchModelsQuery.value = "";
+  fetchedModels.value = [];
+  if (missing.length) {
+    fetchModelsError.value = `请先填写：${missing.join("、")}`;
+    return;
+  }
+  fetchModelsLoading.value = true;
+  fetchModelsError.value = "";
+  try {
+    const payload = await fetchProviderModels(normalizeModelAdapter(draft));
+    fetchedModels.value = Array.isArray(payload?.models) ? payload.models : [];
+    fetchModelsSourceURL.value = String(payload?.sourceURL || "");
+    if (!fetchedModels.value.length) {
+      fetchModelsError.value = "provider 返回的模型列表为空";
+    }
+  } catch (e) {
+    fetchModelsError.value = String(e?.message || e || "获取模型列表失败");
+  } finally {
+    fetchModelsLoading.value = false;
+  }
+}
+
+// 单选即用：点模型名直接填回当前 draft（保持原「选一个就编辑」的快速路径）
+function pickFetchedModel(model) {
+  if (!model) return;
+  draft.modelID = model.id;
+  if (!String(draft.displayName || "").trim() || draft.displayName === draft.modelID) {
+    draft.displayName = model.displayName || model.id;
+  }
+  // 若反查到上下文窗口且当前 draft 未显式设置，一并填回。
+  const cw = Number(model?.contextWindowTokens) || 0;
+  if (cw > 0 && !Number(draft.contextWindowTokens)) {
+    draft.contextWindowTokens = cw;
+  }
+  fetchModelsVisible.value = false;
+}
+
+// 把 token 数格式化成人类可读的「xxxK」徽标，方便在模型列表里一眼看出上下文窗口大小。
+function fmtContextBadge(tokens) {
+  const v = Number(tokens) || 0;
+  if (v <= 0) return "";
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(v % 1_000_000 ? 1 : 0)}M`;
+  if (v >= 1000) return `${Math.round(v / 1000)}K`;
+  return String(v);
+}
+
+// 批量添加：以当前 draft 为模板，把选中的模型一次性追加到配置
+async function addSelectedBatch() {
+  if (fetchSelectedCount.value === 0 || fetchBatchSaving.value) return;
+  fetchBatchSaving.value = true;
+  fetchBatchResult.value = null;
+  try {
+    const selected = fetchedModels.value.filter((m) => fetchSelectedIDs.value.has(m.id));
+    const result = await appendModelAdaptersBatch(draft, selected);
+    fetchBatchResult.value = {
+      added: result.added || [],
+      skipped: result.skipped || [],
+      ok: result.ok,
+      error: result.error || "",
+    };
+    if (result.ok) {
+      // 成功追加：清空选择，保留面板让用户看到结果，可继续选或关闭
+      fetchSelectedIDs.value = new Set();
+    }
+  } catch (e) {
+    fetchBatchResult.value = {
+      added: [],
+      skipped: [],
+      ok: false,
+      error: String(e?.message || e || "批量添加失败"),
+    };
+  } finally {
+    fetchBatchSaving.value = false;
+  }
+}
+
+async function closeFetchModelsAfterBatch() {
+  const r = fetchBatchResult.value;
+  if (r && r.ok && r.added.length && !r.skipped.length) {
+    // 全部成功且无跳过：关闭编辑器回列表
+    await Window.Close();
+    return;
+  }
+  fetchModelsVisible.value = false;
+}
+
+function closeFetchModels() {
+  fetchModelsVisible.value = false;
+}
 
 async function loadContext() {
   try {
@@ -334,13 +481,160 @@ onMounted(async () => {
               <Tooltip :content="fieldTips.modelID" />
               <span>模型标识</span>
             </span>
-            <input
-              v-model="draft.modelID"
-              type="text"
-              placeholder="例如：gpt-4.1"
-              class="h-9 rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
-            />
+            <div class="flex gap-2">
+              <input
+                v-model="draft.modelID"
+                type="text"
+                placeholder="例如：gpt-4.1"
+                class="h-9 flex-1 rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
+              />
+              <Button
+                variant="default"
+                class="!h-9 shrink-0 whitespace-nowrap"
+                :disabled="fetchModelsLoading"
+                @click="openFetchModels"
+              >
+                {{ fetchModelsLoading ? "获取中…" : "获取模型列表" }}
+              </Button>
+            </div>
           </label>
+
+          <div
+            v-if="fetchModelsVisible"
+            class="col-span-full mb-2 rounded-[6px] border border-[#3f3f3f] bg-[#1c1c1c] p-3"
+          >
+            <div class="mb-2 flex items-center justify-between gap-2">
+              <span class="text-sm text-[#d4d4d4]">
+                {{ fetchModelsLoading ? "正在拉取模型列表…" : `模型列表（${fetchedModels.length}）` }}
+              </span>
+              <div class="flex items-center gap-3">
+                <span v-if="fetchSelectedCount > 0" class="text-xs text-[#10AD5D]">
+                  已选 {{ fetchSelectedCount }}
+                </span>
+                <button
+                  type="button"
+                  class="text-[#8f8f8f] hover:text-[#e5e5e5]"
+                  @click="closeFetchModels"
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+            <p v-if="fetchModelsError" class="mb-2 text-xs text-red-400">{{ fetchModelsError }}</p>
+            <p
+              v-else-if="fetchModelsSourceURL"
+              class="mb-2 truncate text-xs text-[#737373]"
+              :title="fetchModelsSourceURL"
+            >
+              来源：{{ fetchModelsSourceURL }}
+            </p>
+            <p v-if="!fetchModelsLoading && fetchedModels.length" class="mb-2 text-xs text-[#737373]">
+              列表里带「窗口 xxxK」标记的是已自动反查到上下文窗口的模型，批量添加时会一并填入；
+              没有标记的需要你后续在下方「上下文窗口」手填（不填按默认 200K 处理）。
+            </p>
+
+            <div
+              v-if="fetchBatchResult"
+              class="mb-2 rounded-[4px] border px-3 py-2 text-xs"
+              :class="fetchBatchResult.ok ? 'border-[#10AD5D]/40 bg-[#10AD5D]/10 text-[#10AD5D]' : 'border-red-500/40 bg-red-500/10 text-red-400'"
+            >
+              <template v-if="fetchBatchResult.ok">
+                <p>已添加 {{ fetchBatchResult.added.length }} 个模型</p>
+                <p v-if="fetchBatchResult.skipped.length" class="text-[#8f8f8f]">
+                  跳过（已存在）{{ fetchBatchResult.skipped.length }} 个：{{ fetchBatchResult.skipped.join("、") }}
+                </p>
+              </template>
+              <p v-else>{{ fetchBatchResult.error || "批量添加失败" }}</p>
+            </div>
+
+            <div
+              v-if="!fetchModelsLoading && fetchedModels.length"
+              class="mb-2 flex items-center gap-3"
+            >
+              <input
+                v-model="fetchModelsQuery"
+                type="text"
+                placeholder="搜索模型 id 或显示名…"
+                class="h-8 flex-1 rounded-[4px] border border-[#3f3f3f] bg-[#232323] px-2 text-xs text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
+              />
+              <button
+                type="button"
+                class="text-xs text-[#8f8f8f] hover:text-[#e5e5e5]"
+                @click="selectAllFiltered"
+              >
+                全选当前
+              </button>
+              <button
+                type="button"
+                class="text-xs text-[#8f8f8f] hover:text-[#e5e5e5]"
+                @click="clearFetchSelection"
+              >
+                清空选择
+              </button>
+            </div>
+
+            <div
+              v-if="!fetchModelsLoading && filteredFetchedModels.length"
+              class="max-h-56 overflow-y-auto rounded-[4px] border border-[#2a2a2a]"
+            >
+              <label
+                v-for="m in filteredFetchedModels"
+                :key="m.id"
+                class="flex cursor-pointer items-center gap-3 border-b border-[#2a2a2a] px-3 py-2 text-xs text-[#d4d4d4] last:border-b-0 hover:bg-[#232323]"
+                :class="fetchSelectedIDs.has(m.id) ? 'bg-[#1a3a2a]' : ''"
+              >
+                <input
+                  type="checkbox"
+                  class="h-3.5 w-3.5 accent-[#10AD5D]"
+                  :checked="fetchSelectedIDs.has(m.id)"
+                  @change="toggleFetchSelect(m.id)"
+                />
+                <span class="flex-1 font-mono">{{ m.id }}</span>
+                <span v-if="m.displayName && m.displayName !== m.id" class="truncate text-[#8f8f8f]">{{ m.displayName }}</span>
+                <span
+                  v-if="fmtContextBadge(m.contextWindowTokens)"
+                  class="ml-1 shrink-0 rounded-[3px] border border-[#10AD5D]/30 bg-[#10AD5D]/10 px-1.5 py-0.5 text-[10px] text-[#10AD5D]"
+                  :title="`上下文窗口 ${m.contextWindowTokens} tokens（自动反查，可手填覆盖）`"
+                >
+                  窗口 {{ fmtContextBadge(m.contextWindowTokens) }}
+                </span>
+                <button
+                  type="button"
+                  class="ml-2 text-[10px] text-[#737373] hover:text-[#10AD5D]"
+                  title="仅填回当前模型，不批量添加"
+                  @click.prevent.stop="pickFetchedModel(m)"
+                >
+                  仅填回
+                </button>
+              </label>
+            </div>
+
+            <div
+              v-if="!fetchModelsLoading && filteredFetchedModels.length"
+              class="mt-2 flex items-center justify-between gap-2"
+            >
+              <span class="text-xs text-[#737373]">
+                勾选后批量追加，继承当前表单的接口地址/密钥/端点/自定义参数
+              </span>
+              <div class="flex gap-2">
+                <Button
+                  v-if="fetchBatchResult && fetchBatchResult.ok && fetchBatchResult.added.length"
+                  variant="default"
+                  :disabled="fetchBatchSaving"
+                  @click="closeFetchModelsAfterBatch"
+                >
+                  完成
+                </Button>
+                <Button
+                  variant="primary"
+                  :disabled="fetchSelectedCount === 0 || fetchBatchSaving"
+                  @click="addSelectedBatch"
+                >
+                  {{ fetchBatchSaving ? "添加中…" : `批量添加 ${fetchSelectedCount > 0 ? fetchSelectedCount : ""}` }}
+                </Button>
+              </div>
+            </div>
+          </div>
 
           <label class="flex flex-col gap-1">
             <span class="center-row justify-start gap-1.5 text-sm text-[#d4d4d4]">

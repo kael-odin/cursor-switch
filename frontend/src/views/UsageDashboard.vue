@@ -1,0 +1,352 @@
+<script setup>
+import { computed, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
+import Button from "@/components/ui/Button.vue";
+import EChart from "@/components/charts/EChart.vue";
+import { getUsageDashboard } from "@/services/clientApi";
+
+const router = useRouter();
+function backHome() {
+  router.push("/");
+}
+
+const dashboard = ref(null);
+const loading = ref(false);
+const errorMsg = ref("");
+const autoRefresh = ref(true);
+const refreshInterval = ref(30); // 秒
+let timer = null;
+
+async function refresh() {
+  loading.value = true;
+  errorMsg.value = "";
+  try {
+    dashboard.value = await getUsageDashboard();
+  } catch (e) {
+    errorMsg.value = `加载统计失败: ${e?.message ?? e}`;
+  } finally {
+    loading.value = false;
+  }
+}
+
+onMounted(async () => {
+  await refresh();
+  startTimer();
+});
+
+function startTimer() {
+  stopTimer();
+  if (!autoRefresh.value) return;
+  const ms = Math.max(5, Number(refreshInterval.value) || 30) * 1000;
+  timer = window.setInterval(refresh, ms);
+}
+function stopTimer() {
+  if (timer) {
+    window.clearInterval(timer);
+    timer = null;
+  }
+}
+function onIntervalChange() {
+  startTimer();
+}
+function toggleAutoRefresh() {
+  autoRefresh.value = !autoRefresh.value;
+  startTimer();
+}
+
+const totals = computed(() => dashboard.value?.totals ?? null);
+const daily = computed(() => dashboard.value?.daily ?? []);
+const byModel = computed(() => dashboard.value?.byModel ?? []);
+const byProvider = computed(() => dashboard.value?.byProvider ?? []);
+const recentEvents = computed(() => dashboard.value?.recentEvents ?? []);
+const updatedAt = computed(() => {
+  const t = dashboard.value?.updatedAt;
+  if (!t) return "";
+  try {
+    return new Date(t).toLocaleString();
+  } catch {
+    return String(t);
+  }
+});
+
+function fmtNum(n) {
+  const v = Number(n) || 0;
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
+  if (v >= 1e6) return (v / 1e6).toFixed(2) + "M";
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + "K";
+  return String(v);
+}
+function fmtUsd(v, digits = 4) {
+  const n = Number(v) || 0;
+  return "$" + n.toFixed(n > 0 && n < 1 ? digits : 2);
+}
+function fmtPct(v) {
+  if (v == null) return "—";
+  const n = Number(v) || 0;
+  return (n >= 0.9995 ? (n * 100).toFixed(0) : (n * 100).toFixed(1)) + "%";
+}
+function fmtTime(t) {
+  if (!t) return "";
+  try {
+    return new Date(t).toLocaleString();
+  } catch {
+    return String(t);
+  }
+}
+
+// ECharts 趋势图：堆叠面积（四类 token）+ 成本折线（右轴）
+const trendOption = computed(() => {
+  const rows = daily.value;
+  const dates = rows.map((r) => r.date);
+  const base = {
+    backgroundColor: "transparent",
+    textStyle: { color: "#d4d4d4" },
+    tooltip: { trigger: "axis" },
+    legend: {
+      data: ["输入", "输出", "缓存读", "缓存写", "成本"],
+      top: 0,
+      textStyle: { color: "#a3a3a3" },
+    },
+    grid: { left: 50, right: 60, top: 36, bottom: 40 },
+    xAxis: { type: "category", data: dates, axisLabel: { color: "#737373" } },
+    yAxis: [
+      { type: "value", name: "tokens", axisLabel: { color: "#737373", formatter: (v) => fmtNum(v) } },
+      { type: "value", name: "USD", axisLabel: { color: "#737373" }, splitLine: { show: false } },
+    ],
+    series: [
+      seriesArea("输入", rows.map((r) => r.inputTokens), "#3b82f6"),
+      seriesArea("输出", rows.map((r) => r.outputTokens), "#22c55e"),
+      seriesArea("缓存读", rows.map((r) => r.cacheReadTokens), "#a855f7"),
+      seriesArea("缓存写", rows.map((r) => r.cacheWriteTokens), "#f97316"),
+      {
+        name: "成本",
+        type: "line",
+        yAxisIndex: 1,
+        data: rows.map((r) => Number(r.costUSD) || 0),
+        lineStyle: { color: "#f43f5e", type: "dashed" },
+        itemStyle: { color: "#f43f5e" },
+        symbol: "circle",
+        symbolSize: 5,
+      },
+    ],
+  };
+  return base;
+});
+
+function seriesArea(name, data, color) {
+  return {
+    name,
+    type: "line",
+    stack: "tokens",
+    smooth: true,
+    showSymbol: false,
+    data,
+    lineStyle: { color },
+    itemStyle: { color },
+    areaStyle: { opacity: 0.25 },
+  };
+}
+</script>
+
+<template>
+  <div class="flex h-full min-h-0 flex-col overflow-hidden text-[#e5e5e5]">
+    <div class="flex-1 min-h-0 overflow-y-auto px-6 py-5 text-sm text-[#d4d4d4]">
+      <div class="mb-4 flex items-center justify-between gap-3">
+        <Button variant="text" @click="backHome">← 返回首页</Button>
+        <div class="flex items-center gap-3 text-xs text-[#737373]">
+          <span v-if="updatedAt">刷新于 {{ updatedAt }}</span>
+          <label class="flex items-center gap-1">
+            <input
+              type="checkbox"
+              class="h-3 w-3 accent-[#10AD5D]"
+              :checked="autoRefresh"
+              @change="toggleAutoRefresh"
+            />
+            <span>自动刷新</span>
+          </label>
+          <select
+            v-model="refreshInterval"
+            class="h-6 rounded-[4px] border border-[#3f3f3f] bg-[#232323] px-1 text-xs text-[#d4d4d4] outline-none"
+            @change="onIntervalChange"
+          >
+            <option :value="10">10s</option>
+            <option :value="30">30s</option>
+            <option :value="60">60s</option>
+          </select>
+          <Button variant="text" :disabled="loading" @click="refresh">
+            {{ loading ? "刷新中…" : "刷新" }}
+          </Button>
+        </div>
+      </div>
+
+      <p v-if="errorMsg" class="mb-4 text-xs text-red-400">{{ errorMsg }}</p>
+
+      <!-- 通俗说明：给非技术用户解释这些数字到底是什么 -->
+      <section class="mb-5 rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] p-3 text-xs leading-relaxed text-[#9a9a9a]">
+        <span class="text-[#d4d4d4]">怎么看这张表：</span>
+        「真实消耗 Tokens」是你实际「烧掉」的 token 总量，= 本次新输入 + 模型输出 + 缓存写入 + 缓存读取，
+        是衡量用量的最准数字。「总成本」按各模型的官方单价 × 你设的倍率估算（美元），仅供参考，
+        实际账单以 provider 为准。带「≈」的日成本是近似值（按当天所有模型的均价估算），精确成本看下方「模型统计」。
+      </section>
+
+      <!-- Hero: 真实消耗 token 板 -->
+      <section class="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-6">
+        <div class="rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] p-3">
+          <div class="text-xs text-[#737373]">真实消耗 Tokens</div>
+          <div class="mt-1 text-lg font-semibold text-[#e5e5e5] tabular-nums">
+            {{ fmtNum(totals?.realTotalTokens) }}
+          </div>
+        </div>
+        <div class="rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] p-3">
+          <div class="text-xs text-[#737373]">总请求</div>
+          <div class="mt-1 text-lg font-semibold text-[#e5e5e5] tabular-nums">
+            {{ fmtNum(totals?.providerCalls) }}
+          </div>
+        </div>
+        <div class="rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] p-3">
+          <div class="text-xs text-[#737373]">总成本</div>
+          <div class="mt-1 text-lg font-semibold text-[#10AD5D] tabular-nums">
+            {{ fmtUsd(totals?.totalCostUSD) }}
+          </div>
+        </div>
+        <div class="rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] p-3">
+          <div class="text-xs text-[#737373]">缓存命中率</div>
+          <div class="mt-1 text-lg font-semibold text-[#a855f7] tabular-nums">
+            {{ fmtPct(totals?.cacheHitRate) }}
+          </div>
+        </div>
+        <div class="rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] p-3">
+          <div class="text-xs text-[#737373]">输入 Tokens</div>
+          <div class="mt-1 text-base font-medium text-[#3b82f6] tabular-nums">
+            {{ fmtNum(totals?.inputTokens) }}
+          </div>
+        </div>
+        <div class="rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] p-3">
+          <div class="text-xs text-[#737373]">输出 Tokens</div>
+          <div class="mt-1 text-base font-medium text-[#22c55e] tabular-nums">
+            {{ fmtNum(totals?.outputTokens) }}
+          </div>
+        </div>
+      </section>
+
+      <!-- 趋势图 -->
+      <section class="mb-6 rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] p-4">
+        <h2 class="mb-1 text-base font-medium text-[#e5e5e5]">使用趋势（按日）</h2>
+        <p class="mb-3 text-xs text-[#737373]">
+          成本折线（虚线）是按当天各模型均价估算的近似值，仅供参考趋势；精确成本见下方模型统计。
+        </p>
+        <div v-if="!daily.length" class="py-8 text-center text-[#737373]">暂无数据</div>
+        <EChart v-else :option="trendOption" height="320px" />
+      </section>
+
+      <!-- 模型统计 -->
+      <section class="mb-6">
+        <h2 class="mb-1 text-base font-medium text-[#e5e5e5]">模型统计</h2>
+        <p class="mb-3 text-xs text-[#737373]">
+          按模型拆分的精确成本。「倍率」是你在定价管理里给该模型设的加价倍数（1=按官方原价）；
+          成本已按各家的计费口径自动校准（OpenAI 系列的 input 已扣除缓存部分，避免重复计费）。
+        </p>
+        <div v-if="!byModel.length" class="py-4 text-center text-[#737373]">暂无数据</div>
+        <div v-else class="overflow-x-auto rounded-lg border border-[#2a2a2a]">
+          <table class="w-full text-xs">
+            <thead class="bg-[#222] text-[#a3a3a3]">
+              <tr>
+                <th class="px-3 py-2 text-left font-medium">模型</th>
+                <th class="px-3 py-2 text-left font-medium">Provider</th>
+                <th class="px-3 py-2 text-right font-medium">请求</th>
+                <th class="px-3 py-2 text-right font-medium">真实 Tokens</th>
+                <th class="px-3 py-2 text-right font-medium">总成本</th>
+                <th class="px-3 py-2 text-right font-medium">均价/请求</th>
+                <th class="px-3 py-2 text-right font-medium">倍率</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="m in byModel"
+                :key="m.modelId"
+                class="border-t border-[#2a2a2a] hover:bg-[#1f1f1f]"
+              >
+                <td class="px-3 py-2 font-mono">{{ m.modelName || m.modelId }}</td>
+                <td class="px-3 py-2 text-[#8f8f8f]">{{ m.provider || "—" }}</td>
+                <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(m.providerCalls) }}</td>
+                <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(m.realTotalTokens) }}</td>
+                <td class="px-3 py-2 text-right tabular-nums text-[#10AD5D]">{{ fmtUsd(m.totalCost) }}</td>
+                <td class="px-3 py-2 text-right tabular-nums">{{ fmtUsd(m.avgCostPerRequest) }}</td>
+                <td class="px-3 py-2 text-right tabular-nums text-[#8f8f8f]">{{ m.costMultiplier }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Provider 统计 -->
+      <section class="mb-6">
+        <h2 class="mb-3 text-base font-medium text-[#e5e5e5]">Provider 统计</h2>
+        <div v-if="!byProvider.length" class="py-4 text-center text-[#737373]">暂无数据</div>
+        <div v-else class="overflow-x-auto rounded-lg border border-[#2a2a2a]">
+          <table class="w-full text-xs">
+            <thead class="bg-[#222] text-[#a3a3a3]">
+              <tr>
+                <th class="px-3 py-2 text-left font-medium">Provider</th>
+                <th class="px-3 py-2 text-right font-medium">请求</th>
+                <th class="px-3 py-2 text-right font-medium">真实 Tokens</th>
+                <th class="px-3 py-2 text-right font-medium">总成本</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="p in byProvider"
+                :key="p.provider"
+                class="border-t border-[#2a2a2a] hover:bg-[#1f1f1f]"
+              >
+                <td class="px-3 py-2">{{ p.provider }}</td>
+                <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(p.providerCalls) }}</td>
+                <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(p.realTotalTokens) }}</td>
+                <td class="px-3 py-2 text-right tabular-nums text-[#10AD5D]">{{ fmtUsd(p.totalCost) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 请求日志 -->
+      <section class="mb-6">
+        <h2 class="mb-3 text-base font-medium text-[#e5e5e5]">请求日志（最近 500 条）</h2>
+        <div v-if="!recentEvents.length" class="py-4 text-center text-[#737373]">暂无数据</div>
+        <div v-else class="max-h-96 overflow-y-auto rounded-lg border border-[#2a2a2a]">
+          <table class="w-full text-xs">
+            <thead class="sticky top-0 bg-[#222] text-[#a3a3a3]">
+              <tr>
+                <th class="px-3 py-2 text-left font-medium">时间</th>
+                <th class="px-3 py-2 text-left font-medium">模型</th>
+                <th class="px-3 py-2 text-left font-medium">Provider</th>
+                <th class="px-3 py-2 text-right font-medium">输入</th>
+                <th class="px-3 py-2 text-right font-medium">输出</th>
+                <th class="px-3 py-2 text-right font-medium">缓存读</th>
+                <th class="px-3 py-2 text-right font-medium">成本</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="e in recentEvents"
+                :key="e.eventId"
+                class="border-t border-[#2a2a2a] hover:bg-[#1f1f1f]"
+              >
+                <td class="px-3 py-2 whitespace-nowrap text-[#8f8f8f]">{{ fmtTime(e.at) }}</td>
+                <td class="px-3 py-2 font-mono">{{ e.modelName || e.modelId || "—" }}</td>
+                <td class="px-3 py-2 text-[#8f8f8f]">{{ e.provider || "—" }}</td>
+                <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(e.inputTokens) }}</td>
+                <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(e.outputTokens) }}</td>
+                <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(e.cacheReadTokens) }}</td>
+                <td class="px-3 py-2 text-right tabular-nums text-[#10AD5D]">{{ fmtUsd(e.costUSD) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="mt-2 text-xs text-[#737373]">
+          recent_events 仅保留最近 500 条；历史累计见上方 Hero 与模型/Provider 统计。
+        </p>
+      </section>
+    </div>
+  </div>
+</template>

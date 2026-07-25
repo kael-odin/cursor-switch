@@ -241,12 +241,11 @@ func (service *Service) updateConversationTokenState(stream *ActiveStream, conve
 		return nil
 	}
 	now := time.Now().UTC()
-	autoCompactionReserveTokens := int64(compactionAutoReserveTokens)
+	// 预留 token 留给 updateConversationAutoCompactionState 按上下文窗口动态计算，
+	// 这里不再预先取固定值（contextWindow 在闭包内才可知）。
+	autoCompactionReserveTokens := int64(0)
 	if finalizeAutoCompaction {
-		autoCompactionReserveTokens = service.resolveCompactionReserveTokens(activeStreamModelID(stream))
-		if autoCompactionReserveTokens <= 0 {
-			autoCompactionReserveTokens = compactionAutoReserveTokens
-		}
+		autoCompactionReserveTokens = service.resolveCompactionReserveTokens(activeStreamModelID(stream), 0)
 	}
 	_, err := service.updateConversationMetaAndCheckpoint(stream, conversationID, func(item *ConversationFile) error {
 		if item == nil {
@@ -289,7 +288,8 @@ func updateConversationAutoCompactionState(conversation *ConversationFile, promp
 		contextWindowTokens = projectedConversationMaxTokens
 	}
 	if reserveTokens <= 0 {
-		reserveTokens = compactionAutoReserveTokens
+		// 按 contextWindow 动态计算预留（8%，floor16384/max80000）
+		reserveTokens = compactionReserveTokensFor(contextWindowTokens)
 	}
 	remainingTokens := contextWindowTokens - promptTokensTotal
 	if remainingTokens > reserveTokens {
@@ -353,6 +353,7 @@ func (service *Service) recordTurnUsageSnapshot(stream *ActiveStream, conversati
 			UsagePresent:     usage.UsagePresent,
 			ModelID:          modelID,
 			ModelName:        modelName,
+			Provider:         provider,
 		}); err != nil {
 			return err
 		}

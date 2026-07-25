@@ -2,28 +2,46 @@
 
 # Cursor助手 · cursor-byok
 
-**把你自己的 LLM API key 接入 Cursor IDE，同时保留真实 Cursor 账号的 marketplace / customize 全功能**
+### 把任意 LLM API key 接入 Cursor IDE，同时保留真实 Cursor 账号的 marketplace / customize 全功能
+
+**比上游原版更强大的 Cursor 本地代理 + byok 模型路由 + 成本统计内核**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/kael-odin/cursor-byok?include_prereleases)](https://github.com/kael-odin/cursor-byok/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/kael-odin/cursor-byok/check.yml?branch=main&label=CI)](https://github.com/kael-odin/cursor-byok/actions)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#安装)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#-安装与使用)
 
-📚 [English](./README_EN.md) · 中文 · [接口与架构速查](./docs/接口与架构速查.md) · [架构重构记录](./docs/架构重构记录.md)
+📚 [English](./README_EN.md) · 中文 · [接口与架构速查](./docs/接口与架构速查.md) · [架构重构记录](./docs/架构重构记录.md) · [发版与签名](./docs/RELEASE_SIGNING.md)
 
 </div>
 
----
-
-<img width="820" alt="screenshot" src="https://github.com/user-attachments/assets/2e1710b0-cdbd-4576-bd24-1614df016219" />
-<img width="820" alt="screenshot" src="https://github.com/user-attachments/assets/00885453-6a91-4052-aadf-f686daeec881" />
-<img width="820" alt="screenshot" src="https://github.com/user-attachments/assets/a607be84-a738-4e33-9750-13352e74001c" />
+> **Cursor BYOK** · **Cursor 自定义模型** · **Cursor 本地代理** · **Cursor 接入第三方 API** · **Cursor 用自己的 key** · **Cursor 成本统计** · **Cursor agent 自托管**
+>
+> 关键词：Cursor byok / Cursor 自定义 LLM / OpenAI 兼容接入 Cursor / Anthropic Claude 接入 Cursor / Cursor 模型路由 / Cursor prompt cache / Cursor agent 本地化 / Cursor marketplace 真实账号共存
 
 ---
 
-## ✨ 1.0.0 重大变更
+## 🚀 为什么用这个 fork
 
-1.0.0 是一次架构级重构，核心变化：**真实 Cursor 账号与 byok 自定义模型共存**。
+这是 [leookun/cursor-byok](https://github.com/leookun/cursor-byok) 的增强分支。在上游基础上做了一轮**架构级重构 + 一整套成本与用量统计能力**，解决原版的几个硬伤：
+
+| 痛点 | 上游原版 | 本 fork |
+|---|---|---|
+| 开着 byok 能否登录真实 Cursor 账号 | 伪造 Ultra 假账号覆盖真实登录态，**无法登录/退出** | 三条控制面分离，**真实账号与 byok 共存**，登录/退出/marketplace 全功能 |
+| marketplace / customize | mock 假数据，**能看不能装**（安装 404） | 官方透传，**插件/MCP/skills/subagents/rules/commands/hooks 全可用** |
+| 获取模型列表 | 手填 modelID | **一键拉取 provider `/v1/models` + 多选批量添加 + 上下文窗口自动回填** |
+| 模型定价匹配 | 无 | **候选匹配**（去命名空间/版本/日期/推理努力后缀）+ **FRESH/TOTAL/legacy 成本语义**（避免缓存部分重复计费） |
+| 用量与成本可视化 | 基础 token 计数 | **ECharts 使用统计仪表盘**：按日趋势 / 模型 / Provider 维度 + 真实消耗 token + 缓存命中率 + 成本估算 |
+| 默认 token 参数 | 65536 输出 / 固定压缩预留 | **128K 输出**（对齐 Opus 5 / 4.8 等旗舰上限）+ **动态压缩预留**（按通道上下文窗口 8% 自适应） |
+| 更新安全 | checksum 校验 | **ed25519 强制签名** + 每机器独立 CA + loopback 信任分离 + 写路径围栏 |
+
+> 完整架构与接口分类见 [docs/接口与架构速查.md](./docs/接口与架构速查.md)，重构决策历程见 [docs/架构重构记录.md](./docs/架构重构记录.md)。
+
+---
+
+## ✨ 1.0.0 架构级重构：真实账号 + byok 自定义模型共存
+
+核心变化：**真实 Cursor 账号与 byok 自定义模型共存**。
 
 ### 旧版（≤0.0.41）的问题
 
@@ -31,7 +49,7 @@
 - marketplace / customize 是 mock 的假数据，**能看不能装**（插件卡片显示但安装 404）
 - 假 Ultra 身份与真实账号混用，UI 状态不一致
 
-### 1.0.0 的解法：三条控制面分离
+### 解法：三条控制面分离
 
 把 Cursor 的请求分成三条互不干扰的面：
 
@@ -41,9 +59,7 @@
 | **订阅 / 套餐 / 用量** | 本地 mock（无限制 Pro） | 模型选择器**不锁 auto**，不被真实套餐限制 |
 | **模型推理 / 数据面** | byok 本地（你的 provider key） | 自定义模型路由 + 成本统计 |
 
-**效果**：开着 byok，既能用你自己的 key/模型，又能用真实 Cursor 账号的完整 marketplace（plugins / MCP / skills / subagents / rules / commands / hooks），还能正常登录/退出账号。
-
-> 完整架构与接口分类见 [docs/接口与架构速查.md](./docs/接口与架构速查.md)，重构决策历程见 [docs/架构重构记录.md](./docs/架构重构记录.md)。
+**效果**：开着 byok，既能用你自己的 key/模型，又能用真实 Cursor 账号的完整 marketplace，还能正常登录/退出账号。
 
 ### 安全增强
 
@@ -62,6 +78,7 @@
 - 想用第三方 OpenAI 兼容 / Anthropic 兼容 API 驱动 Cursor 的 chat 与 agent
 - 想用真实 Cursor 账号的 marketplace / customize，同时用自己的 key 跑模型
 - 想自托管整套 agent 服务，不被单一平台锁定
+- 想精确统计每个模型、每次请求的 token 消耗与成本
 
 ## 🔧 工作原理
 
@@ -80,7 +97,9 @@
 | OpenAI 兼容 | `/v1/responses`、`/v1/chat/completions`、自定义路径 | OpenAI 官方、各类第三方 OpenAI 兼容网关 |
 | Anthropic 兼容 | Anthropic Messages API | Claude 官方、Bedrock/Vertex 透出等 |
 
-每条模型配置含：`baseURL`、`apiKey`、`modelID`、provider 类型、端点、reasoning effort、thinking budget、自定义请求头、额外请求参数、context window、max tokens。
+内置 **120+ 模型定价表**（Anthropic Claude / OpenAI GPT / Google Gemini / xAI Grok / DeepSeek / Kimi / Doubao / Qwen / GLM / MiniMax / MiMo / Mistral / Cohere 等），覆盖 2026 年主流旗舰（Claude Opus 5 / 4.8、GPT-5.6、Gemini 3.x、Grok 4.5 等）。
+
+每条模型配置含：`baseURL`、`apiKey`、`modelID`、provider 类型、端点、reasoning effort、thinking budget、自定义请求头、额外请求参数、context window、max tokens、成本倍率。
 
 ## 💻 支持的 IDE
 
@@ -88,15 +107,33 @@
 
 ## ✅ 主要功能
 
-- **真实账号共存**：1.0.0 起，开着 byok 也能登录/退出真实 Cursor 账号，marketplace/customize 全功能可用
+### 模型配置
+- **一键获取模型列表**：根据 baseURL/apiKey 调 provider `/v1/models`，自动探测候选端点（OpenAI `/v1/models` ↔ Anthropic 兼容后缀剥离）
+- **多选批量添加**：勾选多个模型一次性追加，继承当前表单的接口地址/密钥/端点/自定义参数
+- **上下文窗口自动回填**：内置 models.dev 缓存表 + 候选匹配，拉到的模型自动反查上下文窗口（1M / 400K / 256K / 200K 等），免去手填
 - **模型适配器管理**：GUI 增删改查、单测 / 批量并发测试（并发 10）
+
+### 成本与用量统计
+- **使用统计仪表盘**：ECharts 按日趋势图（四类 token 堆叠面积 + 成本折线双轴）、模型统计表、Provider 统计表、请求日志（最近 500 条）
+- **真实消耗 token 口径**：fresh_input + output + cache_creation + cache_read（cc-switch 口径）
+- **候选匹配定价**：去命名空间（`openai.`/`anthropic.`）、`-vN` 版本、日期后缀、推理努力后缀（`-low/-medium/-high`）、前缀回退，让 `openai.gpt-5` / `claude-opus-4-6-20251114` 都能命中价目
+- **FRESH/TOTAL/legacy 成本语义**：OpenAI 系列的 input 已扣除缓存部分（避免重复计费），Anthropic 系列按 legacy 口径，三家计费差异自动校准
+- **per-adapter 成本倍率**：每个模型可单独设倍率（1=官方原价），全局默认倍率可覆盖
+- **缓存命中率**：默认口径 / 计入缓存创建两种可切换
+
+### agent 内核
+- **真实账号共存**：1.0.0 起，开着 byok 也能登录/退出真实 Cursor 账号，marketplace/customize 全功能可用
 - **两种运行模式**：本地服务模式（默认，请求经本地 backend 转发到你配置的模型）/ 直连 Cursor 模式（放行到官方，默认关闭）
-- **usage 指标**：input / output / cache token、缓存命中率、按内置模型定价估算花费
 - **prompt cache**：Anthropic cache breakpoints、OpenAI prompt_cache_key
 - **thinking / reasoning**：深度思考、reasoning effort 控制、按 provider 差异化注入 disable 字段
+- **动态压缩预留**：按通道上下文窗口自适应（8%，min 16K / max 80K），不再固定 10000
+- **128K 默认最大输出**：对齐 Claude Opus 5 / 4.8 / Sonnet 5 等旗舰输出上限
 - **会话持久化**：`~/.cursor-local-assistant-v2/` 下 config / history / logs
-- **自动更新**：从本仓库 release 拉取带签名的 `update.json` manifest
+
+### 平台与安全
+- **自动更新**：从本仓库 release 拉取带 ed25519 签名的 `update.json` manifest
 - **多语言 GUI**：简体中文、English、日本語
+- **跨平台**：Windows / macOS / Linux
 
 ---
 
@@ -106,7 +143,7 @@
 
 1. 从 [Releases](https://github.com/kael-odin/cursor-byok/releases) 下载对应平台压缩包
 2. 解压到任意目录，启动应用
-3. 在「模型配置」中添加你的模型适配器（填 baseURL / apiKey / modelID）
+3. 在「模型配置」中添加你的模型适配器（填 baseURL / apiKey / modelID，或点「获取模型列表」一键拉取）
 4. 启动本地服务（首次需 UAC 提权安装 CA 证书）
 5. **登录你的 Cursor 账号**（1.0.0 新能力：开着 byok 也能正常登录）
 6. **再启动 Cursor**——顺序很重要：先开插件、装好 CA、配好模型、登录账号，最后才开 Cursor
@@ -118,7 +155,7 @@
 ```
 1. 启动 cursor-byok 插件
 2. 首次启动会申请 UAC 安装本地 CA 证书 → 同意
-3. 在「模型配置」添加你的 provider（baseURL/apiKey/modelID）→ 测试连通
+3. 在「模型配置」添加你的 provider（点「获取模型列表」可一键拉取并多选批量添加）→ 测试连通
 4. 启动本地服务（开关打到"启动"）
 5. 登录你的 Cursor 账号（插件内或 Cursor 内均可，1.0.0 起不再冲突）
 6. 启动 Cursor → 打开对话，选择你的 byok 模型 → 打开 marketplace 验证完整界面
@@ -193,16 +230,18 @@ internal/
   backend/
     server/              HTTP 路由、中间件、凭证捕获、policy
     server/upstream/     出站凭证策略（CredentialOriginalCursor 等）
-    server/config/       loopback 强制、路由模式
-    forwarder/           agent 执行内核（actor/compaction/tool）
+    server/config/       loopback 强制、路由模式、定价表 + 候选匹配
+    forwarder/           agent 执行内核（actor/compaction/tool/usage_store）
     agent/model/         模型适配器（openai.go / anthropic.go / router.go）
     host.go              路由分类总表（透传 vs 本地 mock）
   cursor/                Cursor 客户端注入（证书、settings、state.vscdb 修复）
   netproxy/              系统级网络代理（含 no-redirect 客户端）
   updater/               自动更新 + ed25519 签名校验
   certs/                 每机器独立 CA 生成
+  client/                fetch-models + 上下文窗口回填
+  bridge/                使用统计仪表盘后端 + 成本计算（FRESH/TOTAL/legacy）
   buildinfo/             版本与发布目标
-frontend/                Vue 3 + vue-router + Tailwind + i18n
+frontend/                Vue 3 + vue-router + Tailwind + i18n + ECharts
 proto/                   Cursor 兼容 proto 定义
 cursor-tab-server/       Cursor Tab 补全反向代理（独立程序）
 docs/                    文档（架构速查 / 重构记录 / 发版签名 / 开发指南）
@@ -218,6 +257,8 @@ docs/                    文档（架构速查 / 重构记录 / 发版签名 / �
 ## 🤝 贡献
 
 PR 前请跑 `go vet ./...` + `go test ./...`，并确保版本号三处合一（CI `check.yml` 会校验）。
+
+新模型上市时，往 `internal/backend/server/config/pricing.go` 的 `pricingModelSeed` 加定价记录、往 `internal/client/model_context_window.go` 的 `contextWindowByModelID` 加上下文窗口即可，两张表都是纯数据。
 
 ## 📄 许可证
 

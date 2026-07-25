@@ -31,7 +31,7 @@ const (
 	nonStreamingExecCloseGrace     = 1500 * time.Millisecond
 	defaultSummaryCompletedThought = "Chat context summarized"
 	providerDefaultMaxOutputTokens = 65536
-	providerOutputSafetyTokens     = 1024
+	providerOutputSafetyTokens     = 4096
 
 	runtimeThinkingEffortParameterID = "thinking_effort"
 )

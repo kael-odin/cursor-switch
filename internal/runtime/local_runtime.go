@@ -28,7 +28,7 @@ const (
 	// configurableChannelMaxTokens 表示当前声明中的 configurableChannelMaxTokens。
 	configurableChannelMaxTokens = 65_536
 	// configurableChannelThinkingBudgetTokens 表示当前声明中的 configurableChannelThinkingBudgetTokens。
-	configurableChannelThinkingBudgetTokens = 4_096
+	configurableChannelThinkingBudgetTokens = 16_384
 	// configurableChannelAnthropicThinkingEffort 表示 Anthropic adaptive thinking 默认强度。
 	configurableChannelAnthropicThinkingEffort = "xhigh"
 )

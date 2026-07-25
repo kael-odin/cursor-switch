@@ -14,7 +14,9 @@ import (
 	promptengine "cursor/internal/backend/agent/prompt"
 )
 
-const projectedConversationMaxTokens = 130000
+// projectedConversationMaxTokens 是当 channel 级 ContextWindowTokens 未知时的兜底窗口。
+// 与 defaultChannelContextWindowTokens(200K) 对齐，避免误用偏小的 130K 导致压缩提前触发。
+const projectedConversationMaxTokens = 200000
 
 type HistoryProjector struct {
 }

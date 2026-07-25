@@ -4,6 +4,7 @@ import Home from "@/views/Home.vue";
 import ModelConfig from "@/views/ModelConfig.vue";
 import ModelEditor from "@/views/ModelEditor.vue";
 import PricingPanel from "@/views/PricingPanel.vue";
+import UsageDashboard from "@/views/UsageDashboard.vue";
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -30,6 +31,11 @@ const router = createRouter({
       path: "/pricing",
       component: PricingPanel,
       meta: { showIcon: false, title: "成本定价", directlyClose: true },
+    },
+    {
+      path: "/usage-dashboard",
+      component: UsageDashboard,
+      meta: { showIcon: false, title: "使用统计", directlyClose: true },
     },
   ],
 });

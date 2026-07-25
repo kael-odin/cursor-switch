@@ -1167,6 +1167,72 @@ export async function saveModelAdapterAt(index, adapter) {
   };
 }
 
+// 批量追加模型适配器：从「获取模型列表」多选时使用。
+// 以 templateAdapter 继承 baseURL/apiKey/type/endpoint/extra params/customHeaders，
+// 仅替换每条的 modelID + displayName。与现有 adapter 按 (baseURL+modelID+apiKey) 去重，
+// 已存在的跳过并计入 skipped 列表。
+export async function appendModelAdaptersBatch(templateAdapter, models) {
+  const currentConfig = await loadPersistedUserConfig();
+  const nextAdapters = normalizeModelAdapters(currentConfig.modelAdapters);
+  const template = normalizeModelAdapter(templateAdapter);
+
+  const existingKeys = new Set(
+    nextAdapters.map((adapter) => buildModelAdapterIdentityKey(adapter)),
+  );
+
+  const added = [];
+  const skipped = [];
+  for (const model of models ?? []) {
+    const modelID = String(model?.id || "").trim();
+    if (!modelID) {
+      continue;
+    }
+    const displayName = String(model?.displayName || "").trim() || modelID;
+    // 若 fetch-models 已反查到上下文窗口（内置 models.dev 缓存表），自动带入，省得用户手填。
+    const contextWindowTokens = Number(model?.contextWindowTokens) || 0;
+    const candidate = {
+      ...template,
+      id: "",
+      modelID,
+      displayName,
+      // tooltipData 服务端要求非空：保留模板值，模板没设就用 displayName 兜底（避免批量添加卡在悬停提示校验）。
+      tooltipData: template.tooltipData || displayName,
+      // 仅当模板未显式设置窗口时才用反查值，尊重用户在模板里填的覆盖。
+      contextWindowTokens: template.contextWindowTokens || contextWindowTokens,
+    };
+    const identityKey = buildModelAdapterIdentityKey(candidate);
+    if (existingKeys.has(identityKey)) {
+      skipped.push(modelID);
+      continue;
+    }
+    existingKeys.add(identityKey);
+    nextAdapters.push(candidate);
+    added.push(modelID);
+  }
+
+  if (added.length === 0) {
+    return {
+      ok: false,
+      error: skipped.length ? `所选模型均已存在：${skipped.join("、")}` : "没有可添加的模型",
+      added: [],
+      skipped,
+    };
+  }
+
+  const result = await persistConfigPayload(
+    {
+      ...currentConfig,
+      modelAdapters: nextAdapters,
+    },
+    { modelAdaptersOnly: true },
+  );
+  return {
+    ...result,
+    added,
+    skipped,
+  };
+}
+
 export async function deleteModelAdapterAt(index) {
   const currentConfig = await loadPersistedUserConfig();
   const nextAdapters = normalizeModelAdapters(currentConfig.modelAdapters);

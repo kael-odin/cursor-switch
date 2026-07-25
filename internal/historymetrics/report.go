@@ -1,5 +1,7 @@
 package historymetrics
 
+import "time"
+
 type Summary struct {
 	ProviderCallsTotal int      `json:"providerCallsTotal"`
 	TurnsTotal         int      `json:"turnsTotal"`
@@ -18,6 +20,7 @@ type Summary struct {
 type ModelUsage struct {
 	ModelID         string `json:"modelId"`
 	ModelName       string `json:"modelName,omitempty"`
+	Provider        string `json:"provider,omitempty"`
 	ProviderCalls   int64  `json:"providerCalls"`
 	InputTokens     int64  `json:"inputTokens"`
 	OutputTokens    int64  `json:"outputTokens"`
@@ -25,6 +28,21 @@ type ModelUsage struct {
 	CacheWriteTokens int64 `json:"cacheWriteTokens"`
 	TotalTokens     int64  `json:"totalTokens"`
 }
+
+// UsageDashboardRaw 是 usage.json 的完整读取视图，供仪表盘 service 进一步加工。
+type UsageDashboardRaw struct {
+	UpdatedAt     time.Time                 `json:"updatedAt"`
+	Totals        usageFileTotals           `json:"totals"`
+	Daily         []usageFileDaily          `json:"daily"`
+	RecentEvents  []usageFileEvent          `json:"recentEvents"`
+	ByModel       []usageFileModelAggregate `json:"byModel"`
+}
+
+// 导出类型别名，供 bridge.dashboard 跨包引用（Go 不允许跨包用未导出类型）。
+type UsageDashboardRawTotals = usageFileTotals
+type UsageDashboardRawDaily = usageFileDaily
+type UsageDashboardRawEvent = usageFileEvent
+type UsageDashboardRawModelAggregate = usageFileModelAggregate
 
 type Totals struct {
 	InputTokens        int64
