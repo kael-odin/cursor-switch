@@ -109,6 +109,11 @@ const updatedAt = computed(() => {
 // 是否有任意一天的日成本是近似的（旧 usage.json 无 daily.by_model）
 const hasApproximateDaily = computed(() => daily.value.some((r) => r.costApproximate));
 
+// M9：口径异常请求数（基于 recent_events 扫描，非全量）。
+// input < cacheRead+cacheWrite 表示 provider 返回的 input 未正确包含缓存，成本/token 可能失真。
+const calibrationAnomalyCount = computed(() => totals.value?.calibrationAnomalyCount ?? 0);
+const anomalyEvents = computed(() => recentEvents.value.filter((e) => e.calibrationAnomaly));
+
 // 请求日志分页
 const eventTotalPages = computed(() => Math.max(1, Math.ceil(recentEvents.value.length / eventPageSize)));
 const eventPaged = computed(() => {
@@ -252,6 +257,17 @@ function seriesArea(name, data, color) {
         实际账单以 provider 为准。<template v-if="hasApproximateDaily">带「≈」的日成本是近似值
         （当天数据缺模型维度，按均价估算）；升级后新数据已精确按模型计算。</template>
         <template v-else>日成本已按各模型精确计算（per-model 价格 × 倍率）。</template>
+      </section>
+
+      <!-- M9 口径异常提示：仅当存在 input < 缓存 的请求时显示 -->
+      <section
+        v-if="calibrationAnomalyCount > 0"
+        class="mb-5 rounded-lg border border-amber-600/50 bg-amber-950/30 p-3 text-xs leading-relaxed text-amber-300"
+      >
+        <span class="font-medium text-amber-200">⚠ 检测到 {{ calibrationAnomalyCount }} 条请求存在成本口径异常</span>
+        ——这些请求的 input token 数小于缓存读取+缓存写入，说明该 provider 返回的 input
+        未正确包含缓存部分，导致 input 成本可能被低估、真实消耗 token 数可能失真。
+        请在下方请求日志中查看标记「口径异常」的条目，核对对应模型的「输入 token 语义」配置（TOTAL/legacy/FRESH）。
       </section>
 
       <!-- Hero: 真实消耗 token 板 -->
@@ -400,13 +416,14 @@ function seriesArea(name, data, color) {
                   <th class="px-3 py-2 text-right font-medium">输出</th>
                   <th class="px-3 py-2 text-right font-medium">缓存读</th>
                   <th class="px-3 py-2 text-right font-medium">成本</th>
+                  <th class="px-3 py-2 text-center font-medium">状态</th>
                 </tr>
               </thead>
               <tbody>
                 <tr
                   v-for="e in eventPaged"
                   :key="e.eventId"
-                  class="border-t border-[#2a2a2a] hover:bg-[#1f1f1f]"
+                  :class="['border-t border-[#2a2a2a] hover:bg-[#1f1f1f]', e.calibrationAnomaly ? 'bg-amber-950/20' : '']"
                 >
                   <td class="px-3 py-2 whitespace-nowrap text-[#8f8f8f]">{{ fmtTime(e.at) }}</td>
                   <td class="px-3 py-2 font-mono">{{ e.modelName || e.modelId || "—" }}</td>
@@ -415,6 +432,13 @@ function seriesArea(name, data, color) {
                   <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(e.outputTokens) }}</td>
                   <td class="px-3 py-2 text-right tabular-nums">{{ fmtNum(e.cacheReadTokens) }}</td>
                   <td class="px-3 py-2 text-right tabular-nums text-[#10AD5D]">{{ fmtUsd(e.costUSD) }}</td>
+                  <td class="px-3 py-2 text-center">
+                    <span
+                      v-if="e.calibrationAnomaly"
+                      class="text-amber-400"
+                      title="input < 缓存读取+缓存写入，provider 返回的 input 口径可能未包含缓存"
+                    >⚠</span>
+                  </td>
                 </tr>
               </tbody>
             </table>

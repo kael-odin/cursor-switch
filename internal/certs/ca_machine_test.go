@@ -1,12 +1,15 @@
 package certs
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/x509"
 	"encoding/pem"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestEnsureMachineCA_GeneratesAndReloads(t *testing.T) {
@@ -59,5 +62,71 @@ func TestEnsureMachineCA_GeneratesAndReloads(t *testing.T) {
 	}
 	if string(keyPEM1) != string(keyPEM2) {
 		t.Fatalf("second call regenerated key (should reload)")
+	}
+}
+
+// TestLeafCertECDSAAndExpiryRefresh 是 M7 的回归测试：
+//  1. leaf 证书用 ECDSA P-256（不是 RSA-2048）
+//  2. cache 检查 NotAfter，过期 leaf 会被重签
+func TestLeafCertECDSAAndExpiryRefresh(t *testing.T) {
+	tmp := t.TempDir()
+	certPath := filepath.Join(tmp, "ca.crt")
+	keyPath := filepath.Join(tmp, "ca.key")
+	caCertPEM, caKeyPEM, err := EnsureMachineCA(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("EnsureMachineCA: %v", err)
+	}
+	manager, err := NewManagerFromPEM(caCertPEM, caKeyPEM)
+	if err != nil {
+		t.Fatalf("NewManagerFromPEM: %v", err)
+	}
+
+	pair, err := manager.CertificateForServerName("example.com")
+	if err != nil {
+		t.Fatalf("CertificateForServerName: %v", err)
+	}
+	if pair.Leaf == nil {
+		t.Fatalf("leaf not parsed")
+	}
+	// ECDSA P-256 leaf key（不是 RSA）。
+	ecdsaKey, ok := pair.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		t.Fatalf("leaf key type = %T, want *ecdsa.PrivateKey", pair.PrivateKey)
+	}
+	if ecdsaKey.Curve != elliptic.P256() {
+		t.Errorf("leaf curve = %v, want P-256", ecdsaKey.Curve)
+	}
+	// leaf 不含 KeyEncipherment（ECDSA 无意义），只 DigitalSignature。
+	if pair.Leaf.KeyUsage&x509.KeyUsageKeyEncipherment != 0 {
+		t.Errorf("leaf has KeyUsageKeyEncipherment, ECDSA should not")
+	}
+	if pair.Leaf.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+		t.Errorf("leaf missing KeyUsageDigitalSignature")
+	}
+
+	// 第二次调用应命中 cache 返回同一对象（未过期）。
+	pair2, err := manager.CertificateForServerName("example.com")
+	if err != nil {
+		t.Fatalf("second CertificateForServerName: %v", err)
+	}
+	if pair2 != pair {
+		t.Errorf("cache miss on second call (should return same cached cert when not expired)")
+	}
+
+	// M7 关键：手动把 cache 里的 leaf 改成已过期，验证下次调用重签而非返回过期证书。
+	manager.mu.Lock()
+	expired := *pair
+	expiredLeaf := *pair.Leaf
+	expiredLeaf.NotAfter = time.Now().Add(-1 * time.Hour) // 已过期
+	expired.Leaf = &expiredLeaf
+	manager.cache["example.com"] = &expired
+	manager.mu.Unlock()
+
+	pair3, err := manager.CertificateForServerName("example.com")
+	if err != nil {
+		t.Fatalf("refresh CertificateForServerName: %v", err)
+	}
+	if pair3.Leaf.NotAfter.Before(time.Now()) {
+		t.Errorf("expired leaf was not re-issued; NotAfter still %v", pair3.Leaf.NotAfter)
 	}
 }

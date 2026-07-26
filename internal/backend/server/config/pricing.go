@@ -2,6 +2,7 @@ package config
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -74,6 +75,15 @@ var pricingModelSeed = []ModelPricing{
 	{ModelID: "gpt-5.6-sol", DisplayName: "GPT-5.6 Sol", InputPerMillion: "5", OutputPerMillion: "30", CacheReadPerMillion: "0.50", CacheWritePerMillion: "6.25", InputTokenSemantics: InputSemanticsTotal},
 	{ModelID: "gpt-5.6-terra", DisplayName: "GPT-5.6 Terra", InputPerMillion: "2.50", OutputPerMillion: "15", CacheReadPerMillion: "0.25", CacheWritePerMillion: "3.125", InputTokenSemantics: InputSemanticsTotal},
 	{ModelID: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna", InputPerMillion: "1", OutputPerMillion: "6", CacheReadPerMillion: "0.10", CacheWritePerMillion: "1.25", InputTokenSemantics: InputSemanticsTotal},
+	// GPT-5.6 裸名 + effort 后缀别名（cc-switch v3.18.0）：裸 gpt-5.6 是 sol 的官方别名；
+	// effort 后缀对齐 gpt-5.5 系列记账形态，价目同 sol。7 段剥离会把 gpt-5.6-high 剥到 gpt-5.6，
+	// 但表里需有裸名兜底，否则 miss。
+	{ModelID: "gpt-5.6", DisplayName: "GPT-5.6 Sol", InputPerMillion: "5", OutputPerMillion: "30", CacheReadPerMillion: "0.50", CacheWritePerMillion: "6.25", InputTokenSemantics: InputSemanticsTotal},
+	{ModelID: "gpt-5.6-low", DisplayName: "GPT-5.6 Sol", InputPerMillion: "5", OutputPerMillion: "30", CacheReadPerMillion: "0.50", CacheWritePerMillion: "6.25", InputTokenSemantics: InputSemanticsTotal},
+	{ModelID: "gpt-5.6-medium", DisplayName: "GPT-5.6 Sol", InputPerMillion: "5", OutputPerMillion: "30", CacheReadPerMillion: "0.50", CacheWritePerMillion: "6.25", InputTokenSemantics: InputSemanticsTotal},
+	{ModelID: "gpt-5.6-high", DisplayName: "GPT-5.6 Sol", InputPerMillion: "5", OutputPerMillion: "30", CacheReadPerMillion: "0.50", CacheWritePerMillion: "6.25", InputTokenSemantics: InputSemanticsTotal},
+	{ModelID: "gpt-5.6-xhigh", DisplayName: "GPT-5.6 Sol", InputPerMillion: "5", OutputPerMillion: "30", CacheReadPerMillion: "0.50", CacheWritePerMillion: "6.25", InputTokenSemantics: InputSemanticsTotal},
+	{ModelID: "gpt-5.6-minimal", DisplayName: "GPT-5.6 Sol", InputPerMillion: "5", OutputPerMillion: "30", CacheReadPerMillion: "0.50", CacheWritePerMillion: "6.25", InputTokenSemantics: InputSemanticsTotal},
 	{ModelID: "gpt-5.5", DisplayName: "GPT-5.5", InputPerMillion: "5", OutputPerMillion: "30", CacheReadPerMillion: "0.50", InputTokenSemantics: InputSemanticsTotal},
 	{ModelID: "gpt-5.4", DisplayName: "GPT-5.4", InputPerMillion: "2.50", OutputPerMillion: "15", CacheReadPerMillion: "0.25", InputTokenSemantics: InputSemanticsTotal},
 	{ModelID: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini", InputPerMillion: "0.75", OutputPerMillion: "4.50", CacheReadPerMillion: "0.075", InputTokenSemantics: InputSemanticsTotal},
@@ -210,108 +220,216 @@ func normalizePricingModelID(id string) string {
 	return strings.ToLower(strings.TrimSpace(id))
 }
 
-// pricingNamespaceRe 匹配 provider 命名空间前缀（openai./anthropic./google./meta./...）。
-// cc-switch 的 model_pricing_candidates 第一步就是剥掉它，让 "openai.gpt-5" 命中 "gpt-5"。
-var pricingNamespaceRe = regexp.MustCompile(`^(openai|anthropic|google|meta|mistral|cohere|xai|bytedance|alibaba|moonshot|deepseek|zhipu|minimax|xiaomi|step|tencent|baichuan|yi|01-ai|nvidia|amazon|microsoft)\.`)
+// pricingNamespaceMarkers 是已知 provider 命名空间前缀（openai./anthropic./google./...）。
+// cc-switch 的 strip_known_model_namespace 第一步就是剥掉它，让 "openai.gpt-5" 命中 "gpt-5"。
+var pricingNamespaceMarkers = []string{
+	"openai.", "anthropic.", "google.", "moonshot.", "moonshotai.",
+	"bedrock.", "global.", "meta.", "mistral.", "cohere.", "xai.",
+	"bytedance.", "alibaba.", "deepseek.", "zhipu.", "minimax.",
+	"xiaomi.", "step.", "tencent.", "baichuan.", "yi.", "01-ai.",
+	"nvidia.", "amazon.", "microsoft.",
+}
 
-// pricingDateSuffixRe 匹配末尾的日期后缀（如 -20251101、-20251114），剥掉后让带日期的
-// 快照 id（"claude-sonnet-4-6-20251114"）命中无日期的基线 id（"claude-sonnet-4-6"）。
-var pricingDateSuffixRe = regexp.MustCompile(`-\d{6,8}$`)
+// claudeDesktopNonAnthropicMarkers 列出 Claude Desktop 网关给非 Anthropic 模型加的 "claude-" 前缀后缀。
+// 如 "claude-gpt-5" 实际是 OpenAI GPT-5，应剥掉 "claude-" 命中 "gpt-5" 的价目。
+// 仅当 "claude-" 后跟这些 marker 时才剥——否则 "claude-opus-4-7" 这种真 Anthropic 模型不能剥。
+var claudeDesktopNonAnthropicMarkers = []string{
+	"abab", "ark-code", "arctic", "astron", "codex", "command-r",
+	"deepseek", "doubao", "ernie", "gemini", "gemma", "glm", "gpt",
+	"grok", "hermes", "hy3", "hunyuan", "jamba", "kimi", "lfm",
+	"llama", "longcat", "mercury", "mimo", "minimax", "mistral",
+	"mixtral", "moonshot", "nemotron", "nova-", "openai", "qianfan",
+	"qwen", "seed-", "solar", "stepfun",
+}
+
+// pricingDateSuffixRe 匹配末尾 8 位 YYYYMMDD 日期后缀（如 -20251114）。
+// 6 位 YYMMDD 和 ISO -YYYY-MM-DD 由 stripModelDateSuffix 单独做月日校验剥离，
+// 避免误伤非日期的 6 位版本号。
+var pricingDateSuffixRe = regexp.MustCompile(`-\d{8}$`)
+
+// pricingISODateSuffixRe 匹配末尾 ISO 日期 -YYYY-MM-DD（如 -2025-09-29）。
+var pricingISODateSuffixRe = regexp.MustCompile(`-\d{4}-\d{2}-\d{2}$`)
 
 // pricingVersionRe 匹配 -vN 版本后缀（-v1/-v2），剥掉让 "model-v2" 命中 "model"。
 var pricingVersionRe = regexp.MustCompile(`-v\d+$`)
 
-// pricingEffortSuffixRe 匹配 OpenAI Responses 推理努力后缀（-low/-medium/-high），
-// 剥掉让 "o3-mini-high" 命中 "o3-mini"。
-var pricingEffortSuffixRe = regexp.MustCompile(`-(low|medium|high)$`)
+// pricingEffortSuffixRe 匹配推理努力后缀（-minimal/-low/-medium/-high/-xhigh），
+// 剥掉让 "o3-mini-high" / "gpt-5.6-xhigh" 命中基线 id。
+var pricingEffortSuffixRe = regexp.MustCompile(`-(minimal|low|medium|high|xhigh)$`)
+
+// pricingYYMMDDSuffixRe 匹配末尾 6 位数字，由 stripModelYYMMDD 做月日校验后剥离。
+var pricingYYMMDDSuffixRe = regexp.MustCompile(`-\d{6}$`)
 
 // modelPricingCandidates 生成查找候选列表：从原始 id 派生一组逐步宽松的归一化 id。
-// 移植自 cc-switch services/model_pricing_candidates 的 candidates 生成逻辑。
-// 关键：各变换（去命名空间/版本/日期/努力后缀/前缀回退）需相互组合，而非只对原始值各做一次。
-// 否则 "openai.claude-opus-4-6-20251114" 去命名空间后是 "claude-opus-4-6-20251114"，
-// 但去日期只对原始值做会得到 "openai.claude-opus-4-6"，永远凑不出 "claude-opus-4-6"。
-// 这里用工作表把每一步的中间结果都再喂给后续变换，保证组合覆盖。
+// 移植自 cc-switch services/model_pricing_candidates 的 BFS 候选生成（A7 对齐 7 段剥离）。
+//
+// 关键：各变换（去命名空间/claude-desktop 前缀/bedrock 版本/日期/努力后缀/点转横线）需相互组合，
+// 而非只对原始值各做一次。否则 "openai.claude-opus-4-6-20251114" 去命名空间后是
+// "claude-opus-4-6-20251114"，但去日期只对原始值做会得到 "openai.claude-opus-4-6"，
+// 永远凑不出 "claude-opus-4-6"。这里用 BFS：每个候选都施加全部 6 个 strip 变换，
+// 新结果入队继续被后续变换作用，保证组合覆盖。
 func modelPricingCandidates(modelID string) []string {
-	raw := strings.ToLower(strings.TrimSpace(modelID))
-	if raw == "" {
+	cleaned := cleanModelIDForPricing(modelID)
+	if cleaned == "" || isPlaceholderPricingModel(cleaned) {
 		return nil
 	}
+
 	seen := make(map[string]struct{})
-	candidates := make([]string, 0, 12)
-	add := func(s string) {
+	candidates := make([]string, 0, 16)
+	push := func(s string) bool {
 		s = strings.TrimSpace(s)
 		if s == "" {
-			return
+			return false
 		}
 		if _, ok := seen[s]; ok {
-			return
+			return false
 		}
 		seen[s] = struct{}{}
 		candidates = append(candidates, s)
-	}
-	add(raw)
-
-	// transforms 是依次施加的变换链；每一步的输出都并入工作集，供后续步骤继续变换。
-	transforms := []func(string) string{
-		// 1) 去命名空间前缀（openai.gpt-5 → gpt-5）
-		func(s string) string {
-			if loc := pricingNamespaceRe.FindStringIndex(s); loc != nil {
-				return s[loc[1]:]
-			}
-			return s
-		},
-		// 2) 去版本后缀（model-v2 → model）
-		func(s string) string {
-			return pricingVersionRe.ReplaceAllString(s, "")
-		},
-		// 3) 去日期后缀（claude-sonnet-4-6-20251114 → claude-sonnet-4-6）
-		func(s string) string {
-			return pricingDateSuffixRe.ReplaceAllString(s, "")
-		},
-		// 4) 去推理努力后缀（o3-mini-high → o3-mini）
-		func(s string) string {
-			return pricingEffortSuffixRe.ReplaceAllString(s, "")
-		},
+		return true
 	}
 
-	// 工作集：每施加一个变换，把新结果加入并作为后续变换的输入。
-	work := []string{raw}
-	for _, tf := range transforms {
-		next := make([]string, 0, len(work))
-		for _, s := range work {
-			t := tf(s)
-			if t != s {
-				add(t)
-				next = append(next, t)
-			} else {
-				next = append(next, s)
-			}
+	// BFS 工作队列：pop 一个候选，施加全部 strip 变换，新结果 push 入队。
+	queue := []string{cleaned}
+	for len(queue) > 0 {
+		candidate := queue[0]
+		queue = queue[1:]
+		if !push(candidate) {
+			continue
 		}
-		// 保留变换后的集合继续下一步；未变的也留着以便其它变换作用。
-		work = append(work, next...)
-		// 去重 work，避免组合爆炸。
-		seenWork := make(map[string]struct{}, len(work))
-		dedup := work[:0]
-		for _, s := range work {
-			if _, ok := seenWork[s]; ok {
-				continue
-			}
-			seenWork[s] = struct{}{}
-			dedup = append(dedup, s)
+		// 6 段剥离（顺序无关，因 BFS 会组合）：每个 strip 独立 push。
+		if s := stripKnownModelNamespace(candidate); s != "" && s != candidate {
+			queue = append(queue, s)
 		}
-		work = dedup
+		if s := stripClaudeDesktopNonAnthropicPrefix(candidate); s != "" && s != candidate {
+			queue = append(queue, s)
+		}
+		if s := stripBedrockVersionSuffix(candidate); s != "" && s != candidate {
+			queue = append(queue, s)
+		}
+		if s := stripModelDateSuffix(candidate); s != "" && s != candidate {
+			queue = append(queue, s)
+		}
+		if s := stripReasoningEffortSuffix(candidate); s != "" && s != candidate {
+			queue = append(queue, s)
+		}
+		// claude 点号转横线：Claude Desktop 的 "claude.opus.4.7" → "claude-opus-4-7"。
+		// 仅对 claude. 前缀生效（避免误伤 meta.llama-4 这类 provider.点号 id）。
+		if strings.HasPrefix(candidate, "claude.") {
+			queue = append(queue, strings.ReplaceAll(candidate, ".", "-"))
+		}
 	}
 
-	// 5) 前缀回退：对去后缀后的每个候选，把 - 分隔的最后一段砍掉，逐步试更短前缀。
-	//    命中家族通用价目（如某 provider 把整个 claude-opus-4 系列定同价）。
-	prefixSources := append([]string{}, work...)
-	for _, src := range prefixSources {
+	// 前缀回退（cursor-switch 超集，cc-switch 用 should_try_pricing_prefix_match 限定家族）：
+	// 对每个候选把 - 分隔的最后段逐步砍掉，命中家族通用价目（如某 provider 把整个
+	// claude-opus-4 系列定同价）。不限定家族，覆盖更广，最坏只是多几个 miss 候选。
+	for _, src := range append([]string{}, candidates...) {
 		segments := strings.Split(src, "-")
 		for i := len(segments) - 1; i > 0; i-- {
-			add(strings.Join(segments[:i], "-"))
+			push(strings.Join(segments[:i], "-"))
 		}
 	}
 	return candidates
+}
+
+// cleanModelIDForPricing 归一化 model id 用于候选派生：
+//   - 取最后一个 "/" 后的部分（去 provider 路径前缀）
+//   - 取第一个 ":" 前的部分（去 openrouter ":free" 等变体标记）
+//   - "@" → "-"（bedrock cross-region 注入点等）
+//   - 小写、去空白
+func cleanModelIDForPricing(modelID string) string {
+	s := strings.TrimSpace(strings.ToLower(modelID))
+	if s == "" {
+		return ""
+	}
+	if idx := strings.LastIndex(s, "/"); idx >= 0 {
+		s = s[idx+1:]
+	}
+	if idx := strings.Index(s, ":"); idx >= 0 {
+		s = s[:idx]
+	}
+	s = strings.ReplaceAll(s, "@", "-")
+	return strings.TrimSpace(s)
+}
+
+// isPlaceholderPricingModel 判定是否为不应参与定价匹配的占位 id（cc-switch 同名逻辑）。
+// 这类 id（如 "auto"/"default"/"unknown"）即便生成候选也无意义，直接返回空。
+func isPlaceholderPricingModel(modelID string) bool {
+	switch strings.TrimSpace(modelID) {
+	case "", "auto", "default", "unknown", "none", "n/a", "null":
+		return true
+	}
+	return false
+}
+
+// stripKnownModelNamespace 剥离已知 provider 命名空间前缀。
+// 优先用 rfind("claude-")：任何 "xxx/claude-yyy" 或 "openai.claude-yyy" 都截到 "claude-yyy"，
+// 让带路径前缀的 Claude 模型名命中基线。其次剥 marker 前缀（openai./anthropic./...）。
+func stripKnownModelNamespace(modelID string) string {
+	if pos := strings.LastIndex(modelID, "claude-"); pos > 0 {
+		return modelID[pos:]
+	}
+	for _, marker := range pricingNamespaceMarkers {
+		if strings.HasPrefix(modelID, marker) {
+			return strings.TrimPrefix(modelID, marker)
+		}
+	}
+	return ""
+}
+
+// stripClaudeDesktopNonAnthropicPrefix 剥离 Claude Desktop 给非 Anthropic 模型加的 "claude-" 前缀。
+// "claude-gpt-5" → "gpt-5"，但 "claude-opus-4-7" 不剥（opus 是 Anthropic）。
+func stripClaudeDesktopNonAnthropicPrefix(modelID string) string {
+	rest := strings.TrimPrefix(modelID, "claude-")
+	if rest == modelID {
+		return ""
+	}
+	for _, marker := range claudeDesktopNonAnthropicMarkers {
+		if strings.HasPrefix(rest, marker) {
+			return rest
+		}
+	}
+	return ""
+}
+
+// stripBedrockVersionSuffix 剥离 bedrock 版本后缀 -vN（如 "model-v1" → "model"）。
+func stripBedrockVersionSuffix(modelID string) string {
+	if loc := pricingVersionRe.FindStringIndex(modelID); loc != nil && loc[0] > 0 {
+		return modelID[:loc[0]]
+	}
+	return ""
+}
+
+// stripModelDateSuffix 剥离末尾日期后缀。支持三种形态：
+//   - ISO -YYYY-MM-DD（11 位带横线）
+//   - 8 位 YYYYMMDD（如 -20250615）
+//   - 6 位 YYMMDD（如 -260628；额外校验月 01-12、日 01-31，避免误伤版本号）
+func stripModelDateSuffix(modelID string) string {
+	if s := pricingISODateSuffixRe.FindString(modelID); s != "" {
+		return strings.TrimSuffix(modelID, s)
+	}
+	if s := pricingDateSuffixRe.FindString(modelID); s != "" {
+		return strings.TrimSuffix(modelID, s)
+	}
+	loc := pricingYYMMDDSuffixRe.FindStringIndex(modelID)
+	if loc == nil {
+		return ""
+	}
+	suffix := modelID[loc[0]+1:] // 去掉前导 '-'
+	month, _ := strconv.Atoi(suffix[2:4])
+	day, _ := strconv.Atoi(suffix[4:6])
+	if month < 1 || month > 12 || day < 1 || day > 31 {
+		return ""
+	}
+	return modelID[:loc[0]]
+}
+
+// stripReasoningEffortSuffix 剥离推理努力后缀 -minimal/-low/-medium/-high/-xhigh。
+func stripReasoningEffortSuffix(modelID string) string {
+	if loc := pricingEffortSuffixRe.FindStringIndex(modelID); loc != nil && loc[0] > 0 {
+		return modelID[:loc[0]]
+	}
+	return ""
 }
 
 // MatchPricingCandidates 是 modelPricingCandidates 的导出别名，

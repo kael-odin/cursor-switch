@@ -365,6 +365,27 @@ func realTotalTokensForModel(input, output, cacheRead, cacheWrite int64, semanti
 	return freshInput + output + cacheWrite + cacheRead
 }
 
+// isCalibrationAnomaly 判定一条 usage 是否「口径异常」（M9）。
+//
+// TOTAL/legacy 语义下，input 应已包含缓存部分（cache_read[+cache_creation]），
+// 故 input >= cacheRead+cacheWrite（TOTAL）或 input >= cacheRead（legacy）是正常口径。
+// 若 provider 返回的 input 偏小（未正确包含缓存），billableInputTokens 会 clamp 到 0，
+// 导致 input 成本漏算、realTotalTokens 失真——此时标记异常供 UI 提示用户复核该 provider 的口径配置。
+//
+// FRESH 语义不减缓存，不会 clamp，故无异常概念。
+func isCalibrationAnomaly(input, cacheRead, cacheWrite int64, semantics string) bool {
+	switch config.InputTokenSemantics(semantics) {
+	case config.InputSemanticsFresh:
+		return false
+	case config.InputSemanticsTotal:
+		// input 应含 cache_read+cache_creation，不足即异常。
+		return input < cacheRead+cacheWrite
+	default: // legacy
+		// input 应含 cache_read，不足即异常。
+		return input < cacheRead
+	}
+}
+
 func parseFloatOr(value string, fallback float64) float64 {
 	value = strings.TrimSpace(value)
 	if value == "" {

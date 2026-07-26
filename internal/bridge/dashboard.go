@@ -45,6 +45,9 @@ type UsageDashboardTotals struct {
 	RealTotalTokens int64 `json:"realTotalTokens"`
 	CacheHitRate    *float64 `json:"cacheHitRate"`
 	TotalCostUSD    float64 `json:"totalCostUSD"`
+	// CalibrationAnomalyCount 是 recent_events 里口径异常的请求数（M9）。
+	// 仅基于最近 500 条事件扫描，非全量；用于 UI 提示用户某些 provider 的 input 口径可能不准。
+	CalibrationAnomalyCount int64 `json:"calibrationAnomalyCount"`
 }
 
 // UsageDashboardDaily 是单日聚合（含成本）。
@@ -114,6 +117,9 @@ type UsageDashboardEvent struct {
 	RealTotalTokens  int64     `json:"realTotalTokens"`
 	UsagePresent     bool      `json:"usagePresent"`
 	CostUSD          float64   `json:"costUSD"`
+	// CalibrationAnomaly 为 true 表示该请求 input < cacheRead+cacheWrite，
+	// provider 返回的 input 口径可能未正确包含缓存，成本/token 统计可能失真（M9）。
+	CalibrationAnomaly bool `json:"calibrationAnomaly"`
 }
 
 // GetUsageDashboard 返回使用统计仪表盘的完整数据。
@@ -150,6 +156,13 @@ func (service *MetricsService) GetUsageDashboard() (UsageDashboard, error) {
 		RealTotalTokens:   sumModelRealTokens(byModel),
 		CacheHitRate:      cacheHitRate(raw.Totals.InputTokens, raw.Totals.CacheReadTokens),
 		TotalCostUSD:      sumModelCosts(byModel),
+	}
+	// M9：从 recent_events 扫描口径异常请求数（仅近 500 条，非全量）。
+	// byModel 是聚合数据无法判定单请求异常，故只在 event 级标记 + totals 计数。
+	for _, ev := range events {
+		if ev.CalibrationAnomaly {
+			totals.CalibrationAnomalyCount++
+		}
 	}
 
 	return UsageDashboard{
@@ -368,21 +381,22 @@ func buildDashboardEvents(events []historymetrics.UsageDashboardRawEvent, pricin
 		cacheReadCost := float64(e.CacheReadTokens) / 1_000_000 * price.CacheReadPerMillion
 		cacheWriteCost := float64(e.CacheWriteTokens) / 1_000_000 * price.CacheWritePerMillion
 		out = append(out, UsageDashboardEvent{
-			EventID:          e.EventID,
-			Kind:             e.Kind,
-			Status:           e.Status,
-			At:               e.At,
-			ModelID:          e.ModelID,
-			ModelName:        e.ModelName,
-			Provider:         e.Provider,
-			InputTokens:      e.InputTokens,
-			OutputTokens:     e.OutputTokens,
-			CacheReadTokens:  e.CacheReadTokens,
-			CacheWriteTokens: e.CacheWriteTokens,
-			TotalTokens:      e.TotalTokens,
-			RealTotalTokens:  realTotalTokensForModel(e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheWriteTokens, price.InputTokenSemantics),
-			UsagePresent:     e.UsagePresent,
-			CostUSD:          (inputCost + outputCost + cacheReadCost + cacheWriteCost) * multiplier,
+			EventID:             e.EventID,
+			Kind:                e.Kind,
+			Status:              e.Status,
+			At:                  e.At,
+			ModelID:             e.ModelID,
+			ModelName:           e.ModelName,
+			Provider:            e.Provider,
+			InputTokens:         e.InputTokens,
+			OutputTokens:        e.OutputTokens,
+			CacheReadTokens:     e.CacheReadTokens,
+			CacheWriteTokens:    e.CacheWriteTokens,
+			TotalTokens:         e.TotalTokens,
+			RealTotalTokens:     realTotalTokensForModel(e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheWriteTokens, price.InputTokenSemantics),
+			UsagePresent:        e.UsagePresent,
+			CostUSD:             (inputCost + outputCost + cacheReadCost + cacheWriteCost) * multiplier,
+			CalibrationAnomaly:  isCalibrationAnomaly(e.InputTokens, e.CacheReadTokens, e.CacheWriteTokens, price.InputTokenSemantics),
 		})
 	}
 	return out

@@ -75,6 +75,55 @@ func TestRealTotalTokensForModelDoesNotDoubleCountCache(t *testing.T) {
 	}
 }
 
+// TestIsCalibrationAnomaly 验证 M9 口径异常判定：
+// TOTAL 语义下 input < cacheRead+cacheWrite 即异常；legacy 下 input < cacheRead 即异常；FRESH 永不异常。
+func TestIsCalibrationAnomaly(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     int64
+		cacheRead int64
+		cacheW    int64
+		sem       string
+		want      bool
+	}{
+		{"total normal", 1000, 200, 100, string(config.InputSemanticsTotal), false},
+		{"total anomaly input<sum", 250, 200, 100, string(config.InputSemanticsTotal), true},
+		{"total boundary equal", 300, 200, 100, string(config.InputSemanticsTotal), false},
+		{"legacy normal", 1000, 200, 100, "", false},
+		{"legacy anomaly input<read", 150, 200, 0, "", true},
+		{"fresh never anomaly", 50, 200, 100, string(config.InputSemanticsFresh), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := isCalibrationAnomaly(c.input, c.cacheRead, c.cacheW, c.sem)
+			if got != c.want {
+				t.Errorf("isCalibrationAnomaly(%d,%d,%d,%q)=%v want %v", c.input, c.cacheRead, c.cacheW, c.sem, got, c.want)
+			}
+		})
+	}
+}
+
+// TestBuildDashboardEventsCalibrationAnomaly 验证 event 级异常标记被正确填充。
+func TestBuildDashboardEventsCalibrationAnomaly(t *testing.T) {
+	events := []historymetrics.UsageDashboardRawEvent{
+		{EventID: "ok", ModelID: "gpt-5", InputTokens: 1000, CacheReadTokens: 200, CacheWriteTokens: 100},
+		{EventID: "bad", ModelID: "gpt-5", InputTokens: 150, CacheReadTokens: 200, CacheWriteTokens: 100}, // TOTAL: 150<300 异常
+	}
+	pricing := PricingSnapshot{Models: []TokenPricing{
+		{ModelID: "gpt-5", InputPerMillion: 1, OutputPerMillion: 10, CacheReadPerMillion: 0.1, CacheWritePerMillion: 0, InputTokenSemantics: string(config.InputSemanticsTotal)},
+	}}
+	out := buildDashboardEvents(events, pricing, nil, 1)
+	if len(out) != 2 {
+		t.Fatalf("len=%d want 2", len(out))
+	}
+	if out[0].CalibrationAnomaly {
+		t.Errorf("event ok should not be anomaly")
+	}
+	if !out[1].CalibrationAnomaly {
+		t.Errorf("event bad should be anomaly (input 150 < cacheRead+cacheW 300)")
+	}
+}
+
 func TestSumModelRealTokens(t *testing.T) {
 	stats := []UsageDashboardModelStat{
 		{RealTotalTokens: 1000},

@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -77,7 +78,11 @@ func (m *Manager) CertificateForServerName(serverName string) (*tls.Certificate,
 	defer m.mu.Unlock()
 
 	if cert, ok := m.cache[host]; ok {
-		return cert, nil
+		// M7: cache 命中时检查 leaf NotAfter，过期则重签（旧实现永久缓存，1 年后用过期证书握手）。
+		if cert != nil && cert.Leaf != nil && time.Now().Before(cert.Leaf.NotAfter) {
+			return cert, nil
+		}
+		// 过期或 Leaf 缺失：落到下面重签并覆盖 cache。
 	}
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
@@ -93,7 +98,8 @@ func (m *Manager) CertificateForServerName(serverName string) (*tls.Certificate,
 		},
 		NotBefore:             time.Now().Add(-1 * time.Hour),
 		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		// ECDSA 只用 DigitalSignature；KeyEncipherment 是 RSA key transport 专用，ECDSA 无意义。
+		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 	}
@@ -107,11 +113,12 @@ func (m *Manager) CertificateForServerName(serverName string) (*tls.Certificate,
 		leaf.DNSNames = []string{host}
 	}
 
-	leafPrivateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	// M7: leaf key 改 ECDSA P-256——比 RSA-2048 签发更快、证书更小，TLS 握手延迟更低。
+	leafPrivateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
 	}
-	leafPublicKey := &leafPrivateKey.PublicKey
+	leafPublicKey := leafPrivateKey.Public()
 
 	der, err := x509.CreateCertificate(rand.Reader, leaf, m.caCert, leafPublicKey, m.caKey)
 	if err != nil {

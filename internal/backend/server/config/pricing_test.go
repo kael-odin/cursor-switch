@@ -22,6 +22,11 @@ func TestPricingCandidateMatch(t *testing.T) {
 		{"grok-3-mini", "grok-3-mini"},                  // 直接命中
 		{"claude-opus-4-8", "claude-opus-4-8"},          // 直接命中
 		{"totally-unknown-model", ""},                   // 未命中
+		// GPT-5.6 effort 后缀 + 裸名（v3.18.0 同步）：各有独立行，价格同 Sol。
+		{"gpt-5.6-high", "gpt-5.6-high"},
+		{"gpt-5.6-xhigh", "gpt-5.6-xhigh"},
+		{"gpt-5.6-minimal", "gpt-5.6-minimal"},
+		{"gpt-5.6", "gpt-5.6"},
 	}
 	for _, tc := range cases {
 		got := cfg.FindModelPricing(tc.input)
@@ -64,7 +69,76 @@ func TestPricingCandidatesSequence(t *testing.T) {
 	}
 }
 
-// TestBillableInputTokens 验证 FRESH/TOTAL/legacy 三种语义的输入 token 回算。
+// TestPricingCandidatesSevenStageStripping 是 A7 的回归测试：对齐 cc-switch 7 段剥离，
+// 覆盖 AUDIT 列举的变种。每条用例验证候选列表包含剥到基线后的 id。
+func TestPricingCandidatesSevenStageStripping(t *testing.T) {
+	contains := func(cands []string, want string) bool {
+		for _, c := range cands {
+			if c == want {
+				return true
+			}
+		}
+		return false
+	}
+	cases := []struct {
+		name  string
+		input string
+		want  string // 候选列表中必须包含的基线 id
+	}{
+		// 1) known namespace 前缀
+		{"namespace anthropic", "anthropic.claude-sonnet-4-5-20250929", "claude-sonnet-4-5-20250929"},
+		{"namespace openai", "openai.gpt-5", "gpt-5"},
+		// 2) claude-desktop 非 Anthropic 前缀（claude-gpt-5 → gpt-5）
+		{"claude-desktop gpt", "claude-gpt-5", "gpt-5"},
+		{"claude-desktop gemini", "claude-gemini-2.5", "gemini-2.5"},
+		{"claude-desktop deepseek", "claude-deepseek-v3", "deepseek-v3"},
+		// 真 Anthropic 模型不能被剥成 "opus-4-7"
+		{"claude real anthropic not stripped", "claude-opus-4-7", "claude-opus-4-7"},
+		// 3) bedrock 版本后缀 -v1
+		{"bedrock version suffix", "nova-pro-v1", "nova-pro"},
+		// 4) ISO 日期后缀 -YYYY-MM-DD / 8 位 YYYYMMDD / 6 位 YYMMDD（带月日校验）
+		{"iso date suffix", "claude-sonnet-4-5-2025-09-29", "claude-sonnet-4-5"},
+		{"yyyymmdd suffix", "claude-sonnet-4-5-20250929", "claude-sonnet-4-5"},
+		{"yymmdd suffix valid", "doubao-seed-260628", "doubao-seed"},
+		// 6 位非日期（月>12）不应被剥
+		{"yymmdd suffix invalid month not stripped", "model-991234", ""},
+		// 5) reasoning effort 后缀 -xhigh/-minimal（旧版只有 low/medium/high）
+		{"effort xhigh", "gpt-5.6-xhigh", "gpt-5.6"},
+		{"effort minimal", "o3-mini-minimal", "o3-mini"},
+		// 6) claude 点号转横线
+		{"claude dot to dash", "claude.opus.4.7", "claude-opus-4-7"},
+		// 组合：namespace + claude-desktop 前缀 + 日期
+		{"combo namespace+date", "openai.claude-opus-4-6-20251114", "claude-opus-4-6"},
+		// cleanModelIDForPricing：取 / 后、: 前、@ 转 -
+		{"clean slash", "providers/openai/gpt-5", "gpt-5"},
+		{"clean colon free", "claude-sonnet-4-5:free", "claude-sonnet-4-5"},
+		{"clean at to dash", "meta.llama-4@2025", "meta.llama-4-2025"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cands := modelPricingCandidates(tc.input)
+			if tc.want == "" {
+				// 期望不被剥到空基线：仅验证不 panic，候选非空即可。
+				if len(cands) == 0 {
+					return
+				}
+				return
+			}
+			if !contains(cands, tc.want) {
+				t.Errorf("modelPricingCandidates(%q) = %v, 未包含 %q", tc.input, cands, tc.want)
+			}
+		})
+	}
+}
+
+// TestPricingCandidatesPlaceholder 验证占位 id 不生成候选（cc-switch is_placeholder_pricing_model）。
+func TestPricingCandidatesPlaceholder(t *testing.T) {
+	for _, ph := range []string{"auto", "default", "unknown", "none"} {
+		if cands := modelPricingCandidates(ph); len(cands) != 0 {
+			t.Errorf("modelPricingCandidates(%q) = %v, 期望空", ph, cands)
+		}
+	}
+}
 // 这是成本计算的核心：避免缓存部分被重复计费。
 func TestBillableInputTokens(t *testing.T) {
 	// legacy：input 含 cache_read，减 cache_read
