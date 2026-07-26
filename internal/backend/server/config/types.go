@@ -48,6 +48,11 @@ type ModelAdapterConfig struct {
 
 type RoutingConfig struct {
 	Mode string `json:"mode" yaml:"mode"`
+	// TabServerBaseURL 控制 tab 补全/git 消息流量的上游地址（H1）。
+	// 空 = 禁用第三方 tab server 重定向，回退到官方 api2.cursor.sh 透传（走用户自己的 Cursor 账号）。
+	// 非空 = 把 StreamCpp/CppConfig/WriteGitCommitMessage 等流量导向该地址。
+	// 历史默认值 "https://tab.leokun.cn" 是上游作者的共享池；用户可填自建 cursor-tab-server 地址或留空。
+	TabServerBaseURL string `json:"tabServerBaseURL" yaml:"tabServerBaseURL"`
 }
 
 type HomeMetricsConfig struct {
@@ -100,6 +105,7 @@ func NormalizeConfig(input Config) (Config, error) {
 	if output.Routing.Mode == "" {
 		output.Routing.Mode = DefaultRoutingMode
 	}
+	output.Routing.TabServerBaseURL = strings.TrimSpace(input.Routing.TabServerBaseURL)
 	adapters, err := NormalizeModelAdapterConfigs(input.ModelAdapters)
 	if err != nil {
 		return Config{}, err

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -14,6 +15,12 @@ const (
 	usageFileName          = "usage.json"
 	usageFileSchemaVersion = 2
 	usageRecentEventLimit  = 500
+	// usageEventIndexLimit 是 EventIndex 的独立上限。EventIndex 是 requestID -> event 的全量反查索引，
+	// 不随 RecentEvents 的 500 条截断而丢失——否则跨过 500 条边界的老 turn 在 finalize 时
+	// LookupEvent(requestID) 拿不到它的 provider_call 事件，导致 turn 计费漏算（H5）。
+	// 取 5000 远大于 RecentEvents：单 turn 内不可能产生这么多 provider_call，足以覆盖任何
+	// 延迟 finalize 的 turn 窗口；超出时按 At 淘汰最老的条目。
+	usageEventIndexLimit = 5000
 
 	usageEventKindProvider = "provider_call"
 	usageEventKindTurn     = "turn_finalized"
@@ -173,7 +180,11 @@ func (store *UsageFileStore) UpsertEvent(event usageFileEvent) error {
 	applyUsageFileDelta(&doc, event.At, usageFileEventDelta(event))
 	doc.RecentEvents = upsertRecentUsageEvent(doc.RecentEvents, event)
 	doc.RecentEvents = trimRecentUsageEvents(doc.RecentEvents, usageRecentEventLimit)
-	doc.EventIndex = buildUsageEventIndex(doc.RecentEvents)
+	// EventIndex 增量 upsert：只更新当前 event 的条目，不因 RecentEvents 截断而清掉其它条目。
+	// 旧实现 buildUsageEventIndex(doc.RecentEvents) 会把超出 500 条的老事件从索引抹掉，
+	// 导致 recordTurnFinalizedSnapshot 用老 requestID LookupEvent 时聚合到 0 token（H5）。
+	doc.EventIndex[event.EventID] = event
+	doc.EventIndex = pruneUsageEventIndex(doc.EventIndex)
 	doc.SchemaVersion = usageFileSchemaVersion
 	doc.UpdatedAt = time.Now().UTC()
 	return writeJSONFileAtomic(store.path, doc)
@@ -255,8 +266,11 @@ func readUsageFileDocument(path string) (usageFileDocument, error) {
 		doc.SchemaVersion = 1
 	}
 	doc.RecentEvents = trimRecentUsageEvents(doc.RecentEvents, usageRecentEventLimit)
-	if len(doc.EventIndex) == 0 {
-		doc.EventIndex = buildUsageEventIndex(doc.RecentEvents)
+	// 不再用 RecentEvents 全量重建 EventIndex：那会把索引和 RecentEvents 的 500 条截断强绑，
+	// 老事件从索引丢失导致 turn 计费漏算（H5）。EventIndex 现在增量维护、独立上限。
+	// 旧文件 EventIndex 为空时，LookupEvent 会回退到 RecentEvents 线性扫描兜底。
+	if doc.EventIndex == nil {
+		doc.EventIndex = make(map[string]usageFileEvent)
 	}
 	return doc, nil
 }
@@ -295,6 +309,30 @@ func buildUsageEventIndex(items []usageFileEvent) map[string]usageFileEvent {
 		index[event.EventID] = event
 	}
 	return index
+}
+
+// pruneUsageEventIndex 把 EventIndex 控制在 usageEventIndexLimit 以内，超出时按 At 淘汰最老的条目。
+// EventIndex 不随 RecentEvents 截断丢失（H5），但必须有界防止无限增长。
+func pruneUsageEventIndex(index map[string]usageFileEvent) map[string]usageFileEvent {
+	if len(index) <= usageEventIndexLimit {
+		return index
+	}
+	type entry struct {
+		id string
+		at time.Time
+	}
+	entries := make([]entry, 0, len(index))
+	for id, event := range index {
+		entries = append(entries, entry{id: id, at: event.At})
+	}
+	// 按时间降序，保留最近的 usageEventIndexLimit 条。
+	sort.Slice(entries, func(i, j int) bool { return entries[i].at.After(entries[j].at) })
+	keep := make(map[string]usageFileEvent, usageEventIndexLimit)
+	for i := 0; i < usageEventIndexLimit && i < len(entries); i++ {
+		id := entries[i].id
+		keep[id] = index[id]
+	}
+	return keep
 }
 
 func normalizeUsageEventKind(kind string) string {

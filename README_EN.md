@@ -70,6 +70,15 @@ Cursor's requests are split into three non-interfering planes:
 - **Loopback trust separation**: internal trust goes through a private header `X-Cursor-BYOK-Relay-Proof`, no longer hijacking `Authorization`; real Cursor credentials only return to original `*.cursor.sh`, never sent to a third-party provider
 - **Write-path fence**: LLM file writes are restricted to workspace and terminal dirs, refusing sensitive paths like `~/.ssh`
 
+### Tab-completion traffic destination (configurable)
+
+Tab code completion / Git commit / branch-name generation (`StreamCpp` / `CppConfig` / `WriteGitCommitMessage`, etc.) defaults to the official `api2.cursor.sh` upstream — i.e. **uses your own Cursor account quota**, never silently routed to a third party.
+
+Historically 1.0.x hardcoded this traffic to the author's shared pool `tab.leokun.cn`; from 1.1.1 it's configurable:
+
+- **Config page → Tab-completion server URL**: empty = official Cursor upstream (default, most transparent); fill in your self-hosted `cursor-tab-server` URL to source from your own account
+- The traffic destination is visible in the UI — no more third-party private domain hardcoded in the binary
+
 ---
 
 ## 📖 What this is

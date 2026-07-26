@@ -147,7 +147,7 @@ func (service *MetricsService) GetUsageDashboard() (UsageDashboard, error) {
 		CacheReadTokens:   raw.Totals.CacheReadTokens,
 		CacheWriteTokens:  raw.Totals.CacheWriteTokens,
 		TotalTokens:       raw.Totals.TotalTokens,
-		RealTotalTokens:   realTotalTokens(raw.Totals.InputTokens, raw.Totals.OutputTokens, raw.Totals.CacheReadTokens, raw.Totals.CacheWriteTokens),
+		RealTotalTokens:   sumModelRealTokens(byModel),
 		CacheHitRate:      cacheHitRate(raw.Totals.InputTokens, raw.Totals.CacheReadTokens),
 		TotalCostUSD:      sumModelCosts(byModel),
 	}
@@ -165,8 +165,36 @@ func (service *MetricsService) GetUsageDashboard() (UsageDashboard, error) {
 
 // realTotalTokens 计算「真实消耗 token」= fresh_input + output + cache_creation + cache_read。
 // 参考 cc-switch derive_real_total_and_hit_rate。
+//
+// 注意：此函数不区分 input_token_semantics，仅适用于 FRESH 语义或无法判定语义的回退场景。
+// 对 TOTAL/legacy 语义的模型应使用 realTotalTokensForModel（按语义折算 fresh_input 后再算），
+// 否则缓存部分会被重复计入（TOTAL 计 3 次、legacy 计 2 次）。
 func realTotalTokens(input, output, cacheRead, cacheWrite int64) int64 {
 	return input + output + cacheWrite + cacheRead
+}
+
+// sumModelRealTokens 把 per-model 统计的 RealTotalTokens 求和，作为全局 totals 的真实消耗 token。
+// 用聚合而非裸 totals 字段，确保按各模型 input_token_semantics 正确折算，避免跨语义重复计 cache。
+func sumModelRealTokens(stats []UsageDashboardModelStat) int64 {
+	var total int64
+	for _, s := range stats {
+		total += s.RealTotalTokens
+	}
+	return total
+}
+
+// realTotalTokensFromDailyByModel 按日 by_model 聚合真实消耗 token。
+// daily.ByModel 存在时按 per-model 语义折算 fresh_input 后求和；无 by_model（旧版 usage.json）回退到裸 realTotalTokens。
+func realTotalTokensFromDailyByModel(d historymetrics.UsageDashboardRawDaily, pricing PricingSnapshot) int64 {
+	if len(d.ByModel) == 0 {
+		return realTotalTokens(d.InputTokens, d.OutputTokens, d.CacheReadTokens, d.CacheWriteTokens)
+	}
+	var total int64
+	for _, dm := range d.ByModel {
+		price := findPrice(pricing.Models, dm.ModelID)
+		total += realTotalTokensForModel(dm.InputTokens, dm.OutputTokens, dm.CacheReadTokens, dm.CacheWriteTokens, price.InputTokenSemantics)
+	}
+	return total
 }
 
 // cacheHitRate = cacheRead / (fresh_input + cache_creation + cache_read)。
@@ -199,7 +227,7 @@ func buildDashboardModelStats(byModel []historymetrics.UsageDashboardRawModelAgg
 			CacheReadTokens:  m.CacheReadTokens,
 			CacheWriteTokens: m.CacheWriteTokens,
 			TotalTokens:      m.TotalTokens,
-			RealTotalTokens:  realTotalTokens(m.InputTokens, m.OutputTokens, m.CacheReadTokens, m.CacheWriteTokens),
+			RealTotalTokens:  realTotalTokensForModel(m.InputTokens, m.OutputTokens, m.CacheReadTokens, m.CacheWriteTokens, price.InputTokenSemantics),
 			CostMultiplier:   multiplier,
 			InputCost:        float64(billableInputTokens(m.InputTokens, m.CacheReadTokens, m.CacheWriteTokens, price.InputTokenSemantics)) / 1_000_000 * price.InputPerMillion,
 			OutputCost:       float64(m.OutputTokens) / 1_000_000 * price.OutputPerMillion,
@@ -261,7 +289,7 @@ func buildDashboardDaily(daily []historymetrics.UsageDashboardRawDaily, pricing 
 			CacheReadTokens:  d.CacheReadTokens,
 			CacheWriteTokens: d.CacheWriteTokens,
 			TotalTokens:      d.TotalTokens,
-			RealTotalTokens:  realTotalTokens(d.InputTokens, d.OutputTokens, d.CacheReadTokens, d.CacheWriteTokens),
+			RealTotalTokens:  realTotalTokensFromDailyByModel(d, pricing),
 			CostUSD:          cost,
 			CostApproximate:  !precise,
 		})
@@ -352,7 +380,7 @@ func buildDashboardEvents(events []historymetrics.UsageDashboardRawEvent, pricin
 			CacheReadTokens:  e.CacheReadTokens,
 			CacheWriteTokens: e.CacheWriteTokens,
 			TotalTokens:      e.TotalTokens,
-			RealTotalTokens:  realTotalTokens(e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheWriteTokens),
+			RealTotalTokens:  realTotalTokensForModel(e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheWriteTokens, price.InputTokenSemantics),
 			UsagePresent:     e.UsagePresent,
 			CostUSD:          (inputCost + outputCost + cacheReadCost + cacheWriteCost) * multiplier,
 		})

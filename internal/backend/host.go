@@ -24,7 +24,9 @@ import (
 
 const healthPath = "/healthz"
 
-const tabServerBaseURL = "https://tab.leokun.cn"
+// tab server 地址由 config.Routing.TabServerBaseURL 控制（H1）：
+//   - 空：禁用第三方 tab server 重定向，tab 补全/git 消息流量透传官方 api2.cursor.sh（走用户自己 Cursor 账号）。
+//   - 非空：流量导向该地址（如自建 cursor-tab-server，或历史默认的作者共享池 tab.leokun.cn）。
 
 type Host struct {
 	store      *serverconfig.Store
@@ -379,17 +381,17 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 		officialProcedure("/aiserver.v1.AnalyticsService/GetFirstWindowStatsigDecision", "first_window_statsig_decision", server.ConnectUnary(), routeDeps),
 		officialProcedure("/oauth/token", "oauth_token", server.HTTP(), routeDeps),
 		officialProcedure("/aiserver.v1.AuthService/GetEmail", "auth_service_get_email", server.ConnectUnary(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/StreamCpp", "ai_stream_cpp", server.ConnectStream(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/StreamNextCursorPrediction", "ai_stream_next_cursor_prediction", server.ConnectStream(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/GetCppEditClassification", "ai_get_cpp_edit_classification", server.ConnectUnary(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/RefreshTabContext", "ai_refresh_tab_context", server.ConnectUnary(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppConfig", "ai_cpp_config", server.ConnectUnary(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppEditHistoryStatus", "ai_cpp_edit_history_status", server.ConnectUnary(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppAppend", "ai_cpp_append", server.ConnectUnary(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppEditHistoryAppend", "ai_cpp_edit_history_append", server.ConnectUnary(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/ReportAiCodeChangeMetrics", "ai_report_ai_code_change_metrics", server.ConnectUnary(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/WriteGitCommitMessage", "ai_write_git_commit_message", server.ConnectUnary(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/WriteGitBranchName", "ai_write_git_branch_name", server.ConnectUnary(), routeDeps),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/StreamCpp", "ai_stream_cpp", server.ConnectStream(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/StreamNextCursorPrediction", "ai_stream_next_cursor_prediction", server.ConnectStream(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/GetCppEditClassification", "ai_get_cpp_edit_classification", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/RefreshTabContext", "ai_refresh_tab_context", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppConfig", "ai_cpp_config", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppEditHistoryStatus", "ai_cpp_edit_history_status", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppAppend", "ai_cpp_append", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppEditHistoryAppend", "ai_cpp_edit_history_append", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/ReportAiCodeChangeMetrics", "ai_report_ai_code_change_metrics", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/WriteGitCommitMessage", "ai_write_git_commit_message", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/WriteGitBranchName", "ai_write_git_branch_name", server.ConnectUnary(), routeDeps, host.configs),
 		repositoryServiceProcedure(forwarder.RepositoryServiceFastRepoInitHandshakeV2Procedure, "repository_fast_repo_init_handshake_v2", server.ConnectUnary(), agentModule, routeDeps),
 		repositoryServiceProcedure(forwarder.RepositoryServiceFastRepoInitHandshakeProcedure, "repository_fast_repo_init_handshake", server.ConnectUnary(), agentModule, routeDeps),
 		repositoryServiceProcedure(forwarder.RepositoryServiceFastRepoSyncCompleteProcedure, "repository_fast_repo_sync_complete", server.ConnectUnary(), agentModule, routeDeps),
@@ -417,8 +419,8 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 				Name: "ai_service",
 			})),
 		),
-		tabServerUpstreamProcedure("/aiserver.v1.CppService/AvailableModels", "cpp_available_models", server.ConnectUnary(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.CppService/RecordCppFate", "cpp_record_cpp_fate", server.ConnectUnary(), routeDeps),
+		tabServerUpstreamProcedure("/aiserver.v1.CppService/AvailableModels", "cpp_available_models", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.CppService/RecordCppFate", "cpp_record_cpp_fate", server.ConnectUnary(), routeDeps, host.configs),
 		server.Any("/aiserver.v1.CppService/*",
 			server.Name("cpp_service"),
 			server.HTTP(),
@@ -430,10 +432,10 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 				Name: "cpp_service",
 			})),
 		),
-		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSSyncFile", "file_sync_sync_file", server.ConnectUnary(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSIsEnabledForUser", "file_sync_is_enabled_for_user", server.ConnectUnary(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSConfig", "file_sync_config", server.ConnectUnary(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSUploadFile", "file_sync_upload_file", server.ConnectUnary(), routeDeps),
+		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSSyncFile", "file_sync_sync_file", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSIsEnabledForUser", "file_sync_is_enabled_for_user", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSConfig", "file_sync_config", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSUploadFile", "file_sync_upload_file", server.ConnectUnary(), routeDeps, host.configs),
 		server.Any("/aiserver.v1.FileSyncService/*",
 			server.Name("file_sync"),
 			server.HTTP(),
@@ -691,18 +693,18 @@ func uploadServiceProcedure(pattern string, name string, protocol server.RouteOp
 	)
 }
 
-func tabServerUpstreamProcedure(pattern string, name string, protocol server.RouteOption, deps upstream.Dependencies) server.Option {
+func tabServerUpstreamProcedure(pattern string, name string, protocol server.RouteOption, deps upstream.Dependencies, configs *serverconfig.Manager) server.Option {
 	direct := upstream.DirectAction(deps, upstream.CompatRouteConfig{Name: name})
 	action := func(ctx *server.Context) error {
-		if ctx != nil && ctx.Request != nil && ctx.Request.URL != nil {
-			baseURL, err := url.Parse(tabServerBaseURL)
-			if err != nil {
-				return fmt.Errorf("解析 tab server 地址失败: %w", err)
+		// H1: tab server 地址由 config 控制。空 = 禁用第三方重定向，回退官方 api2.cursor.sh 透传。
+		baseURLStr := ""
+		if configs != nil {
+			baseURLStr = strings.TrimSpace(configs.Current().Routing.TabServerBaseURL)
+		}
+		if baseURLStr != "" && ctx != nil && ctx.Request != nil && ctx.Request.URL != nil {
+			if target := resolveTabUpstreamURL(ctx.Request.URL, baseURLStr); target != nil {
+				ctx.UpstreamURL = target
 			}
-			targetURL := *ctx.Request.URL
-			targetURL.Scheme = baseURL.Scheme
-			targetURL.Host = baseURL.Host
-			ctx.UpstreamURL = &targetURL
 		}
 		return direct(ctx)
 	}
@@ -712,6 +714,22 @@ func tabServerUpstreamProcedure(pattern string, name string, protocol server.Rou
 		server.Local(action),
 		server.Upstream(action),
 	)
+}
+
+// resolveTabUpstreamURL 把请求 URL 的 scheme/host 替换为 tab server 地址，保留 path/query。
+// baseURLStr 为空或非法时返回 nil（透传官方兜底）。
+func resolveTabUpstreamURL(reqURL *url.URL, baseURLStr string) *url.URL {
+	if strings.TrimSpace(baseURLStr) == "" {
+		return nil
+	}
+	baseURL, err := url.Parse(baseURLStr)
+	if err != nil || baseURL == nil || baseURL.Host == "" {
+		return nil
+	}
+	targetURL := *reqURL
+	targetURL.Scheme = baseURL.Scheme
+	targetURL.Host = baseURL.Host
+	return &targetURL
 }
 
 type serverSystemSettings struct {

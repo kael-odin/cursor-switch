@@ -190,23 +190,26 @@ func (service *Service) lookupThoughtAnnotation(requestID string) (string, bool,
 	foundThought := false
 	latestThought := ""
 	latestThoughtAt := time.Time{}
-	conversationIDs, err := service.store.ListConversationIDs()
-	if err != nil {
-		return "", false, err
-	}
-	for _, conversationID := range conversationIDs {
+
+	// scanConversation 在单个会话内查找 needle 的 thought_annotation。
+	// 命中 thought 返回 (true, true)；命中 request 但无 thought 返回 (true, false)；都没命中返回 (false, false)。
+	scanConversation := func(conversationID string) (bool, bool, error) {
+		if strings.TrimSpace(conversationID) == "" {
+			return false, false, nil
+		}
 		conversation, err := service.store.LoadConversation(conversationID)
 		if err != nil {
-			return "", false, err
+			return false, false, err
 		}
 		if conversation == nil {
-			continue
+			return false, false, nil
 		}
+		hitRequest := false
 		for _, entry := range conversation.Entries {
 			if strings.TrimSpace(entry.RequestID) != needle {
 				continue
 			}
-			foundRequest = true
+			hitRequest = true
 			if strings.TrimSpace(entry.Kind) != "metadata" {
 				continue
 			}
@@ -229,6 +232,38 @@ func (service *Service) lookupThoughtAnnotation(requestID string) (string, bool,
 				latestThought = thought
 				latestThoughtAt = entry.CreatedAt
 			}
+		}
+		return hitRequest, foundThought, nil
+	}
+
+	// H4: 先查 requestID -> conversationID 反向索引，命中就只扫那一个会话，
+	// 把 O(会话数 × entry 数) 全量扫描降为 O(1) 定位 + 单会话扫描。
+	if cid, ok := service.store.ConversationIDForRequest(needle); ok {
+		hitReq, hitThought, err := scanConversation(cid)
+		if err != nil {
+			return "", false, err
+		}
+		if hitThought {
+			return latestThought, true, nil
+		}
+		if hitReq {
+			return defaultSummaryCompletedThought, true, nil
+		}
+		// 索引命中但会话里没找到（entry 可能被压缩/截断）：回退全量扫描兜底。
+	}
+
+	// 回退：索引未命中或命中但落空，全量扫描所有会话（正确性兜底，首次冷启动也走这里）。
+	conversationIDs, err := service.store.ListConversationIDs()
+	if err != nil {
+		return "", false, err
+	}
+	for _, conversationID := range conversationIDs {
+		hitReq, _, err := scanConversation(conversationID)
+		if err != nil {
+			return "", false, err
+		}
+		if hitReq {
+			foundRequest = true
 		}
 	}
 	if foundThought {

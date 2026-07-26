@@ -352,6 +352,19 @@ func billableInputTokens(input, cacheRead, cacheWrite int64, semantics string) i
 	}
 }
 
+// realTotalTokensForModel 按 input_token_semantics 折算 fresh_input 后计算「真实消耗 token」。
+//
+// real_total = fresh_input + output + cache_creation + cache_read。
+// 其中 fresh_input = billableInputTokens(input, cacheRead, cacheWrite, semantics)。
+// 若不按语义折算（如旧版直接 input + output + cacheWrite + cacheRead），对 TOTAL 语义模型会把缓存部分计 3 次
+// （input 内含 1 次 + cacheRead 1 次 + cacheWrite 1 次），对 legacy 语义会重复计 cache_read 2 次。
+//
+// semantics 为空时按 legacy（与历史默认一致）。
+func realTotalTokensForModel(input, output, cacheRead, cacheWrite int64, semantics string) int64 {
+	freshInput := billableInputTokens(input, cacheRead, cacheWrite, semantics)
+	return freshInput + output + cacheWrite + cacheRead
+}
+
 func parseFloatOr(value string, fallback float64) float64 {
 	value = strings.TrimSpace(value)
 	if value == "" {

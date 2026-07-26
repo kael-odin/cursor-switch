@@ -42,6 +42,11 @@ type conversationProcessLock struct {
 
 type ConversationFileStore struct {
 	root string
+	// requestIndex 是 requestID -> conversationID 的进程级反向索引，用于把
+	// lookupThoughtAnnotation 的 O(会话数 × entry 数) 全量扫描降为 O(1) 定位 + 单会话扫描（H4）。
+	// 进程级、不持久化：重启后首次查询回退到全量扫描，写入后即热。
+	// sync.Map 适合写多读多、key 离散的场景；不限制容量（requestID 有限且随会话淘汰）。
+	requestIndex sync.Map
 }
 
 type conversationContextFile struct {
@@ -118,6 +123,45 @@ func (store *ConversationFileStore) LoadConversation(conversationID string) (*Co
 	return store.mutateConversation(conversationID, false, nil)
 }
 
+// ConversationIDForRequest 返回 requestID 所属的 conversationID（若有）。
+// 命中时调用方只需扫描单个会话而非全量，把 lookupThoughtAnnotation 从
+// O(会话数 × entry 数) 降为 O(1) 定位 + 单会话扫描（H4）。
+// 未命中返回 ("", false)，调用方应回退到全量扫描兜底。
+func (store *ConversationFileStore) ConversationIDForRequest(requestID string) (string, bool) {
+	if store == nil {
+		return "", false
+	}
+	needle := strings.TrimSpace(requestID)
+	if needle == "" {
+		return "", false
+	}
+	if v, ok := store.requestIndex.Load(needle); ok {
+		if cid, _ := v.(string); strings.TrimSpace(cid) != "" {
+			return cid, true
+		}
+	}
+	return "", false
+}
+
+// indexConversationRequests 把会话内所有 entry 的 RequestID -> conversationID 灌进反向索引。
+// 在写路径成功落盘后调用，让后续 GetThoughtAnnotation 能 O(1) 定位会话。
+func (store *ConversationFileStore) indexConversationRequests(conversationID string, entries []HistoryEntry) {
+	if store == nil {
+		return
+	}
+	cid := strings.TrimSpace(conversationID)
+	if cid == "" {
+		return
+	}
+	for _, entry := range entries {
+		rid := strings.TrimSpace(entry.RequestID)
+		if rid == "" {
+			continue
+		}
+		store.requestIndex.Store(rid, cid)
+	}
+}
+
 // AppendEntries 把已经发生的语义事件追加到 context.json，并同步 state.json。
 func (store *ConversationFileStore) AppendEntries(conversationID string, entries []HistoryEntry) (*ConversationFile, []HistoryEntry, error) {
 	if store == nil {
@@ -165,6 +209,7 @@ func (store *ConversationFileStore) AppendEntries(conversationID string, entries
 	if err := store.writeConversationLocked(normalizedConversationID, conversation); err != nil {
 		return nil, nil, err
 	}
+	store.indexConversationRequests(normalizedConversationID, conversation.Entries)
 	return cloneConversationFile(conversation), assigned, nil
 }
 
@@ -206,6 +251,7 @@ func (store *ConversationFileStore) SaveConversationWithEntries(conversationID s
 	if err := store.writeConversationLocked(normalizedConversationID, conversation); err != nil {
 		return nil, err
 	}
+	store.indexConversationRequests(normalizedConversationID, conversation.Entries)
 	return cloneConversationFile(conversation), nil
 }
 
@@ -299,6 +345,7 @@ func (store *ConversationFileStore) ReplaceEntries(conversationID string, entrie
 	if err := store.writeConversationLocked(normalizedConversationID, conversation); err != nil {
 		return nil, err
 	}
+	store.indexConversationRequests(normalizedConversationID, conversation.Entries)
 	return cloneConversationFile(conversation), nil
 }
 

@@ -1,6 +1,7 @@
 <script setup>
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
+import Input from "@/components/ui/Input.vue";
 import LocaleSelect from "@/components/LocaleSelect.vue";
 import Select from "@/components/ui/Select.vue";
 import { showModal } from "@/composables/useModal";
@@ -10,11 +11,13 @@ import {
   persistUserConfig,
   reloadUserConfig,
   ROUTE_MODE_OPTIONS,
+  saveTabServerBaseURL,
   toUserError,
 } from "@/state/appState";
-import { onMounted } from "vue";
+import { onMounted, ref } from "vue";
 
 const routeModeOptions = ROUTE_MODE_OPTIONS;
+const tabServerSaving = ref(false);
 
 async function showActionError(title, error) {
   await showModal({
@@ -33,6 +36,23 @@ async function handleSaveConfig() {
     title: "提示",
     content: "本地配置已保存",
   });
+}
+
+async function handleSaveTabServerBaseURL() {
+  tabServerSaving.value = true;
+  try {
+    const result = await saveTabServerBaseURL(appState.tabServerBaseURL);
+    if (!result.ok) {
+      await showActionError("保存失败", result.error);
+      return;
+    }
+    await showModal({
+      title: "提示",
+      content: "Tab 服务地址已保存",
+    });
+  } finally {
+    tabServerSaving.value = false;
+  }
 }
 
 async function handleOpenModelConfig() {
@@ -79,6 +99,30 @@ onMounted(async () => {
             placeholder="选择模式"
           />
         </div>
+      </div>
+    </Card>
+
+    <Card>
+      <div class="flex flex-col gap-3">
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <h2 class="text-base font-medium text-white">Tab 补全服务地址</h2>
+            <div class="text-sm text-[#a3a3a3]">
+              控制 Tab 代码补全 / Git Commit / 分支名生成等流量的上游地址。留空 = 走官方 Cursor 上游（用你自己的 Cursor 账号额度）；填自建 cursor-tab-server 地址可回源自己的账号
+            </div>
+          </div>
+          <Button
+            variant="primary"
+            :disabled="tabServerSaving"
+            @click="handleSaveTabServerBaseURL"
+          >
+            {{ tabServerSaving ? "保存中..." : "保存地址" }}
+          </Button>
+        </div>
+        <Input
+          v-model="appState.tabServerBaseURL"
+          placeholder="留空 = 走官方 api2.cursor.sh；例如 https://tab.example.com"
+        />
       </div>
     </Card>
 

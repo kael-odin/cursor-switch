@@ -70,6 +70,15 @@
 - **loopback 信任分离**：内部信任走独立私有头 `X-Cursor-BYOK-Relay-Proof`，不再占用 `Authorization`；真实 Cursor 凭证只回原始 `*.cursor.sh`，绝不发给第三方 provider
 - **写路径围栏**：LLM 写文件仅限工作区与终端目录，拒绝写入 `~/.ssh` 等敏感路径
 
+### Tab 补全流量去向（可配置）
+
+Tab 代码补全 / Git Commit / 分支名生成（`StreamCpp` / `CppConfig` / `WriteGitCommitMessage` 等）默认走官方 `api2.cursor.sh` 上游——也就是**用你自己的 Cursor 账号额度**，不会被默默导向任何第三方。
+
+历史上 1.0.x 曾把这些流量硬编码到作者共享池 `tab.leokun.cn`，1.1.1 起改为可配置：
+
+- **配置页 → Tab 补全服务地址**：留空 = 走官方 Cursor 上游（默认，最透明）；填自建 `cursor-tab-server` 地址可回源自己的账号
+- 流量目的地在前端 UI 一目了然，不再有写死在二进制里的第三方私有域名
+
 ---
 
 ## 📖 这是什么

@@ -600,6 +600,7 @@ function applyConfigToState(config, { modelAdaptersOnly = false } = {}) {
   appState.configBackendListenAddr = normalized.backendListenAddr;
   appState.configProxyListenAddr = normalized.proxyListenAddr;
   appState.routingMode = normalized.routing.mode;
+  appState.tabServerBaseURL = normalized.routing.tabServerBaseURL || "";
   appState.includeCacheWriteInHitRate = normalized.homeMetrics.includeCacheWriteInHitRate;
   return normalized;
 }
@@ -831,6 +832,7 @@ export const appState = reactive({
   configBackendListenAddr: cachedConfig.backendListenAddr,
   configProxyListenAddr: cachedConfig.proxyListenAddr,
   routingMode: cachedConfig.routing.mode,
+  tabServerBaseURL: cachedConfig.routing.tabServerBaseURL || "",
   includeCacheWriteInHitRate: cachedConfig.homeMetrics.includeCacheWriteInHitRate,
 
   serviceRunning: asBoolean(cachedState.serviceRunning),
@@ -1096,6 +1098,7 @@ export async function persistUserConfig() {
     modelAdapters: normalizeModelAdapters(appState.modelAdapters),
     routing: {
       mode: appState.routingMode,
+      tabServerBaseURL: appState.tabServerBaseURL || "",
     },
     homeMetrics: {
       ...currentConfig.homeMetrics,
@@ -1128,8 +1131,29 @@ export async function saveRoutingMode(mode) {
     ...currentConfig,
     routing: {
       mode: normalizeRouteMode(mode),
+      tabServerBaseURL: currentConfig.routing?.tabServerBaseURL || "",
     },
   });
+}
+
+// saveTabServerBaseURL 设置 tab 补全/git 消息流量的上游地址（H1）。
+// 空字符串 = 禁用第三方 tab server 重定向，透传官方 api2.cursor.sh（走用户自己的 Cursor 账号）。
+export async function saveTabServerBaseURL(value) {
+  const currentConfig = await loadPersistedUserConfig();
+  const previousValue = appState.tabServerBaseURL;
+  const nextValue = String(value || "").trim();
+  appState.tabServerBaseURL = nextValue;
+  const result = await persistConfigPayload({
+    ...currentConfig,
+    routing: {
+      mode: currentConfig.routing?.mode || "local",
+      tabServerBaseURL: nextValue,
+    },
+  });
+  if (!result.ok) {
+    appState.tabServerBaseURL = previousValue;
+  }
+  return result;
 }
 
 export async function reloadUserConfig(options = {}) {
