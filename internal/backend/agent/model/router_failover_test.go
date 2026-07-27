@@ -418,3 +418,92 @@ func idsOf(chs []*legacyruntime.ResolvedChannel) []string {
 	}
 	return out
 }
+
+// TestRouterNoFailureCountOnClientCancel 验证 F-06：客户端取消（context.Canceled）
+// 不计入 provider 熔断，也不 failover。
+func TestRouterNoFailureCountOnClientCancel(t *testing.T) {
+	// 主候选返回 context.Canceled（模拟客户端断连）。
+	primary := &fakeAdapter{err: context.Canceled}
+	backup := &fakeAdapter{err: nil}
+	resolver := &fakeResolver{channels: []*legacyruntime.ResolvedChannel{
+		makeChannel("primary", "openai"),
+		makeChannel("backup", "openai"),
+	}}
+	breakers := NewCircuitBreakerRegistry(DefaultCircuitBreakerConfig())
+	router := makeRouterWithFakes(resolver, breakers, primary, backup)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 模拟请求开始时客户端已取消
+
+	req := StreamRequest{ModelID: "gpt-5"}
+	_ = router.Stream(ctx, req, func(ModelEvent) error { return nil })
+
+	// primary 被调，backup 不应被调（取消不 failover）。
+	if got := primary.callOrder(); len(got) != 1 || got[0] != "primary" {
+		t.Errorf("primary should be called once, got %v", got)
+	}
+	if len(backup.callOrder()) != 0 {
+		t.Errorf("backup should not be called on client cancel, got %v", backup.callOrder())
+	}
+	// 熔断器不应记录 failure（客户端取消不是 provider 故障）。
+	cb := breakers.Get("primary")
+	stats := cb.Stats()
+	if stats.FailedRequests != 0 {
+		t.Errorf("client cancel should not count as failure, got failed=%d", stats.FailedRequests)
+	}
+}
+
+// TestRouterNoFailureCountOnSinkError 验证 F-06：sink 写失败不计 provider 故障。
+// sinkStarted 已 true，本就不 failover；这里额外验证熔断不被污染。
+func TestRouterNoFailureCountOnSinkError(t *testing.T) {
+	event := ModelEvent{Kind: ModelEventKindTextDelta, Text: "hello"}
+	// 主候选先发一个事件（触发 sink），sink 返回错误，adapter 仍返回 nil。
+	primary := &fakeAdapter{sinkBeforeErr: &event, err: nil}
+	backup := &fakeAdapter{err: nil}
+	resolver := &fakeResolver{channels: []*legacyruntime.ResolvedChannel{
+		makeChannel("primary", "openai"),
+		makeChannel("backup", "openai"),
+	}}
+	breakers := NewCircuitBreakerRegistry(DefaultCircuitBreakerConfig())
+	router := makeRouterWithFakes(resolver, breakers, primary, backup)
+
+	req := StreamRequest{ModelID: "gpt-5"}
+	// sink 返回写错误（模拟下游断连）。
+	sinkErr := fmt.Errorf("client disconnected")
+	err := router.Stream(context.Background(), req, func(ModelEvent) error { return sinkErr })
+	if err == nil {
+		t.Fatalf("expected sink error to propagate, got nil")
+	}
+
+	// backup 不应被调（sinkStarted 已 true，不 failover）。
+	if len(backup.callOrder()) != 0 {
+		t.Errorf("backup should not be called when sink already started, got %v", backup.callOrder())
+	}
+	// 熔断器不应记录 failure（sink 写失败不是 provider 故障）。
+	cb := breakers.Get("primary")
+	stats := cb.Stats()
+	if stats.FailedRequests != 0 {
+		t.Errorf("sink write error should not count as provider failure, got failed=%d", stats.FailedRequests)
+	}
+}
+
+// TestRouterCountsFailureOn5xx 验证 F-06 对照组：真正的 provider 5xx 仍计 failure。
+func TestRouterCountsFailureOn5xx(t *testing.T) {
+	primary := &fakeAdapter{err: fmt.Errorf("openai adapter status=503 body=down")}
+	backup := &fakeAdapter{err: nil}
+	resolver := &fakeResolver{channels: []*legacyruntime.ResolvedChannel{
+		makeChannel("primary", "openai"),
+		makeChannel("backup", "openai"),
+	}}
+	breakers := NewCircuitBreakerRegistry(DefaultCircuitBreakerConfig())
+	router := makeRouterWithFakes(resolver, breakers, primary, backup)
+
+	req := StreamRequest{ModelID: "gpt-5"}
+	_ = router.Stream(context.Background(), req, func(ModelEvent) error { return nil })
+
+	cb := breakers.Get("primary")
+	stats := cb.Stats()
+	if stats.FailedRequests != 1 {
+		t.Errorf("503 should count as failure, got failed=%d", stats.FailedRequests)
+	}
+}

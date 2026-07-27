@@ -83,17 +83,23 @@ func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(M
 
 		resolved := router.applyChannelToRequest(req, channel, idleTimeout)
 
-		// sink wrapper：任何事件触达 sink 即标记，作为 failover 闸门。
+		// sink wrapper：任何事件触达 sink 即标记，作为 failover 闸门；
+		// 同时捕获 sink 写错误，区分"provider 出错"与"下游写失败"——后者不计 provider 故障。
 		sinkStarted := false
+		var sinkErr error
 		wrappedSink := func(ev ModelEvent) error {
 			sinkStarted = true
-			return sink(ev)
+			if e := sink(ev); e != nil {
+				sinkErr = e
+				return e
+			}
+			return nil
 		}
 
 		adapter, aerr := router.adapterFor(resolved.Provider)
 		if aerr != nil {
 			// provider 类型不支持：构造错误，不可重试（换候选也是同类型问题）。
-			cb.RecordFailure(permit.UsedHalfOpenPermit)
+			// 这是配置/路由层错误，不是 provider 故障，不计熔断。
 			lastErr = aerr
 			if sinkStarted {
 				return lastErr
@@ -103,27 +109,40 @@ func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(M
 
 		streamErr := adapter.Stream(ctx, resolved, wrappedSink)
 
-		if streamErr == nil {
+		if streamErr == nil && sinkErr == nil {
 			cb.RecordSuccess(permit.UsedHalfOpenPermit)
 			return nil
 		}
-		// 失败一律计数（half-open 探针失败会重新 Open）。
-		cb.RecordFailure(permit.UsedHalfOpenPermit)
-		lastErr = streamErr
+		// 失败原因归类后决定是否计入 provider 熔断：
+		//   - 客户端取消/全局超时（context.Canceled/DeadlineExceeded）：不是 provider 的错，不计，不 failover。
+		//   - sink 写失败（下游断连）：不是 provider 的错，不计；已 sinkStarted 本来就不 failover。
+		//   - 其余 provider 真错误：计 failure，按 isRetryableChannelError 决定 failover。
+		effErr := streamErr
+		if effErr == nil {
+			effErr = sinkErr
+		}
+		if !isClientSideCancellation(ctx, effErr) && sinkErr == nil {
+			cb.RecordFailure(permit.UsedHalfOpenPermit)
+		}
+		lastErr = effErr
 
 		// 已首字节 → 绝不 failover（双发比报错更糟）。
 		if sinkStarted {
-			return streamErr
+			return lastErr
+		}
+		// 客户端取消 → 不 failover（客户端已走，换候选无意义）。
+		if isClientSideCancellation(ctx, effErr) {
+			return lastErr
 		}
 		// 不可重试错误（4xx 除 429）→ 换候选也会同样失败，透传。
-		if !isRetryableChannelError(streamErr) {
-			return streamErr
+		if !isRetryableChannelError(effErr) {
+			return lastErr
 		}
 		// 可重试 + 未吐事件 → 换下一个候选。
 		if index < len(candidates)-1 {
 			log.Printf("router failover: model=%q from=%s to=%s reason=%v",
 				strings.TrimSpace(req.ModelID), strings.TrimSpace(channel.ID),
-				strings.TrimSpace(candidates[index+1].ID), streamErr)
+				strings.TrimSpace(candidates[index+1].ID), effErr)
 		}
 	}
 	if lastErr == nil {
@@ -258,6 +277,24 @@ func (router *Router) applyChannelToRequest(req StreamRequest, channel *legacyru
 		}
 	}
 	return resolved
+}
+
+// isClientSideCancellation 判定错误是否源于客户端取消或全局超时，而非 provider 故障。
+//
+// 触发条件：
+//   - 请求 ctx 已取消/超时（客户端断连、用户停止、上层 deadline）。
+//   - 错误链包含 context.Canceled 或 context.DeadlineExceeded（net/http 会把它包装进 *url.Error）。
+//
+// 这类错误不计入 provider 熔断（健康 provider 不该因客户端取消被 Open），
+// 也不 failover（客户端已走，换候选无意义）。
+func isClientSideCancellation(ctx context.Context, err error) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // isRetryableChannelError 判定一个 channel 错误是否值得 failover 到下一个候选。
