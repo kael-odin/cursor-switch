@@ -162,6 +162,9 @@ func (manager *Manager) LegacyRuntimeSnapshot(_ context.Context) (legacyruntime.
 			AnthropicMaxTokens:       item.AnthropicMaxTokens,
 			AnthropicThinkingEffort:  item.AnthropicThinkingEffort,
 			ThinkingBudgetTokens:     item.ThinkingBudgetTokens,
+			Priority:                 item.Priority,
+			Enabled:                  item.Enabled == nil || *item.Enabled,
+			Weight:                   item.Weight,
 		})
 	}
 	return legacyruntime.RuntimeConfigSnapshot{

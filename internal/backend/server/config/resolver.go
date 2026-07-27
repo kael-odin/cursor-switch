@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"cursor/internal/modelchannel"
@@ -21,7 +22,23 @@ const (
 	defaultChannelAnthropicEffort = "xhigh"
 )
 
-func (manager *Manager) SelectChannelForModel(_ context.Context, modelID string) (*legacyruntime.ResolvedChannel, error) {
+func (manager *Manager) SelectChannelForModel(ctx context.Context, modelID string) (*legacyruntime.ResolvedChannel, error) {
+	channels, err := manager.SelectChannelsForModel(ctx, modelID)
+	if err != nil {
+		return nil, err
+	}
+	if len(channels) == 0 {
+		return nil, legacyruntime.ErrChannelNotAvailable
+	}
+	return channels[0], nil
+}
+
+// SelectChannelsForModel 返回 modelID 命中的**全部**候选渠道（B2 failover 候选链）。
+// 候选顺序：精确 ID → legacy ID → providerModelID（由 ResolveAdapterIndexes 保证），
+// 再按 adapter.Priority 升序稳定排序（同 priority 保持配置顺序）。
+// Enabled==false 的 adapter 不进入候选链（保留配置但不参与路由）。
+// 熔断器不可用的候选不在此剔除——registry 在 Router 层持有，由 Router 排到末尾兜底。
+func (manager *Manager) SelectChannelsForModel(_ context.Context, modelID string) ([]*legacyruntime.ResolvedChannel, error) {
 	if manager == nil {
 		return nil, legacyruntime.ErrChannelNotAvailable
 	}
@@ -29,11 +46,12 @@ func (manager *Manager) SelectChannelForModel(_ context.Context, modelID string)
 	if err != nil {
 		return nil, err
 	}
-	return resolveModelAdapterChannel(adapters, modelID)
+	return resolveModelAdapterChannels(adapters, modelID)
 }
 
-func resolveModelAdapterChannel(adapters []ModelAdapterConfig, requestedModel string) (*legacyruntime.ResolvedChannel, error) {
-	matchIndex, ok := modelchannel.ResolveAdapterIndex(
+// resolveModelAdapterChannels 是 SelectChannelsForModel 的纯函数核心，便于测试。
+func resolveModelAdapterChannels(adapters []ModelAdapterConfig, requestedModel string) ([]*legacyruntime.ResolvedChannel, error) {
+	indexes := modelchannel.ResolveAdapterIndexes(
 		adapters,
 		requestedModel,
 		func(adapter ModelAdapterConfig) string { return adapter.ID },
@@ -42,11 +60,37 @@ func resolveModelAdapterChannel(adapters []ModelAdapterConfig, requestedModel st
 			return modelchannel.BuildLegacyChannelID(adapter.BaseURL, adapter.ModelID, adapter.APIKey, adapter.DisplayName)
 		},
 	)
-	if !ok {
-		return nil, legacyruntime.ErrChannelNotAvailable
+	if len(indexes) == 0 {
+		return nil, nil
 	}
-	matched := adapters[matchIndex]
+	// 收集 enabled 候选并按 Priority 升序稳定排序（同 priority 保持 ResolveAdapterIndexes 的命中顺序）。
+	type indexed struct {
+		idx      int
+		priority int
+	}
+	enabled := make([]indexed, 0, len(indexes))
+	for _, idx := range indexes {
+		adapter := adapters[idx]
+		if adapter.Enabled != nil && !*adapter.Enabled {
+			continue
+		}
+		enabled = append(enabled, indexed{idx: idx, priority: adapter.Priority})
+	}
+	if len(enabled) == 0 {
+		return nil, nil
+	}
+	sort.SliceStable(enabled, func(i, j int) bool {
+		return enabled[i].priority < enabled[j].priority
+	})
+	channels := make([]*legacyruntime.ResolvedChannel, 0, len(enabled))
+	for _, entry := range enabled {
+		channels = append(channels, buildResolvedChannel(adapters[entry.idx]))
+	}
+	return channels, nil
+}
 
+// buildResolvedChannel 把单个 ModelAdapterConfig 构造为 ResolvedChannel（resolver 与 FixedChannelService 共享语义）。
+func buildResolvedChannel(matched ModelAdapterConfig) *legacyruntime.ResolvedChannel {
 	resolved := &legacyruntime.ResolvedChannel{
 		ID:                          strings.TrimSpace(matched.ID),
 		Name:                        strings.TrimSpace(matched.DisplayName),
@@ -87,5 +131,5 @@ func resolveModelAdapterChannel(adapters []ModelAdapterConfig, requestedModel st
 	if strings.TrimSpace(matched.AnthropicThinkingEffort) != "" {
 		resolved.AnthropicThinkingEffort = strings.TrimSpace(matched.AnthropicThinkingEffort)
 	}
-	return resolved, nil
+	return resolved
 }

@@ -35,6 +35,9 @@ func (store *Store) LegacyRuntimeSnapshot(ctx context.Context) (legacyruntime.Ru
 			AnthropicMaxTokens:          item.AnthropicMaxTokens,
 			AnthropicThinkingEffort:     item.AnthropicThinkingEffort,
 			ThinkingBudgetTokens:        item.ThinkingBudgetTokens,
+			Priority:                    item.Priority,
+			Enabled:                     item.Enabled == nil || *item.Enabled,
+			Weight:                      item.Weight,
 		})
 	}
 

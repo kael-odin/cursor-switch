@@ -102,6 +102,22 @@ function asPositiveInteger(value) {
   return Number(text);
 }
 
+// asInteger 解析任意整数（含负数），用于 priority 等允许负值的字段。
+function asInteger(value) {
+  if (typeof value === "number" && Number.isFinite(value) && Number.isInteger(value)) {
+    return value;
+  }
+  const text = asString(value);
+  if (!text) {
+    return 0;
+  }
+  if (!/^-?\d+$/.test(text)) {
+    return 0;
+  }
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function asNumber(value, fallback = 0) {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -280,6 +296,9 @@ export function createEmptyModelAdapter() {
     anthropicMaxTokens: 0,
     anthropicThinkingEffort: ANTHROPIC_THINKING_EFFORT_DEFAULT,
     thinkingBudgetTokens: 0,
+    priority: 0,
+    enabled: true,
+    weight: 0,
   };
 }
 
@@ -401,6 +420,9 @@ export function normalizeModelAdapter(source) {
     thinkingBudgetTokens: asPositiveInteger(
       raw.thinkingBudgetTokens ?? raw.thinking_budget_tokens,
     ),
+    priority: asInteger(raw.priority),
+    enabled: asBoolean(raw.enabled ?? true),
+    weight: asPositiveInteger(raw.weight),
   };
 }
 
@@ -469,6 +491,12 @@ export function validateModelAdapters(source) {
     }
     if (adapter.thinkingBudgetTokens && (!Number.isInteger(adapter.thinkingBudgetTokens) || adapter.thinkingBudgetTokens <= 0)) {
       return `${prefix} 的思考预算 Token 必须为正整数`;
+    }
+    if (!Number.isInteger(adapter.priority)) {
+      return `${prefix} 的优先级必须为整数`;
+    }
+    if (!Number.isInteger(adapter.weight) || adapter.weight < 0) {
+      return `${prefix} 的权重必须为非负整数`;
     }
     const dedupeKey = buildModelAdapterIdentityKey(adapter);
     if (seenIdentityKeys.has(dedupeKey)) {

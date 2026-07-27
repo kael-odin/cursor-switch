@@ -3,7 +3,11 @@ package modeladapter
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,35 +22,165 @@ type Router struct {
 	anthropic ModelAdapter
 	// resolver 负责从本地配置中解析实际模型通道。
 	resolver ChannelResolver
+	// breakers 按渠道 ID 跟踪熔断状态，驱动 B2 failover 候选选择与失败计数。
+	// 为 nil 时退化为"无熔断"行为——每个候选都按 Priority 顺序直接尝试。
+	breakers *CircuitBreakerRegistry
 }
 
 type ChannelResolver interface {
+	// SelectChannelForModel 返回主候选（候选链 [0]）。保留给只读单字段调用点。
 	SelectChannelForModel(context.Context, string) (*legacyruntime.ResolvedChannel, error)
+	// SelectChannelsForModel 返回 modelID 的全部 enabled 候选（B2 failover 候选链），
+	// 已按 adapter.Priority 升序稳定排序。空切片表示无可用候选。
+	SelectChannelsForModel(context.Context, string) ([]*legacyruntime.ResolvedChannel, error)
 	ProviderStreamIdleTimeout(context.Context) time.Duration
 }
 
-// NewRouter 创建模型适配路由器。
-func NewRouter(resolver ChannelResolver) *Router {
+// NewRouter 创建模型适配路由器。breakers 可为 nil（禁用熔断，仅 failover）。
+func NewRouter(resolver ChannelResolver, breakers *CircuitBreakerRegistry) *Router {
 	return &Router{
 		openai:    NewOpenAIAdapter(),
 		anthropic: NewAnthropicAdapter(),
 		resolver:  resolver,
+		breakers:  breakers,
 	}
 }
 
 // Stream 根据模型标识选择具体 provider 并转发请求。
+//
+// B2 failover：解析出候选链（按 Priority 升序），逐个尝试。
+//   - 熔断中（IsAvailable==false）的候选排到末尾兜底，避免候选全空直接报错。
+//   - 候选失败后：仅当错误可重试（连接层/5xx/429/idle-timeout）且**尚未向 sink 发出任何事件**
+//     时才切换下一个候选；已首字节或 4xx 等不可重试错误直接透传。
+//   - sink wrapper 记录 sinkStarted——任何 ModelEvent 触达 sink 后立即置 true，
+//     保证 failover 不会对同一请求双发事件。
 func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(ModelEvent) error) error {
 	if router == nil || router.resolver == nil {
 		return fmt.Errorf("model adapter resolver is unavailable")
 	}
-	channel, err := router.resolver.SelectChannelForModel(ctx, req.ModelID)
+	channels, err := router.resolver.SelectChannelsForModel(ctx, req.ModelID)
 	if err != nil {
 		return err
 	}
-	if channel == nil {
+	if len(channels) == 0 {
 		return fmt.Errorf("no available channel for model %q", req.ModelID)
 	}
 
+	idleTimeout := router.resolver.ProviderStreamIdleTimeout(ctx)
+	candidates := router.orderCandidates(channels)
+
+	var lastErr error
+	for index, channel := range candidates {
+		cb := router.breakerFor(channel.ID)
+		permit := cb.AllowRequest()
+		if !permit.Allowed {
+			// 熔断中：跳过本候选，保留兜底（末尾候选熔断时仍会被跳过，最终走 lastErr）。
+			if lastErr == nil {
+				lastErr = fmt.Errorf("channel %q circuit open", channel.ID)
+			}
+			continue
+		}
+
+		resolved := router.applyChannelToRequest(req, channel, idleTimeout)
+
+		// sink wrapper：任何事件触达 sink 即标记，作为 failover 闸门。
+		sinkStarted := false
+		wrappedSink := func(ev ModelEvent) error {
+			sinkStarted = true
+			return sink(ev)
+		}
+
+		adapter, aerr := router.adapterFor(resolved.Provider)
+		if aerr != nil {
+			// provider 类型不支持：构造错误，不可重试（换候选也是同类型问题）。
+			cb.RecordFailure(permit.UsedHalfOpenPermit)
+			lastErr = aerr
+			if sinkStarted {
+				return lastErr
+			}
+			continue
+		}
+
+		streamErr := adapter.Stream(ctx, resolved, wrappedSink)
+
+		if streamErr == nil {
+			cb.RecordSuccess(permit.UsedHalfOpenPermit)
+			return nil
+		}
+		// 失败一律计数（half-open 探针失败会重新 Open）。
+		cb.RecordFailure(permit.UsedHalfOpenPermit)
+		lastErr = streamErr
+
+		// 已首字节 → 绝不 failover（双发比报错更糟）。
+		if sinkStarted {
+			return streamErr
+		}
+		// 不可重试错误（4xx 除 429）→ 换候选也会同样失败，透传。
+		if !isRetryableChannelError(streamErr) {
+			return streamErr
+		}
+		// 可重试 + 未吐事件 → 换下一个候选。
+		if index < len(candidates)-1 {
+			log.Printf("router failover: model=%q from=%s to=%s reason=%v",
+				strings.TrimSpace(req.ModelID), strings.TrimSpace(channel.ID),
+				strings.TrimSpace(candidates[index+1].ID), streamErr)
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no usable channel for model %q", req.ModelID)
+	}
+	return lastErr
+}
+
+// orderCandidates 把熔断中（IsAvailable==false）的候选排到末尾，保留兜底。
+// 已按 Priority 排序的候选顺序在"可用组"与"熔断组"内部各自保持稳定。
+func (router *Router) orderCandidates(channels []*legacyruntime.ResolvedChannel) []*legacyruntime.ResolvedChannel {
+	if router == nil || router.breakers == nil || len(channels) <= 1 {
+		return channels
+	}
+	available := make([]*legacyruntime.ResolvedChannel, 0, len(channels))
+	blocked := make([]*legacyruntime.ResolvedChannel, 0, len(channels))
+	for _, ch := range channels {
+		cb := router.breakers.Get(ch.ID)
+		if cb.IsAvailable() {
+			available = append(available, ch)
+		} else {
+			blocked = append(blocked, ch)
+		}
+	}
+	return append(available, blocked...)
+}
+
+// breakerFor 返回指定渠道的熔断器；router 无 registry 时返回一个永远放行的 no-op breaker。
+func (router *Router) breakerFor(channelID string) channelBreaker {
+	if router == nil || router.breakers == nil {
+		return noopCircuitBreakerInstance
+	}
+	return router.breakers.Get(channelID)
+}
+
+// channelBreaker 是 Router 消费熔断器所需的最小接口，让 *CircuitBreaker 与 no-op 占位实现统一。
+type channelBreaker interface {
+	IsAvailable() bool
+	AllowRequest() AllowResult
+	RecordSuccess(usedHalfOpenPermit bool)
+	RecordFailure(usedHalfOpenPermit bool)
+}
+
+func (router *Router) adapterFor(provider string) (ModelAdapter, error) {
+	switch strings.TrimSpace(provider) {
+	case "anthropic":
+		return router.anthropic, nil
+	case "openai":
+		return router.openai, nil
+	default:
+		return nil, fmt.Errorf("unsupported provider %q", provider)
+	}
+}
+
+// applyChannelToRequest 把单个 ResolvedChannel 的字段填充进 StreamRequest，
+// 并完成 thinking effort / max_tokens / RequestKnobs 的归一化。每次 failover 对每个候选调一次。
+func (router *Router) applyChannelToRequest(req StreamRequest, channel *legacyruntime.ResolvedChannel, idleTimeout time.Duration) StreamRequest {
 	resolved := req
 	resolved.Provider = strings.TrimSpace(channel.Provider)
 	resolved.BaseURL = strings.TrimSpace(channel.BaseURL)
@@ -66,7 +200,7 @@ func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(M
 	resolved.AnthropicMaxTokens = channel.AnthropicMaxTokens
 	resolved.AnthropicThinkingEffort = strings.TrimSpace(channel.AnthropicThinkingEffort)
 	resolved.ThinkingBudgetTokens = channel.ThinkingBudgetTokens
-	resolved.ProviderStreamIdleTimeout = router.resolver.ProviderStreamIdleTimeout(ctx)
+	resolved.ProviderStreamIdleTimeout = idleTimeout
 	runtimeThinkingEffort := normalizeRuntimeThinkingEffort(req.ThinkingEffort)
 	if runtimeThinkingEffort != "" {
 		resolved.ThinkingEffort = runtimeThinkingEffort
@@ -123,16 +257,87 @@ func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(M
 			}
 		}
 	}
-
-	switch resolved.Provider {
-	case "anthropic":
-		return router.anthropic.Stream(ctx, resolved, sink)
-	case "openai":
-		return router.openai.Stream(ctx, resolved, sink)
-	default:
-		return fmt.Errorf("unsupported provider %q", resolved.Provider)
-	}
+	return resolved
 }
+
+// isRetryableChannelError 判定一个 channel 错误是否值得 failover 到下一个候选。
+//
+// 可重试（换 provider 可能成功）：
+//   - 连接层错误：*url.Error（DNS/TLS/conn-refused/连接超时），由 net/http 直接返回。
+//   - HTTP 5xx：buildHTTPStatusError 的 "status=5NN" 字符串形态。
+//   - HTTP 429：限流，换 provider 可绕过。
+//   - 流 idle 超时：providerStreamIdleTimeoutError 的 "provider stream idle timeout after ..." 字符串。
+//   - body 读取失败：buildHTTPStatusError 的 "body_read_error=" 形态（响应体中途断流）。
+//
+// 不可重试（换 provider 也会同样失败）：
+//   - HTTP 4xx 除 429：请求本身有问题（鉴权/参数/模型不存在）。
+//   - 其它未知错误：保守不重试，透传给客户端可见真实原因。
+//
+// 错误形态由 buildHTTPStatusError（http_error.go）与 providerStreamIdleTimeoutError（stream_idle.go）
+// 产生，均为 fmt.Errorf 字符串，无结构化类型，故按子串/前缀判定。
+func isRetryableChannelError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// 连接层错误：net/http 把 Do 的网络错误包装成 *url.Error。
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return true
+	}
+	text := err.Error()
+	// 流 idle 超时（两种字符串形态都以 "provider stream idle timeout after " 开头）。
+	if strings.HasPrefix(text, "provider stream idle timeout after ") {
+		return true
+	}
+	// HTTP 状态码错误：解析 "status=NNN"。
+	status, ok := extractHTTPStatus(text)
+	if !ok {
+		return false
+	}
+	if status == 429 || status >= 500 {
+		return true
+	}
+	// 4xx（除 429）不可重试。body_read_error= 形态也带 status=，归到这里：5xx 才重试，
+	// 4xx 的 body_read_error 仍属请求侧问题。
+	return false
+}
+
+// extractHTTPStatus 从 "prefix status=NNN ..." 形态的错误串里提取 NNN。
+func extractHTTPStatus(text string) (int, bool) {
+	idx := strings.Index(text, "status=")
+	if idx < 0 {
+		return 0, false
+	}
+	rest := text[idx+len("status="):]
+	// 读连续数字。
+	end := 0
+	for end < len(rest) {
+		ch := rest[end]
+		if ch < '0' || ch > '9' {
+			break
+		}
+		end++
+	}
+	if end == 0 {
+		return 0, false
+	}
+	status, err := strconv.Atoi(rest[:end])
+	if err != nil {
+		return 0, false
+	}
+	return status, true
+}
+
+// noopCircuitBreaker 是无 registry 时的占位熔断器，永远放行、不计计数。
+type noopCircuitBreaker struct{}
+
+var noopCircuitBreakerInstance = &noopCircuitBreaker{}
+
+func (n *noopCircuitBreaker) IsAvailable() bool         { return true }
+func (n *noopCircuitBreaker) AllowRequest() AllowResult { return AllowResult{Allowed: true} }
+func (n *noopCircuitBreaker) RecordSuccess(bool)        {}
+func (n *noopCircuitBreaker) RecordFailure(bool)        {}
+
 
 // sanitizeProviderMessages removes replay-only placeholders and trims trailing
 // assistant prefill so providers that require a user/tool terminal message do

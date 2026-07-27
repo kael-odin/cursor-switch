@@ -75,9 +75,25 @@ function createOptionalPositiveIntegerModel(key) {
   });
 }
 
+// createIntegerModel 支持负整数的双向绑定（用于 priority 等允许负值的字段）。
+function createIntegerModel(key) {
+  return computed({
+    get() {
+      const value = Number(draft[key]);
+      return Number.isInteger(value) ? String(value) : "0";
+    },
+    set(value) {
+      const text = String(value || "").trim();
+      draft[key] = /^-?\d+$/.test(text) ? Number(text) : 0;
+    },
+  });
+}
+
 const maxCompletionTokensInput = createOptionalPositiveIntegerModel("maxCompletionTokens");
 const anthropicMaxTokensInput = createOptionalPositiveIntegerModel("anthropicMaxTokens");
 const contextWindowTokensInput = createOptionalPositiveIntegerModel("contextWindowTokens");
+const priorityInput = createIntegerModel("priority");
+const weightInput = createIntegerModel("weight");
 const interfacePlaceholder = computed(() =>
   draft.type === "anthropic" ? "例如：https://api.anthropic.com" : "例如：https://api.openai.com/v1",
 );
@@ -139,6 +155,9 @@ const fieldTips = {
   anthropicMaxTokens: "Anthropic 模型单次回复允许生成的最大 Token 数。留空按默认 131072（128K）处理。Opus / Sonnet 系列支持 128K，Haiku 为 64K。",
   anthropicThinkingEffort: "Anthropic adaptive thinking 的思考强度。请求会固定使用新版 thinking.type=adaptive。越高模型「想」得越久，回答质量通常更好但更慢。",
   tooltipData: "模型列表 hover 时显示的备注说明，写给自己看的备忘。",
+  priority: "故障转移候选链的排序优先级：数字小的优先。同 modelID 的多个 enabled 适配器按 Priority 升序组成主→备候选链，主候选失败（连接错误/5xx/429/流超时）且尚未输出内容时自动切到下一个。默认 0。",
+  weight: "预留给 WeightedRoundRobin 轮转策略的字段，本期 Failover 策略不使用。默认 0。",
+  enabled: "关闭后该适配器保留配置但不参与路由（不进候选链）。可用于临时摘除某个 provider 而不删除其配置。",
 };
 
 // 一键获取模型列表：根据已填的 type/baseURL/apiKey 调 provider 的 /v1/models。
@@ -812,6 +831,49 @@ onMounted(async () => {
             spellcheck="false"
             class="mt-3 min-h-[120px] w-full resize-none rounded-[6px] border border-[#3f3f3f] bg-[#1f1f1f] px-3 py-2 font-mono text-xs text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
           />
+        </div>
+
+        <div class="rounded-[8px] border border-[#343434] bg-[#252525] p-3">
+          <div class="mb-2 text-xs text-[#a1a1a1]">
+            故障转移候选链：同 modelID 的多个启用适配器按优先级数字升序组成主→备链路，主候选在输出内容前失败（连接错误 / 5xx / 429 / 流超时）时自动切到下一个。
+          </div>
+          <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <label class="flex flex-col gap-1">
+              <span class="center-row justify-start gap-1.5 text-sm text-[#d4d4d4]">
+                <Tooltip :content="fieldTips.priority" />
+                <span>优先级</span>
+              </span>
+              <input
+                v-model="priorityInput"
+                type="text"
+                inputmode="numeric"
+                placeholder="0（数字小的优先）"
+                class="h-9 rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
+              />
+            </label>
+            <label class="flex flex-col gap-1">
+              <span class="center-row justify-start gap-1.5 text-sm text-[#d4d4d4]">
+                <Tooltip :content="fieldTips.weight" />
+                <span>权重（预留）</span>
+              </span>
+              <input
+                v-model="weightInput"
+                type="text"
+                inputmode="numeric"
+                placeholder="0（轮转策略预留）"
+                class="h-9 rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
+              />
+            </label>
+          </div>
+          <label class="center-row mt-3 gap-2 text-sm text-[#d4d4d4]">
+            <input
+              v-model="draft.enabled"
+              type="checkbox"
+              class="size-4 accent-[#10AD5D]"
+            />
+            <Tooltip :content="fieldTips.enabled" />
+            <span>启用（关闭则保留配置但不参与路由）</span>
+          </label>
         </div>
 
         <label class="flex flex-col gap-1">

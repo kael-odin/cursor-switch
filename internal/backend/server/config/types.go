@@ -44,6 +44,13 @@ type ModelAdapterConfig struct {
 	ThinkingBudgetTokens        int    `json:"thinkingBudgetTokens" yaml:"thinkingBudgetTokens"`
 	// CostMultiplier 是该适配器的成本倍率覆盖（字符串，如 "1.5"）。空则用全局默认倍率。
 	CostMultiplier string `json:"costMultiplier,omitempty" yaml:"costMultiplier,omitempty"`
+	// Priority 是 B2 failover 候选链排序优先级：数字小的优先（默认 0）。
+	// 同 modelID 的多个 enabled adapter 按 Priority 升序组成候选链，主候选失败后按序尝试备选。
+	Priority int `json:"priority,omitempty" yaml:"priority,omitempty"`
+	// Enabled 控制该 adapter 是否进入候选链（默认 true）。false 的 adapter 不参与路由但保留配置。
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// Weight 预留给 WeightedRoundRobin 策略（本期 B2 只做 Failover，先收字段）。
+	Weight int `json:"weight,omitempty" yaml:"weight,omitempty"`
 }
 
 type RoutingConfig struct {
@@ -152,6 +159,15 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 		next.CustomHeadersEnabled = item.CustomHeadersEnabled
 		next.CustomHeadersJSON = strings.TrimSpace(item.CustomHeadersJSON)
 		next.CostMultiplier = strings.TrimSpace(item.CostMultiplier)
+		// B2 failover 候选链字段：Priority 排序、Enabled 开关、Weight 预留。
+		next.Priority = item.Priority
+		if item.Enabled == nil {
+			enabled := true
+			next.Enabled = &enabled
+		} else {
+			next.Enabled = item.Enabled
+		}
+		next.Weight = item.Weight
 		switch {
 		case next.DisplayName == "":
 			return nil, errors.New("模型适配器 displayName 不能为空")

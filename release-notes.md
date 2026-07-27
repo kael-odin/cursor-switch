@@ -1,3 +1,14 @@
+# 未发布
+
+## 多 provider 故障转移候选链 + 熔断器接入（B2 + A1）
+
+单 channel 架构升级为多 provider 候选链 + 故障转移：同 modelID 配多个适配器时，按优先级组成主→备候选链，主候选在输出内容前失败（连接错误 / 5xx / 429 / 流超时）自动切到下一个，已开始输出的请求绝不切换避免双发。熔断器（A1）接入：单个 provider 连续失败或错误率过高自动熔断，熔断中的候选排到候选链末尾兜底。
+
+- `ModelAdapterConfig` 新增 `Priority`（数字小的优先）、`Enabled`（关闭则保留配置但不参与路由）、`Weight`（轮转策略预留）字段。
+- 模型编辑器新增「故障转移候选链」分组（优先级 / 权重 / 启用开关）。
+- 模型列表对「同 modelID 多启用适配器」显示 `候选 P{优先级}` 徽章，停用的显示 `已停用`。
+- 本期只实现 Failover 策略（主→备按序）；ConversationRoundRobin / RequestRoundRobin / WeightedRoundRobin 三种轮转策略留后续。
+
 # 1.1.0
 
 ## 成本精确化 · 仪表盘增强 · models.dev 在线回退 · 改名 cursor-switch

@@ -35,6 +35,41 @@ let batchStopRequested = false;
 const filteredAdapters = computed(() =>
   appState.modelAdapters.filter((adapter) => adapter.type === activeType.value),
 );
+
+// failoverModelIDs 收集「同 modelID 有 ≥2 个启用适配器」的 modelID，
+// 用于在卡片上标记这些适配器彼此构成故障转移候选链。
+const failoverModelIDs = computed(() => {
+  const counts = new Map();
+  for (const adapter of appState.modelAdapters) {
+    if (adapter.enabled === false) {
+      continue;
+    }
+    const key = String(adapter.modelID || "").trim();
+    if (!key) {
+      continue;
+    }
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  const set = new Set();
+  for (const [key, count] of counts) {
+    if (count >= 2) {
+      set.add(key);
+    }
+  }
+  return set;
+});
+
+function isFailoverCandidate(adapter) {
+  return failoverModelIDs.value.has(String(adapter.modelID || "").trim());
+}
+
+function priorityLabel(adapter) {
+  const value = Number(adapter.priority);
+  if (!Number.isInteger(value) || value === 0) {
+    return "主";
+  }
+  return `P${value}`;
+}
 const batchButtonText = computed(() => {
   if (batchStopping.value) {
     return "停止中...";
@@ -266,7 +301,18 @@ onBeforeUnmount(() => {
               <div class="flex flex-col gap-2.5">
                 <div class="flex items-start justify-between gap-3">
                   <div class="min-w-0 flex-1">
-                    <div class="truncate text-base font-medium text-white">{{ adapter.displayName }}</div>
+                    <div class="flex items-center gap-1.5">
+                      <div class="truncate text-base font-medium text-white">{{ adapter.displayName }}</div>
+                      <span
+                        v-if="adapter.enabled === false"
+                        class="shrink-0 rounded-[4px] bg-[#3a2a13] px-1.5 py-0.5 text-[10px] font-medium text-[#f0b372]"
+                      >已停用</span>
+                      <span
+                        v-else-if="isFailoverCandidate(adapter)"
+                        class="shrink-0 rounded-[4px] border border-[#10AD5D]/40 bg-[#10AD5D]/10 px-1.5 py-0.5 text-[10px] font-medium text-[#10AD5D]"
+                        title="同 modelID 的多个启用适配器组成故障转移候选链（主→备）"
+                      >候选 {{ priorityLabel(adapter) }}</span>
+                    </div>
                     <div class="mt-1 truncate text-sm text-[#8f8f8f]">{{ adapter.modelID }}</div>
                     <div v-if="adapter.type === 'openai'" class="mt-0.5 truncate text-xs text-[#737373]">
                       {{ adapter.openAIEndpoint || "/v1/responses" }}

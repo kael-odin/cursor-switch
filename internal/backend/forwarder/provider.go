@@ -14,9 +14,11 @@ type DefaultProviderGateway struct {
 }
 
 // NewProviderGateway 创建默认 provider 网关。
+// 内部按默认配置构造 CircuitBreakerRegistry 注入 Router，启用 B2 failover + 熔断。
 func NewProviderGateway(resolver modeladapter.ChannelResolver) *DefaultProviderGateway {
+	breakers := modeladapter.NewCircuitBreakerRegistry(modeladapter.DefaultCircuitBreakerConfig())
 	return &DefaultProviderGateway{
-		router: modeladapter.NewRouter(resolver),
+		router: modeladapter.NewRouter(resolver, breakers),
 	}
 }
 

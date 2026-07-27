@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -74,6 +75,15 @@ type ModelAdapterConfig struct {
 	AnthropicThinkingEffort string `json:"anthropicThinkingEffort,omitempty"`
 	// ThinkingBudgetTokens 表示当前声明中的 ThinkingBudgetTokens。
 	ThinkingBudgetTokens int `json:"thinkingBudgetTokens"`
+
+	// Priority 是 B2 failover 候选链的排序优先级：数字小的优先（默认 0）。
+	// 同 modelID 的多个 enabled adapter 按 Priority 升序组成候选链，主候选失败后按序尝试备选。
+	Priority int `json:"priority,omitempty"`
+	// Enabled 控制该 adapter 是否进入候选链（默认 true）。
+	// false 的 adapter 不参与 failover 路由，但保留配置（如临时停用某个 provider）。
+	Enabled bool `json:"enabled,omitempty"`
+	// Weight 预留给 WeightedRoundRobin 策略（本期 B2 只做 Failover，先收字段）。
+	Weight int `json:"weight,omitempty"`
 }
 
 // RuntimeConfigSnapshot 定义了当前模块中的 RuntimeConfigSnapshot 类型。
@@ -360,6 +370,20 @@ func (s *FixedChannelService) SelectChannelForRequestBody(_ context.Context, _ [
 
 // SelectChannelForModel 用于处理与 SelectChannelForModel 相关的逻辑。
 func (s *FixedChannelService) SelectChannelForModel(ctx context.Context, modelID string) (*ResolvedChannel, error) {
+	channels, err := s.SelectChannelsForModel(ctx, modelID)
+	if err != nil {
+		return nil, err
+	}
+	if len(channels) == 0 {
+		return nil, ErrChannelNotAvailable
+	}
+	return channels[0], nil
+}
+
+// SelectChannelsForModel 返回 modelID 命中的**全部**候选渠道（B2 failover 候选链）。
+// 候选顺序按 adapter.Priority 升序稳定排序（同 priority 保持 ResolveAdapterIndexes 命中顺序）。
+// Enabled==false 的 adapter 不进入候选链。返回空切片表示无可用候选。
+func (s *FixedChannelService) SelectChannelsForModel(ctx context.Context, modelID string) ([]*ResolvedChannel, error) {
 	if s == nil {
 		return nil, ErrChannelNotAvailable
 	}
@@ -372,7 +396,7 @@ func (s *FixedChannelService) SelectChannelForModel(ctx context.Context, modelID
 		if err != nil {
 			return nil, err
 		}
-		matchIndex, ok := modelchannel.ResolveAdapterIndex(
+		indexes := modelchannel.ResolveAdapterIndexes(
 			adapters,
 			modelID,
 			func(adapter ModelAdapterConfig) string { return adapter.ID },
@@ -381,57 +405,83 @@ func (s *FixedChannelService) SelectChannelForModel(ctx context.Context, modelID
 				return modelchannel.BuildLegacyChannelID(adapter.BaseURL, adapter.ModelID, adapter.APIKey, adapter.DisplayName)
 			},
 		)
-		if !ok {
-			return nil, ErrChannelNotAvailable
+		if len(indexes) == 0 {
+			return nil, nil
 		}
-		adapter := adapters[matchIndex]
-		resolved := ResolvedChannel{
-			ID:                          strings.TrimSpace(adapter.ID),
-			Name:                        strings.TrimSpace(adapter.DisplayName),
-			GroupName:                   "local",
-			Code:                        strings.TrimSpace(adapter.ID),
-			Provider:                    strings.TrimSpace(adapter.Type),
-			BaseURL:                     strings.TrimSpace(adapter.BaseURL),
-			APIKey:                      strings.TrimSpace(adapter.APIKey),
-			Model:                       strings.TrimSpace(adapter.ModelID),
-			TimeoutMS:                   configurableChannelTimeoutMS,
-			ContextWindowTokens:         configurableChannelContextWindowTokens,
-			MaxTokens:                   configurableChannelMaxTokens,
-			ReasoningEffort:             strings.TrimSpace(adapter.ReasoningEffort),
-			OpenAIEndpoint:              strings.TrimSpace(adapter.OpenAIEndpoint),
-			OpenAIExtraParamsEnabled:    adapter.OpenAIExtraParamsEnabled,
-			OpenAIExtraParamsJSON:       strings.TrimSpace(adapter.OpenAIExtraParamsJSON),
-			CustomHeadersEnabled:        adapter.CustomHeadersEnabled,
-			CustomHeadersJSON:           strings.TrimSpace(adapter.CustomHeadersJSON),
-			AnthropicExtraParamsEnabled: adapter.AnthropicExtraParamsEnabled,
-			AnthropicExtraParamsJSON:    strings.TrimSpace(adapter.AnthropicExtraParamsJSON),
-			AnthropicMaxTokens:          configurableChannelMaxTokens,
-			AnthropicThinkingEffort:     configurableChannelAnthropicThinkingEffort,
-			ThinkingEnabled:             true,
-			ThinkingBudgetTokens:        configurableChannelThinkingBudgetTokens,
+		type indexed struct {
+			idx      int
+			priority int
 		}
-		if adapter.ContextWindowTokens > 0 {
-			resolved.ContextWindowTokens = adapter.ContextWindowTokens
+		enabled := make([]indexed, 0, len(indexes))
+		for _, idx := range indexes {
+			adapter := adapters[idx]
+			if !adapter.Enabled {
+				continue
+			}
+			enabled = append(enabled, indexed{idx: idx, priority: adapter.Priority})
 		}
-		if adapter.MaxCompletionTokens > 0 {
-			resolved.MaxTokens = adapter.MaxCompletionTokens
+		if len(enabled) == 0 {
+			return nil, nil
 		}
-		if adapter.ThinkingBudgetTokens > 0 {
-			resolved.ThinkingBudgetTokens = adapter.ThinkingBudgetTokens
+		sort.SliceStable(enabled, func(i, j int) bool {
+			return enabled[i].priority < enabled[j].priority
+		})
+		channels := make([]*ResolvedChannel, 0, len(enabled))
+		for _, entry := range enabled {
+			channels = append(channels, s.buildResolvedChannel(adapters[entry.idx]))
 		}
-		if adapter.AnthropicMaxTokens > 0 {
-			resolved.AnthropicMaxTokens = adapter.AnthropicMaxTokens
-		}
-		if strings.TrimSpace(adapter.AnthropicThinkingEffort) != "" {
-			resolved.AnthropicThinkingEffort = strings.TrimSpace(adapter.AnthropicThinkingEffort)
-		}
-		return &resolved, nil
+		return channels, nil
 	}
 	if strings.TrimSpace(s.channel.BaseURL) == "" || strings.TrimSpace(s.channel.APIKey) == "" {
-		return nil, ErrChannelNotAvailable
+		return nil, nil
 	}
 	resolved := s.channel
-	return &resolved, nil
+	return []*ResolvedChannel{&resolved}, nil
+}
+
+// buildResolvedChannel 把单个 ModelAdapterConfig 构造为 ResolvedChannel（FixedChannelService 内部共享语义）。
+func (s *FixedChannelService) buildResolvedChannel(adapter ModelAdapterConfig) *ResolvedChannel {
+	resolved := ResolvedChannel{
+		ID:                          strings.TrimSpace(adapter.ID),
+		Name:                        strings.TrimSpace(adapter.DisplayName),
+		GroupName:                   "local",
+		Code:                        strings.TrimSpace(adapter.ID),
+		Provider:                    strings.TrimSpace(adapter.Type),
+		BaseURL:                     strings.TrimSpace(adapter.BaseURL),
+		APIKey:                      strings.TrimSpace(adapter.APIKey),
+		Model:                       strings.TrimSpace(adapter.ModelID),
+		TimeoutMS:                   configurableChannelTimeoutMS,
+		ContextWindowTokens:         configurableChannelContextWindowTokens,
+		MaxTokens:                   configurableChannelMaxTokens,
+		ReasoningEffort:             strings.TrimSpace(adapter.ReasoningEffort),
+		OpenAIEndpoint:              strings.TrimSpace(adapter.OpenAIEndpoint),
+		OpenAIExtraParamsEnabled:    adapter.OpenAIExtraParamsEnabled,
+		OpenAIExtraParamsJSON:       strings.TrimSpace(adapter.OpenAIExtraParamsJSON),
+		CustomHeadersEnabled:        adapter.CustomHeadersEnabled,
+		CustomHeadersJSON:           strings.TrimSpace(adapter.CustomHeadersJSON),
+		AnthropicExtraParamsEnabled: adapter.AnthropicExtraParamsEnabled,
+		AnthropicExtraParamsJSON:    strings.TrimSpace(adapter.AnthropicExtraParamsJSON),
+		AnthropicMaxTokens:           configurableChannelMaxTokens,
+		AnthropicThinkingEffort:     configurableChannelAnthropicThinkingEffort,
+		ThinkingEnabled:             true,
+		ThinkingBudgetTokens:        configurableChannelThinkingBudgetTokens,
+	}
+	if adapter.ContextWindowTokens > 0 {
+		resolved.ContextWindowTokens = adapter.ContextWindowTokens
+	}
+	if adapter.MaxCompletionTokens > 0 {
+		resolved.MaxTokens = adapter.MaxCompletionTokens
+	}
+	if adapter.ThinkingBudgetTokens > 0 {
+		resolved.ThinkingBudgetTokens = adapter.ThinkingBudgetTokens
+	}
+	if adapter.AnthropicMaxTokens > 0 {
+		resolved.AnthropicMaxTokens = adapter.AnthropicMaxTokens
+	}
+	if strings.TrimSpace(adapter.AnthropicThinkingEffort) != "" {
+		resolved.AnthropicThinkingEffort = strings.TrimSpace(adapter.AnthropicThinkingEffort)
+	}
+	return &resolved
 }
 
 // RecordRunRequestUsage 用于处理与 RecordRunRequestUsage 相关的逻辑。
