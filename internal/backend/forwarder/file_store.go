@@ -788,15 +788,58 @@ func normalizeLoadedConversation(conversationID string, conversation *Conversati
 	deriveConversationLoopState(conversation)
 }
 
+// validateConversationID 校验 conversation ID 不会逃逸出 store 的根目录。
+//
+// 拒绝：空值、任意平台分隔符（/ 与 os.PathSeparator）、"."、".."、绝对路径、
+// filepath.Clean 后值发生变化的输入（含尾部分隔符、重复分隔符、`.`/`..` 段组合）。
+//
+// 仅靠拒绝分隔符不够："." 和 ".." 不含分隔符却会改变最终目录（F-04）。
+// Clean 后比对 + 二次 Rel 校验形成纵深防御：即便未来 root 拼接方式变化，
+// 也保证解析后的相对路径仍在根目录内且无 `..` 上跳。
 func validateConversationID(conversationID string) (string, error) {
 	normalized := strings.TrimSpace(conversationID)
 	if normalized == "" {
 		return "", fmt.Errorf("conversation_id is required")
 	}
-	if strings.Contains(normalized, "/") || strings.Contains(normalized, string(os.PathSeparator)) {
+	if strings.ContainsAny(normalized, "/\\") {
 		return "", fmt.Errorf("conversation_id must not contain path separators")
 	}
+	if normalized == "." || normalized == ".." {
+		return "", fmt.Errorf("conversation_id must not be a path traversal segment")
+	}
+	if filepath.IsAbs(normalized) {
+		return "", fmt.Errorf("conversation_id must not be an absolute path")
+	}
+	cleaned := filepath.Clean(normalized)
+	if cleaned != normalized {
+		return "", fmt.Errorf("conversation_id must be a clean path segment")
+	}
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("conversation_id must not escape its directory")
+	}
 	return normalized, nil
+}
+
+// resolveConversationPath 把 conversationID 解析到 store.root 下的安全绝对路径。
+// 在 validateConversationID 之后做二次 Rel 校验：确保最终路径仍在 root 内，
+// 防止调用方绕过校验或 root 拼接方式变化导致的目录逃逸。
+func (store *ConversationFileStore) resolveConversationPath(conversationID string, sub string) (string, error) {
+	if store == nil {
+		return "", fmt.Errorf("conversation store is nil")
+	}
+	id, err := validateConversationID(conversationID)
+	if err != nil {
+		return "", err
+	}
+	full := filepath.Join(store.root, id, sub)
+	rel, err := filepath.Rel(store.root, full)
+	if err != nil {
+		return "", fmt.Errorf("resolve conversation path: %w", err)
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("conversation path escapes store root")
+	}
+	return full, nil
 }
 
 func writeJSONFileAtomic(path string, payload any) error {

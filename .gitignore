@@ -37,3 +37,6 @@ cursor-tab-server/cursor-tab-server.exe
 *.cursor-switch-release.key
 .cursor-byok-release.key
 *.cursor-byok-release.key
+
+# local Claude Code / preview tooling
+.claude/

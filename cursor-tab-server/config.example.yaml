@@ -1,1 +1,11 @@
+# 上游 Cursor 账号的 bearer token（出站凭证，必填）
 token: "eyJ..."
+
+# 入站凭证：调用方必须携带 Authorization: Bearer <inbound_token> 才能使用本服务。
+# 留空 = 不校验入站（仅当 listen_addr 绑定 127.0.0.1 loopback 时安全）。
+# 若把 listen_addr 改成非 loopback（如 0.0.0.0:8041 或公网地址），务必填一个高熵随机串。
+inbound_token: ""
+
+# 监听地址。默认 127.0.0.1:8041（仅本机，最安全）。
+# 仅在受认证反向代理后或确需 LAN 访问时才改成非 loopback，并务必同时配置 inbound_token。
+listen_addr: "127.0.0.1:8041"

@@ -256,10 +256,15 @@ func replayMessageCountFromSummaryObjects(messages []map[string]any) int {
 	return count
 }
 
+// sanitizeArtifactName 把任意字符串压成可安全用作文件/目录名的段。
+//
+// 替换 `/`/`\`/`:`/空格 为 `_`，并拒绝 `"."`/`".."`（F-04 目录逃逸）——
+// 这两个值不含分隔符但会令 filepath.Join 上跳到父目录，所以单独拦截。
+// 空值回退为 "unknown"。
 func sanitizeArtifactName(value string) string {
 	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_")
 	normalized := replacer.Replace(strings.TrimSpace(value))
-	if normalized == "" {
+	if normalized == "" || normalized == "." || normalized == ".." {
 		return "unknown"
 	}
 	return normalized

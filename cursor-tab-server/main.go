@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,9 +22,9 @@ import (
 )
 
 const (
-	defaultConfigPath       = "./config.yaml"
+	defaultConfigPath        = "./config.yaml"
 	defaultExampleConfigPath = "./config.example.yaml"
-	defaultListenAddr       = ":8041"
+	defaultListenAddr        = "127.0.0.1:8041"
 )
 
 var hopByHopHeaders = map[string]struct{}{
@@ -59,7 +61,14 @@ var defaultUpstreamTargets = map[string]string{
 }
 
 type appConfig struct {
+	// Token 是上游 Cursor 账号的 bearer token（出站凭证）。
 	Token string
+	// InboundToken 是调用方必须携带的入站凭证。配置为空时回退为"不校验入站"
+	//（仅适合 loopback 单用户场景，会打 WARN）。绑定到非 loopback 地址时强烈建议配置。
+	InboundToken string
+	// ListenAddr 覆盖默认监听地址。默认 127.0.0.1:8041（仅本机）。
+	// 显式填 :8041 或 0.0.0.0:8041 会监听全网卡——务必同时配置 InboundToken。
+	ListenAddr string
 }
 
 type serverApp struct {
@@ -86,9 +95,17 @@ func main() {
 		_, _ = fmt.Fprintf(os.Stderr, "加载配置失败: %v\n", err)
 		os.Exit(1)
 	}
-	log.Printf("cursor-tab-server 启动 listen_addr=%s config_path=%s", defaultListenAddr, defaultConfigPath)
+	listenAddr := cfg.ListenAddr
+	if listenAddr == "" {
+		listenAddr = defaultListenAddr
+	}
+	// 非 loopback 地址必须配置 InboundToken，否则任何同网/公网调用方都能借用本服务中继 Cursor 账号（F-33）。
+	if !isLoopbackAddr(listenAddr) && cfg.InboundToken == "" {
+		log.Printf("WARN: 监听地址 %s 不是 loopback 且未配置 inbound_token——任意调用方可借用本服务中继 Cursor 账号，强烈建议配置 inbound_token", listenAddr)
+	}
+	log.Printf("cursor-tab-server 启动 listen_addr=%s config_path=%s inbound_auth=%v", listenAddr, defaultConfigPath, cfg.InboundToken != "")
 	server := &http.Server{
-		Addr:              defaultListenAddr,
+		Addr:              listenAddr,
 		Handler:           newServerApp(cfg, newHTTPClient(), defaultUpstreamTargets),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -119,6 +136,15 @@ func (app *serverApp) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 func (app *serverApp) handleProxy(writer http.ResponseWriter, request *http.Request) error {
 	if app == nil {
 		return fmt.Errorf("服务实例为空")
+	}
+	// 入站凭证校验（F-33）：配置了 InboundToken 时，调用方必须带匹配的 Bearer。
+	// 用 subtle.ConstantTimeCompare 防止时序侧信道。
+	if app.config.InboundToken != "" {
+		provided := strings.TrimSpace(strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer "))
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(app.config.InboundToken)) != 1 {
+			http.Error(writer, "unauthorized", http.StatusUnauthorized)
+			return nil
+		}
 	}
 	rawTarget, ok := app.upstreamTargets[strings.TrimSpace(request.URL.Path)]
 	if !ok {
@@ -173,23 +199,35 @@ func loadConfig(path string) (appConfig, error) {
 	if err != nil {
 		return appConfig{}, err
 	}
-	token, err := parseTokenYAML(contents)
-	if err != nil {
-		return appConfig{}, err
-	}
-	return appConfig{Token: token}, nil
-}
-
-func parseTokenYAML(contents []byte) (string, error) {
 	var cfg appConfig
 	if err := yaml.Unmarshal(contents, &cfg); err != nil {
-		return "", fmt.Errorf("解析配置失败: %w", err)
+		return appConfig{}, fmt.Errorf("解析配置失败: %w", err)
 	}
-	token := strings.TrimSpace(cfg.Token)
-	if token == "" {
-		return "", fmt.Errorf("token 不能为空")
+	cfg.Token = strings.TrimSpace(cfg.Token)
+	if cfg.Token == "" {
+		return appConfig{}, fmt.Errorf("token 不能为空")
 	}
-	return token, nil
+	cfg.InboundToken = strings.TrimSpace(cfg.InboundToken)
+	cfg.ListenAddr = strings.TrimSpace(cfg.ListenAddr)
+	return cfg, nil
+}
+
+// isLoopbackAddr 判定监听地址是否绑定到本机回环（127.0.0.0/8 或 ::1）。
+// 用于 F-33：非 loopback 监听且无入站凭证时告警。
+func isLoopbackAddr(addr string) bool {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 func copyRequestHeaders(target http.Header, source http.Header) {
