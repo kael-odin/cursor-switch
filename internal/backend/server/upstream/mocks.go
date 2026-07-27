@@ -639,6 +639,10 @@ func buildAvailableModelEntries(adapters []legacyruntime.ModelAdapterConfig) []m
 	}
 	output := make([]map[string]any, 0, len(adapters))
 	for _, adapter := range adapters {
+		// F-08：disabled adapter 不进 UI 模型目录，与 collectModelAdapterRefs / resolver 同口径。
+		if !adapter.Enabled {
+			continue
+		}
 		channelID := strings.TrimSpace(adapter.ID)
 		displayName := strings.TrimSpace(adapter.DisplayName)
 		modelID := strings.TrimSpace(adapter.ModelID)
@@ -813,9 +817,18 @@ func thinkingEffortDisplayName(value string) string {
 	}
 }
 
+// collectModelAdapterRefs 返回已启用 adapter 的渠道 ID 列表，用于 UI 模型目录与默认选择。
+//
+// F-08：必须过滤 Enabled==false 的 adapter——否则 disabled adapter 仍会出现在
+// AvailableModels / GetDefaultModel 的模型列表与 defaultModel 字段里，UI 可选中
+// 一个运行时 resolver 拒绝的模型，或把第一项 disabled adapter 当默认。此处与
+// config/resolver.go 的 SelectChannelsForModel 保持同一过滤口径（enabled 才进候选链）。
 func collectModelAdapterRefs(adapters []legacyruntime.ModelAdapterConfig) []string {
 	output := make([]string, 0, len(adapters))
 	for _, adapter := range adapters {
+		if !adapter.Enabled {
+			continue
+		}
 		channelID := strings.TrimSpace(adapter.ID)
 		if channelID == "" {
 			continue

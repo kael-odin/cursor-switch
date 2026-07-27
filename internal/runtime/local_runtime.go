@@ -136,6 +136,14 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 		}
 		next.CustomHeadersEnabled = item.CustomHeadersEnabled
 		next.CustomHeadersJSON = strings.TrimSpace(item.CustomHeadersJSON)
+		// B2 failover 候选链字段：Priority 排序、Enabled 开关、Weight 预留。
+		// 直接透传——legacyruntime 这份 normalize 的输入通常来自 LegacyRuntimeSnapshot，
+		// 后者已把 config 包的 *bool Enabled 预解为 bool（nil→true），故此处 item.Enabled
+		// 语义正确（true=启用 / false=显式禁用）。补这两行修复 B2 引入的字段丢失：
+		// 此前 next 未复制 Enabled/Priority/Weight，导致 FixedChannelService 路径候选链全断。
+		next.Priority = item.Priority
+		next.Enabled = item.Enabled
+		next.Weight = item.Weight
 		switch {
 		case next.DisplayName == "":
 			return nil, errors.New("模型适配器 displayName 不能为空")
