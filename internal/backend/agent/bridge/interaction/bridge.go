@@ -786,6 +786,11 @@ func validateWebFetchURL(rawURL string) (*neturl.URL, error) {
 	if isBlockedWebFetchHost(host) {
 		return nil, fmt.Errorf("web fetch host is not public-web accessible")
 	}
+	// F-24：域名也要解析校验——攻击者可用解析到私网的域名绕过字面 IP 检查。
+	// DialContext 会再做一次最终固定（防 rebinding），此处提前拒绝省一次连接。
+	if _, err := resolveAndValidateHost(host); err != nil {
+		return nil, err
+	}
 	return parsedURL, nil
 }
 
@@ -914,14 +919,24 @@ func webFetchHTTPClient(base *http.Client) *http.Client {
 		base = netproxy.NewHTTPClient(15 * time.Second)
 	}
 	client := *base
+	// F-24：装 SSRF-safe DialContext——每次实际连接前解析+校验+固定 IP，
+	// 防止 DNS rebinding 在用户批准后改解析结果绕过 validateWebFetchURL。
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		client.Transport = newSSRFSafeTransport(transport)
+	} else if client.Transport == nil {
+		client.Transport = newSSRFSafeTransport(&http.Transport{})
+	}
 	previousCheckRedirect := client.CheckRedirect
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return fmt.Errorf("web fetch stopped after 10 redirects")
 		}
+		// 每跳重新解析校验（validateWebFetchURL 已含 DNS 解析），并清掉 Authorization。
 		if _, err := validateWebFetchURL(request.URL.String()); err != nil {
 			return err
 		}
+		request.Header.Del("Authorization")
+		request.Header.Del("Cookie")
 		if previousCheckRedirect != nil {
 			return previousCheckRedirect(request, via)
 		}
