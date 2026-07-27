@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -176,15 +175,14 @@ func resolveImageContent(image *ImageContent) ([]byte, string, error) {
 	if len(image.Data) > 0 {
 		return image.Data, normalizeImageMIMEType(image.MIMEType, image.Path, image.Data), nil
 	}
+	// F-30：服务端绝不读取客户端提供的 Path——否则应用权限范围内的任意本地文件
+	// （含 symlink 目标）会被 Base64 后外发给 provider。图片必须由调用方内联提供 Data。
+	// 仅清空 Path 不够，这里直接报错，作为 prompt_guard 之后的纵深防御。
 	path := strings.TrimSpace(image.Path)
-	if path == "" {
-		return nil, "", fmt.Errorf("image content is missing data and path")
+	if path != "" {
+		return nil, "", fmt.Errorf("image content with server-side file path is not allowed; inline data is required (F-30)")
 	}
-	payload, err := os.ReadFile(path)
-	if err != nil {
-		return nil, "", fmt.Errorf("read image content failed: %w", err)
-	}
-	return payload, normalizeImageMIMEType(image.MIMEType, path, payload), nil
+	return nil, "", fmt.Errorf("image content is missing data and path")
 }
 
 func normalizeImageMIMEType(mimeType string, path string, payload []byte) string {

@@ -31,6 +31,12 @@ const (
 	promptGuardAgentSkillsMaxCount      = 16
 	promptGuardRealtimeTextChars        = 12000
 	promptGuardCompiledMessageChars     = 120000
+	// F-30：SelectedImage 只接受内联 Data，服务端绝不读 Path。
+	// 单图 4MB（base64 前的字节上限，覆盖主流截图/拍照），总量 16MB，最多 6 张。
+	// 超限或仅含 path 无内联 data 的条目直接丢弃，避免任意本地文件被读后外发给 provider。
+	promptGuardSelectedImageMaxCount    = 6
+	promptGuardSelectedImageMaxBytes    = 4 * 1024 * 1024
+	promptGuardSelectedImagesTotalBytes = 16 * 1024 * 1024
 )
 
 func normalizeUserMessageForStorage(userMessage *agentv1.UserMessage) *agentv1.UserMessage {
@@ -107,8 +113,60 @@ func guardSelectedContext(selectedContext *agentv1.SelectedContext) *agentv1.Sel
 	}
 	cloned.Files = guardSelectedFiles(cloned.GetFiles())
 	cloned.SelectedSkills = guardAgentSkills(cloned.GetSelectedSkills())
+	cloned.SelectedImages = guardSelectedImages(cloned.GetSelectedImages())
 	cloned.ExtraContext = guardStringSlice(cloned.GetExtraContext(), "selected_context.extra_context", promptGuardRealtimeTextChars, promptGuardRealtimeTextChars, promptGuardAgentSkillsMaxCount)
 	return cloned
+}
+
+// guardSelectedImages 实施 F-30 防护：SelectedImage 只接受内联 Data，绝不读 Path。
+//
+// 服务端读取客户端提供的 Path 会把应用权限范围内的任意本地文件（含 symlink 目标）
+// Base64 后外发给 provider。这里在入站处：
+//   - 清空 Path 字段（即便下游仍保留读路径逻辑也无法命中）
+//   - 仅保留携带非空内联 Data 的条目
+//   - 限单图字节数与总字节数，超限截断或丢弃
+//   - 限数量
+//
+// 注意：BlobIdWithData.data 同样视为内联数据，一并纳入上限。
+func guardSelectedImages(images []*agentv1.SelectedImage) []*agentv1.SelectedImage {
+	if len(images) == 0 {
+		return nil
+	}
+	result := make([]*agentv1.SelectedImage, 0, minInt(len(images), promptGuardSelectedImageMaxCount))
+	remaining := promptGuardSelectedImagesTotalBytes
+	for _, image := range images {
+		if image == nil || len(result) >= promptGuardSelectedImageMaxCount {
+			continue
+		}
+		data := image.GetData()
+		if len(data) == 0 {
+			data = image.GetBlobIdWithData().GetData()
+		}
+		if len(data) == 0 {
+			// 仅含 path 无内联 data——服务端不读文件系统，直接丢弃（F-30）。
+			continue
+		}
+		if len(data) > promptGuardSelectedImageMaxBytes {
+			data = data[:promptGuardSelectedImageMaxBytes]
+		}
+		if remaining <= 0 {
+			break
+		}
+		if len(data) > remaining {
+			data = data[:remaining]
+		}
+		remaining -= len(data)
+		cloned, ok := proto.Clone(image).(*agentv1.SelectedImage)
+		if !ok || cloned == nil {
+			continue
+		}
+		cloned.Path = "" // F-30：服务端永不信任 Path
+		// 重设 oneof 为内联 Data，丢弃可能残留的 blob_id / blob_id_with_data 形态，
+		// 统一为已截断的 data，下游 resolveImageContent 只走内联分支。
+		cloned.DataOrBlobId = &agentv1.SelectedImage_Data{Data: data}
+		result = append(result, cloned)
+	}
+	return result
 }
 
 func guardSelectedFiles(files []*agentv1.SelectedFile) []*agentv1.SelectedFile {
