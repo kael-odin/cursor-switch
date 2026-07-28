@@ -24,6 +24,14 @@ import (
 const (
 	appLogMaxLines        = 10000
 	appLogTrimReserveLine = 1000
+
+	// maxLogEntryBytes 是单条 log 记录的字节上限（F-28）。
+	// lineWindowFileWriter 按行数轮转，单条无换行的超长 log（如带完整 request body 的 Errorf）
+	// 会被整体读入内存触发全量 trim。截断到 64KiB 并补省略号 + 换行，把单次 trim 的内存峰值
+	// 限制在 maxLines × 64KiB 量级。
+	maxLogEntryBytes = 64 << 10
+	// logEntryTruncationSuffix 追加到被截断的单条 log 末尾，保证以换行结尾且状态可识别。
+	logEntryTruncationSuffix = "…[log entry truncated: F-28 byte budget]\n"
 )
 
 var (
@@ -159,6 +167,16 @@ func (writer *lineWindowFileWriter) Write(payload []byte) (int, error) {
 	if writer == nil || writer.file == nil {
 		return 0, fmt.Errorf("log file writer is not initialized")
 	}
+	// F-28：单条 log 字节预算。超长单行截断到 maxLogEntryBytes 并补省略号 + 换行，
+	// 防止超长 entry 整体进文件、触发全量 ReadFile 的 trim 内存峰值。
+	// 返回值仍按原始 payload 长度上报，让上层 slog 视为已全部消费。
+	originalLen := len(payload)
+	if originalLen > maxLogEntryBytes {
+		truncated := make([]byte, 0, maxLogEntryBytes+len(logEntryTruncationSuffix))
+		truncated = append(truncated, payload[:maxLogEntryBytes]...)
+		truncated = append(truncated, logEntryTruncationSuffix...)
+		payload = truncated
+	}
 	newLines := writer.countIncomingLines(payload)
 	if writer.maxLines > 0 && newLines > 0 && writer.lineCount+newLines > writer.maxLines {
 		target := writer.maxLines - newLines - writer.trimReserve
@@ -177,7 +195,12 @@ func (writer *lineWindowFileWriter) Write(payload []byte) (int, error) {
 	if written > 0 {
 		writer.openLine = payload[written-1] != '\n'
 	}
-	return written, err
+	if err != nil {
+		return written, err
+	}
+	// F-28：截断时按原始 payload 长度上报，让上层 slog 视为已全部消费，
+	// 不触发重试或 "short write" 报错。
+	return originalLen, nil
 }
 
 func (writer *lineWindowFileWriter) openLocked() error {

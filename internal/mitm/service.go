@@ -93,6 +93,13 @@ const (
 	proxyLogRateLimitMaxKeys = 1024
 )
 
+// F-28：mitmCertStore 容量与 TTL。leaf 证书缓存永久增长会随访问站点数线性膨胀，
+// 加容量上限（按最旧 createdAt 淘汰）与 TTL（过期重签，顺带让短期失效的证书被刷新）。
+const (
+	mitmCertStoreCapacity = 512
+	mitmCertStoreTTL      = 2 * time.Hour
+)
+
 var proxyLogLimiter = newLogLimiter(proxyLogRateLimitWindow)
 
 type logLimiter struct {
@@ -765,13 +772,38 @@ func isWhitelistedRelayHost(host string) bool {
 }
 
 // mitmCertStore 缓存 goproxy 为站点动态签发的证书，避免同一 host 重复执行 RSA/x509 签发。
+// F-28：加 TTL（mitmCertStoreTTL）与容量上限（mitmCertStoreCapacity），过期重签、满则淘汰最旧。
 type mitmCertStore struct {
-	mu    sync.Mutex
-	certs map[string]*tls.Certificate
+	mu       sync.Mutex
+	certs    map[string]*mitmCertEntry
+	capacity int
+	ttl      time.Duration
+	now      func() time.Time // 可注入时钟，测试用
+}
+
+type mitmCertEntry struct {
+	cert      *tls.Certificate
+	createdAt time.Time
 }
 
 func newMITMCertStore() *mitmCertStore {
-	return &mitmCertStore{certs: make(map[string]*tls.Certificate)}
+	return newMITMCertStoreWithParams(mitmCertStoreCapacity, mitmCertStoreTTL)
+}
+
+// newMITMCertStoreWithParams 供测试注入 capacity/ttl；生产路径用 newMITMCertStore()。
+func newMITMCertStoreWithParams(capacity int, ttl time.Duration) *mitmCertStore {
+	if capacity <= 0 {
+		capacity = mitmCertStoreCapacity
+	}
+	if ttl <= 0 {
+		// ttl<=0 视为"立即过期"（测试用），不回退到默认，保持调用方语义。
+	}
+	return &mitmCertStore{
+		certs:    make(map[string]*mitmCertEntry),
+		capacity: capacity,
+		ttl:      ttl,
+		now:      time.Now,
+	}
 }
 
 func (store *mitmCertStore) Fetch(hostname string, gen func() (*tls.Certificate, error)) (*tls.Certificate, error) {
@@ -783,14 +815,36 @@ func (store *mitmCertStore) Fetch(hostname string, gen func() (*tls.Certificate,
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
-	if cert, ok := store.certs[hostname]; ok {
-		return cert, nil
+	now := store.now()
+	if entry, ok := store.certs[hostname]; ok {
+		// 命中且未过期：直接复用。ttl<=0 视为"立即过期"（测试用），落到下面 gen 路径重签。
+		if store.ttl > 0 && now.Sub(entry.createdAt) < store.ttl {
+			return entry.cert, nil
+		}
+		delete(store.certs, hostname)
 	}
+
 	cert, err := gen()
 	if err != nil {
 		return nil, err
 	}
-	store.certs[hostname] = cert
+	// 容量满：按最旧 createdAt 淘汰一条（小规模 map，O(n) 扫一遍可接受）。
+	if len(store.certs) >= store.capacity {
+		var oldestKey string
+		var oldestAt time.Time
+		first := true
+		for key, entry := range store.certs {
+			if first || entry.createdAt.Before(oldestAt) {
+				oldestKey = key
+				oldestAt = entry.createdAt
+				first = false
+			}
+		}
+		if oldestKey != "" {
+			delete(store.certs, oldestKey)
+		}
+	}
+	store.certs[hostname] = &mitmCertEntry{cert: cert, createdAt: now}
 	return cert, nil
 }
 

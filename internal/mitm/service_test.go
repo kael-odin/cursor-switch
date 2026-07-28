@@ -3,6 +3,7 @@ package mitm
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"io"
 	"net"
 	"net/http"
@@ -169,4 +170,84 @@ func TestConcurrentStartStopNoPanic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_ = srv.Stop(ctx)
+}
+
+// --- F-28: mitmCertStore 容量 + TTL ---
+
+// TestMITMCertStoreCapacityEviction (F-28) 验证证书缓存满容量后按最旧 createdAt 淘汰。
+func TestMITMCertStoreCapacityEviction(t *testing.T) {
+	const capacity = 3
+	store := newMITMCertStoreWithParams(capacity, time.Hour)
+
+	genCalls := 0
+	gen := func() (*tls.Certificate, error) {
+		genCalls++
+		return &tls.Certificate{}, nil
+	}
+
+	// 写满 capacity 个不同 host。
+	for i := 0; i < capacity; i++ {
+		host := "h" + string(rune('a'+i)) + ".example.com"
+		if _, err := store.Fetch(host, gen); err != nil {
+			t.Fatalf("Fetch %s: %v", host, err)
+		}
+	}
+	if genCalls != capacity {
+		t.Fatalf("expected %d gen calls after fill, got %d", capacity, genCalls)
+	}
+
+	// 再写一个新 host：触发淘汰最旧（h-a），gen 调用 +1。
+	if _, err := store.Fetch("new.example.com", gen); err != nil {
+		t.Fatalf("Fetch new: %v", err)
+	}
+	if genCalls != capacity+1 {
+		t.Errorf("F-28 FAIL: expected gen calls=%d after eviction, got %d", capacity+1, genCalls)
+	}
+	// 缓存大小应仍 == capacity（淘汰一个、写入一个）。
+	store.mu.Lock()
+	size := len(store.certs)
+	store.mu.Unlock()
+	if size != capacity {
+		t.Errorf("F-28 FAIL: cache size should be %d after eviction, got %d", capacity, size)
+	}
+}
+
+// TestMITMCertStoreTTLExpiry (F-28) 验证过期条目重签：用 ttl=0（立即过期），
+// 同 host 两次 Fetch 应各调一次 gen。
+func TestMITMCertStoreTTLExpiry(t *testing.T) {
+	store := newMITMCertStoreWithParams(512, 0) // ttl=0 → 立即过期
+
+	genCalls := 0
+	gen := func() (*tls.Certificate, error) {
+		genCalls++
+		return &tls.Certificate{}, nil
+	}
+	if _, err := store.Fetch("host.example.com", gen); err != nil {
+		t.Fatalf("Fetch 1: %v", err)
+	}
+	if _, err := store.Fetch("host.example.com", gen); err != nil {
+		t.Fatalf("Fetch 2: %v", err)
+	}
+	if genCalls != 2 {
+		t.Errorf("F-28 FAIL: expired entry should re-sign; expected 2 gen calls, got %d", genCalls)
+	}
+}
+
+// TestMITMCertStoreHitReusesEntry (F-28) 验证未过期的命中复用，不重签。
+func TestMITMCertStoreHitReusesEntry(t *testing.T) {
+	store := newMITMCertStoreWithParams(512, time.Hour)
+	genCalls := 0
+	gen := func() (*tls.Certificate, error) {
+		genCalls++
+		return &tls.Certificate{}, nil
+	}
+	if _, err := store.Fetch("host.example.com", gen); err != nil {
+		t.Fatalf("Fetch 1: %v", err)
+	}
+	if _, err := store.Fetch("host.example.com", gen); err != nil {
+		t.Fatalf("Fetch 2: %v", err)
+	}
+	if genCalls != 1 {
+		t.Errorf("F-28 FAIL: cache hit should not re-sign; expected 1 gen call, got %d", genCalls)
+	}
 }
