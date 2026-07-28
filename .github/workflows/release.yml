@@ -60,21 +60,14 @@ jobs:
       - name: Install wails3 CLI
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.74
 
-      - name: Install protoc (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y protobuf-compiler
-      - name: Install protoc (macOS)
-        if: runner.os == 'macOS'
-        run: brew install protobuf
-      - name: Install protoc (Windows)
-        # 不用 choco：community.chocolatey.org 偶发 503 会让整个 release 挂。
-        # 直接从 protocolbuffers/protobuf 官方 release 拉预编译 win64 二进制，最稳。
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          curl -sSL -o /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v35.0/protoc-35.0-win64.zip
-          unzip -q /tmp/protoc.zip -d /tmp/protoc
-          echo "/tmp/protoc/bin" >> "$GITHUB_PATH"
+      - name: Install protoc
+        # 跨平台统一用 arduino/setup-protoc：自动下载官方 protobuf release、解压、加 PATH。
+        # 不用 choco（community.chocolatey.org 偶发 503 让 release 挂），
+        # 不手写 bash 下载（Windows Git Bash 的 GITHUB_PATH 路径解析 + unzip 可用性问题难搞）。
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "35.0"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate proto code
         run: |
