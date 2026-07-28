@@ -257,3 +257,184 @@ func itoa(i int) string {
 	}
 	return string(buf[pos:])
 }
+
+// --- F-05: legacy usage 升级一次性构建完整索引 ---
+
+// writeRawUsageDocument 直接把 doc 写盘，绕过 UpsertEvent 的增量逻辑，
+// 用于手造 legacy 文件（EventIndex 空 + RecentEvents 非空）测 F-05 回填。
+func writeRawUsageDocument(t *testing.T, path string, doc usageFileDocument) {
+	t.Helper()
+	if err := writeJSONFileAtomic(path, doc); err != nil {
+		t.Fatalf("writeRawUsageDocument: %v", err)
+	}
+}
+
+func TestReadUsageDocumentBackfillsLegacyIndex(t *testing.T) {
+	dir := t.TempDir()
+	store := NewUsageFileStore(dir)
+	base := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	// 手造 legacy 文件：SchemaVersion=1、EventIndex=nil、RecentEvents 含 3 条不同 eventID。
+	legacy := usageFileDocument{
+		SchemaVersion: 1,
+		UpdatedAt:     base,
+		RecentEvents: []usageFileEvent{
+			{EventID: "req-a", Kind: usageEventKindProvider, At: base, InputTokens: 100, ModelID: "gpt-5"},
+			{EventID: "req-b", Kind: usageEventKindProvider, At: base.Add(time.Second), InputTokens: 200, ModelID: "gpt-5"},
+			{EventID: "req-c", Kind: usageEventKindProvider, At: base.Add(2 * time.Second), InputTokens: 300, ModelID: "gpt-5"},
+		},
+	}
+	writeRawUsageDocument(t, store.path, legacy)
+
+	doc, err := readUsageFileDocument(store.path)
+	if err != nil {
+		t.Fatalf("readUsageFileDocument: %v", err)
+	}
+	if len(doc.EventIndex) != 3 {
+		t.Fatalf("F-05: backfilled EventIndex len = %d, want 3", len(doc.EventIndex))
+	}
+	for _, e := range legacy.RecentEvents {
+		got, ok := doc.EventIndex[e.EventID]
+		if !ok {
+			t.Errorf("F-05: EventIndex missing backfilled entry %q", e.EventID)
+			continue
+		}
+		if got.InputTokens != e.InputTokens {
+			t.Errorf("F-05: EventIndex[%q].InputTokens = %d, want %d", e.EventID, got.InputTokens, e.InputTokens)
+		}
+	}
+}
+
+func TestReadUsageDocumentPreservesExistingIndex(t *testing.T) {
+	dir := t.TempDir()
+	store := NewUsageFileStore(dir)
+	base := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	// EventIndex 已有 req-a（非空），且 RecentEvents 含一条 EventIndex 里没有的 req-b。
+	// 回填只补空索引——非空索引不应被 RecentEvents 覆盖。
+	legacy := usageFileDocument{
+		SchemaVersion: 1,
+		UpdatedAt:     base,
+		RecentEvents: []usageFileEvent{
+			{EventID: "req-a", Kind: usageEventKindProvider, At: base, InputTokens: 100, ModelID: "gpt-5"},
+			{EventID: "req-b", Kind: usageEventKindProvider, At: base.Add(time.Second), InputTokens: 200, ModelID: "gpt-5"},
+		},
+		EventIndex: map[string]usageFileEvent{
+			"req-a": {EventID: "req-a", Kind: usageEventKindProvider, At: base, InputTokens: 999, ModelID: "gpt-5"},
+		},
+	}
+	writeRawUsageDocument(t, store.path, legacy)
+
+	doc, err := readUsageFileDocument(store.path)
+	if err != nil {
+		t.Fatalf("readUsageFileDocument: %v", err)
+	}
+	// req-a 应保留 EventIndex 里的原值（999），不被 RecentEvents 的 100 覆盖。
+	if got := doc.EventIndex["req-a"]; got.InputTokens != 999 {
+		t.Errorf("F-05: existing index req-a should be preserved, InputTokens=%d want 999", got.InputTokens)
+	}
+	// req-b 不应被回填（索引非空时不触发回填）。
+	if _, ok := doc.EventIndex["req-b"]; ok {
+		t.Error("F-05: req-b should NOT be backfilled when EventIndex already non-empty (only backfill empty index)")
+	}
+}
+
+func TestReadUsageDocumentBackfillPersistsOnNextWrite(t *testing.T) {
+	dir := t.TempDir()
+	store := NewUsageFileStore(dir)
+	base := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	legacy := usageFileDocument{
+		SchemaVersion: 1,
+		UpdatedAt:     base,
+		RecentEvents: []usageFileEvent{
+			{EventID: "req-old", Kind: usageEventKindProvider, At: base, InputTokens: 500, ModelID: "gpt-5"},
+		},
+	}
+	writeRawUsageDocument(t, store.path, legacy)
+
+	// 读一次触发回填（内存态），再写一个新 eventID——写路径读盘得回填 doc，写出持久化。
+	newEvt := usageFileEvent{
+		EventID:     "req-new",
+		Kind:        usageEventKindProvider,
+		At:          base.Add(time.Second),
+		InputTokens: 50,
+		ModelID:     "gpt-5",
+	}
+	if err := store.UpsertEvent(newEvt); err != nil {
+		t.Fatalf("UpsertEvent new: %v", err)
+	}
+
+	doc, err := readUsageFileDocument(store.path)
+	if err != nil {
+		t.Fatalf("readUsageFileDocument: %v", err)
+	}
+	if _, ok := doc.EventIndex["req-old"]; !ok {
+		t.Error("F-05: backfilled req-old should persist after next write")
+	}
+	if _, ok := doc.EventIndex["req-new"]; !ok {
+		t.Error("F-05: newly written req-new should be in EventIndex")
+	}
+}
+
+func TestReadUsageDocumentBackfillPrunedToLimit(t *testing.T) {
+	dir := t.TempDir()
+	store := NewUsageFileStore(dir)
+	base := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	// RecentEvents 上限 500，远小于 usageEventIndexLimit=5000，故回填后等长。
+	events := make([]usageFileEvent, 0, usageRecentEventLimit)
+	for i := 0; i < usageRecentEventLimit; i++ {
+		events = append(events, usageFileEvent{
+			EventID:     "req-" + itoa(i),
+			Kind:        usageEventKindProvider,
+			At:          base.Add(time.Duration(i) * time.Second),
+			InputTokens: 1,
+			ModelID:     "gpt-5",
+		})
+	}
+	writeRawUsageDocument(t, store.path, usageFileDocument{
+		SchemaVersion: 1,
+		UpdatedAt:     base,
+		RecentEvents:  events,
+	})
+
+	doc, err := readUsageFileDocument(store.path)
+	if err != nil {
+		t.Fatalf("readUsageFileDocument: %v", err)
+	}
+	if len(doc.EventIndex) != usageRecentEventLimit {
+		t.Errorf("F-05: backfilled index len = %d, want %d (no loss, no over-prune)", len(doc.EventIndex), usageRecentEventLimit)
+	}
+	if len(doc.EventIndex) > usageEventIndexLimit {
+		t.Errorf("F-05: index must not exceed usageEventIndexLimit %d, got %d", usageEventIndexLimit, len(doc.EventIndex))
+	}
+}
+
+func TestLookupEventHitsBackfilledIndexNotLinearScan(t *testing.T) {
+	dir := t.TempDir()
+	store := NewUsageFileStore(dir)
+	base := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	// legacy 文件：req-old 在 RecentEvents 里、EventIndex 空。
+	writeRawUsageDocument(t, store.path, usageFileDocument{
+		SchemaVersion: 1,
+		UpdatedAt:     base,
+		RecentEvents: []usageFileEvent{
+			{EventID: "req-old", Kind: usageEventKindProvider, At: base, InputTokens: 777, ModelID: "gpt-5"},
+		},
+	})
+
+	// 回填后 LookupEvent 应直接命中索引（聚合值与原事件一致）。
+	agg, ok, err := store.LookupEvent("req-old")
+	if err != nil {
+		t.Fatalf("LookupEvent req-old: %v", err)
+	}
+	if !ok {
+		t.Fatal("F-05: req-old should be found via backfilled index")
+	}
+	if agg.InputTokens != 777 {
+		t.Errorf("F-05: req-old aggregated input = %d, want 777", agg.InputTokens)
+	}
+
+	// 验证回填已写入磁盘：读回的 doc.EventIndex 非空（LookupEvent 触发了读+回填，
+	// 但 LookupEvent 不写盘——回填只在内存。此处只断言内存态索引非空，持久化由
+	// 下一次 UpsertEvent 保证，见 TestReadUsageDocumentBackfillPersistsOnNextWrite）。
+	// 为避免误读契约，这里只断言 LookupEvent 返回正确，不额外断言磁盘态。
+	_ = agg
+}

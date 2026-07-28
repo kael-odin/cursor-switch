@@ -272,6 +272,14 @@ func readUsageFileDocument(path string) (usageFileDocument, error) {
 	if doc.EventIndex == nil {
 		doc.EventIndex = make(map[string]usageFileEvent)
 	}
+	// F-05：legacy 文件（EventIndex 空而 RecentEvents 非空）首次加载时一次性构建完整索引。
+	// H5 后 EventIndex 增量维护，但旧文件从未被回填——LookupEvent 对旧事件只能走 RecentEvents
+	// 线性兜底，且事件被挤出 RecentEvents 后从索引消失。这里加载时全量灌进索引并 prune，
+	// 下一次写（recordUsageFileEvent 读到此 doc 后写出）即持久化。eventID 与 RecentEvents 一致，
+	// 后续 upsert 按幂等先 negate 再 apply，不重复计费。
+	if len(doc.EventIndex) == 0 && len(doc.RecentEvents) > 0 {
+		doc.EventIndex = pruneUsageEventIndex(buildUsageEventIndex(doc.RecentEvents))
+	}
 	return doc, nil
 }
 
