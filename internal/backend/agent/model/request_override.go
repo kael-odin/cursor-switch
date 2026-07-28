@@ -17,6 +17,21 @@ var blockedCustomHeaders = map[string]struct{}{
 	"cookie":        {},
 }
 
+// blockedExtraParamKeys 列出用户 extra params 不得覆盖的协议/身份/路由字段（F-19）。
+// 这些字段由适配器按 provider 协议和路由决策设置，允许用户覆盖会破坏流控、
+// 绕过模型路由记账、或（与 F-20 组合）伪造空流成功。与 blockedCustomHeaders 同手法。
+var blockedExtraParamKeys = map[string]struct{}{
+	"stream":       {}, // 流开关；改 false 与 F-20 组合可伪造空流成功
+	"model":        {}, // 绕过路由/记账
+	"messages":     {}, // Chat Completions 对话主体
+	"input":        {}, // Responses API 对话主体
+	"tools":        {}, // 工具定义
+	"tool_choice":  {}, // 强制工具调用
+	"system":       {}, // Anthropic 系统提示
+	"instructions": {}, // Responses API 系统提示
+	"metadata":     {}, // 追踪元数据（user_id 等）
+}
+
 func cloneRequestBodyOverride(input map[string]any) map[string]any {
 	if len(input) == 0 {
 		return nil
@@ -72,6 +87,11 @@ func applyExtraParams(body map[string]any, enabled bool, paramsJSON string, labe
 	for key, value := range extraParams {
 		name := strings.TrimSpace(key)
 		if name == "" {
+			continue
+		}
+		// F-19：禁止 extra params 覆盖协议/身份/路由关键字段（与 blockedCustomHeaders 同手法）。
+		if _, blocked := blockedExtraParamKeys[strings.ToLower(name)]; blocked {
+			log.Printf("modeladapter: extra param %q blocked (would override protocol/routing field)", name)
 			continue
 		}
 		body[name] = value

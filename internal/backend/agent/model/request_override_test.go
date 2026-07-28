@@ -67,5 +67,116 @@ func TestApplyCustomHeaders_DisabledNoop(t *testing.T) {
 	if req.Header.Get("X-Custom") != "" {
 		t.Fatalf("disabled ApplyCustomHeaders should not set headers")
 	}
-	_ = strings.TrimSpace // keep import if no other use
 }
+
+// --- F-19: extra params 不得覆盖协议关键字段 ---
+
+func TestApplyExtraParams_BlocksProtocolFields(t *testing.T) {
+	// 全部 blocked 字段各一个攻击值，大小写混合证 lower-case 比对。
+	params := `{
+		"stream": false,
+		"MODEL": "evil-model",
+		"messages": [{"role":"user","content":"evil"}],
+		"input": [{"role":"user","content":"evil"}],
+		"tools": [{"type":"function","function":{"name":"evil"}}],
+		"tool_choice": "none",
+		"system": "evil-instructions",
+		"instructions": "evil-instructions",
+		"metadata": {"user_id":"evil"},
+		"temperature": 0.7
+	}`
+	body := map[string]any{"model": "real-model"}
+	if err := ApplyOpenAIExtraParams(body, true, params); err != nil {
+		t.Fatalf("ApplyOpenAIExtraParams error: %v", err)
+	}
+	// blocked 字段一律不得出现。
+	for _, blocked := range []string{
+		"stream", "MODEL", "messages", "input", "tools",
+		"tool_choice", "system", "instructions", "metadata",
+	} {
+		if _, ok := body[blocked]; ok {
+			t.Errorf("F-19: blocked extra param %q should not be applied", blocked)
+		}
+	}
+	// 合法调参字段应进 body。
+	if got, ok := body["temperature"]; !ok || got != 0.7 {
+		t.Errorf("F-19: temperature should be applied, got %v (present=%v)", got, ok)
+	}
+	// 原有 model 字段未被覆盖。
+	if body["model"] != "real-model" {
+		t.Errorf("F-19: existing model field should not be overwritten, got %v", body["model"])
+	}
+}
+
+func TestApplyExtraParams_DisabledNoop(t *testing.T) {
+	body := map[string]any{"model": "real-model"}
+	if err := ApplyOpenAIExtraParams(body, false, `{"stream":false,"temperature":0.7}`); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if _, ok := body["stream"]; ok {
+		t.Error("disabled extra params should not apply stream")
+	}
+	if _, ok := body["temperature"]; ok {
+		t.Error("disabled extra params should not apply temperature")
+	}
+	if body["model"] != "real-model" {
+		t.Errorf("disabled extra params should not mutate existing fields, model=%v", body["model"])
+	}
+}
+
+func TestApplyExtraParams_AllowsTuningFields(t *testing.T) {
+	params := `{
+		"temperature": 0.5,
+		"top_p": 0.9,
+		"max_tokens": 1024,
+		"reasoning_effort": "high",
+		"response_format": {"type":"json_object"},
+		"stop": ["\n"],
+		"seed": 42
+	}`
+	body := map[string]any{}
+	if err := ApplyOpenAIExtraParams(body, true, params); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	for _, allowed := range []string{
+		"temperature", "top_p", "max_tokens",
+		"reasoning_effort", "response_format", "stop", "seed",
+	} {
+		if _, ok := body[allowed]; !ok {
+			t.Errorf("F-19: tuning field %q should be allowed (denylist over-blocks)", allowed)
+		}
+	}
+}
+
+func TestApplyExtraParams_InvalidJSONReturnsError(t *testing.T) {
+	body := map[string]any{}
+	if err := ApplyOpenAIExtraParams(body, true, "{bad"); err == nil {
+		t.Fatal("invalid JSON should return error")
+	}
+}
+
+func TestApplyExtraParams_EmptyBodyReturnsError(t *testing.T) {
+	if err := ApplyOpenAIExtraParams(nil, true, `{"temperature":0.7}`); err == nil {
+		t.Fatal("nil body should return error")
+	}
+}
+
+func TestApplyExtraParams_AnthropicWrapperSameDenylist(t *testing.T) {
+	// Anthropic wrapper 与 OpenAI 共用 applyExtraParams，denylist 同效。
+	body := map[string]any{"model": "real-model"}
+	if err := ApplyAnthropicExtraParams(body, true, `{"stream":false,"system":"evil","max_tokens":100}`); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if _, ok := body["stream"]; ok {
+		t.Error("F-19: anthropic stream should be blocked")
+	}
+	if _, ok := body["system"]; ok {
+		t.Error("F-19: anthropic system should be blocked")
+	}
+	if _, ok := body["max_tokens"]; !ok {
+		t.Error("F-19: anthropic max_tokens should be allowed")
+	}
+}
+
+// keep strings import used by future table-driven cases if needed.
+var _ = strings.TrimSpace
