@@ -139,7 +139,7 @@ jobs:
           find assets -type f -name 'cursor-switch-*' -exec mv {} assets/ \;
           find assets -type f | head
 
-      - name: Generate update.json (unsigned, as build artifact — F-11)
+      - name: Generate update.json (unsigned)
         # F-11：签名私钥 ~/.cursor-switch-release.key 仅本地持有，绝不进 CI。
         # 此前 CI 生成未签名 update.json 并直接作为 release 资产上传——形成"公开未签名 manifest 窗口"，
         # 客户端虽会拒绝未签名 manifest，但维护者若忘记签名重传，用户长期看到更新失败。
@@ -158,8 +158,30 @@ jobs:
             -base-name "cursor-switch" \
             -notes release-notes.md
 
-      - name: Upload unsigned manifest as build artifact (F-11)
-        # 未签名 manifest 仅作 artifact 供维护者本地签名，绝不直接进 release 资产。
+      - name: Sign or discard update.json
+        # 方案 A（CI 自动签名）：配了 secret CURSOR_SIGNING_KEY + variable CURSOR_SIGNING_ENABLED=true 时，
+        # CI 直接签名 + 自检 verify 后保留，Create release 会把它发到 release 资产。零本地操作。
+        # 未配置时回退到 F-11 artifact 流程：删掉 assets/update.json（不进 release），
+        # 未签名 manifest 仅作 build artifact 供维护者本地补签。
+        # 用 variable（而非直接判 secret 非空）作开关：Actions 的 if 不能可靠判 secret 空字符串，且显式开关更可控。
+        shell: bash
+        env:
+          CURSOR_SWITCH_SIGNING_KEY: ${{ secrets.CURSOR_SIGNING_KEY }}
+        run: |
+          if [ "${{ vars.CURSOR_SIGNING_ENABLED }}" = "true" ] && [ -n "$CURSOR_SWITCH_SIGNING_KEY" ]; then
+            go run ./scripts/release sign --manifest assets/update.json
+            go run ./scripts/release verify --manifest assets/update.json
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ update.json signed and verified in CI"
+          else
+            rm -f assets/update.json
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "ℹ️  CI 签名未配置（CURSOR_SIGNING_ENABLED!=true 或 secret 缺失），回退 artifact 流程"
+          fi
+
+      - name: Upload unsigned manifest as build artifact (F-11, fallback only)
+        # CI 签名模式下不再需要（已签名 manifest 直接进 release）。仅回退模式上传未签名 artifact 供本地补签。
+        if: ${{ vars.CURSOR_SIGNING_ENABLED != 'true' }}
         uses: actions/upload-artifact@v5
         with:
           name: unsigned-update-json
@@ -171,10 +193,11 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
           name: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
-          # F-11：故意不发布 update.json——签名前的 manifest 不可作为 release 资产。
-          # 维护者本地签名后用 `gh release upload vX update.json --clobber` 补传。
+          # CI 签名模式下含 assets/update.json（已签名）；回退模式下该文件已被删，action 忽略缺失 glob。
+          # softprops/action-gh-release 对 glob 不匹配的条目是警告而非失败，故可无条件列出。
           files: |
             assets/cursor-switch-*
+            assets/update.json
           prerelease: ${{ contains(github.event.inputs.version || github.ref_name, 'beta') }}
           body_path: release-notes.md
         env:

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"cursor/internal/updater"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -53,7 +55,7 @@ var releaseAssets = []assetSpec{
 
 func main() {
 	if len(os.Args) < 2 {
-		exitf("usage: go run ./scripts/release <version|notes|manifest|keypair|sign|verify-versions|sync-versions> [flags]")
+		exitf("usage: go run ./scripts/release <version|notes|manifest|keypair|sign|verify|verify-versions|sync-versions> [flags]")
 	}
 
 	switch os.Args[1] {
@@ -67,6 +69,8 @@ func main() {
 		runKeypair(os.Args[2:])
 	case "sign":
 		runSign(os.Args[2:])
+	case "verify":
+		runVerify(os.Args[2:])
 	case "verify-versions":
 		runVerifyVersions(os.Args[2:])
 	case "sync-versions":
@@ -298,25 +302,20 @@ func runKeypair(args []string) {
 
 // runSign 读取 --manifest 的 update.json，用 --key 的私钥对 canonical manifest（除 signature 外）签名，
 // 把 signature 写回 manifest 并落盘。
+//
+// 私钥来源优先级：--key flag 显式指定 > 环境变量 CURSOR_SWITCH_SIGNING_KEY（hex）> 默认文件 ~/.cursor-switch-release.key。
+// env 分支供 CI 注入（GitHub Actions secret），文件分支供维护者本地使用——同一子命令两用。
 func runSign(args []string) {
 	flags := flag.NewFlagSet("sign", flag.ExitOnError)
 	manifestPath := flags.String("manifest", "", "update.json path to sign in-place")
-	keyPath := flags.String("key", "", "private key path (default $HOME/.cursor-switch-release.key)")
+	keyPath := flags.String("key", "", "private key path (default $HOME/.cursor-switch-release.key, or CURSOR_SWITCH_SIGNING_KEY env)")
 	_ = flags.Parse(args)
 
 	if strings.TrimSpace(*manifestPath) == "" {
 		exitf("manifest path is required")
 	}
-	path := strings.TrimSpace(*keyPath)
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			exitErr(err)
-		}
-		path = filepath.Join(home, ".cursor-switch-release.key")
-	}
 
-	priv, err := loadSigningKey(path)
+	priv, err := resolveSigningKey(*keyPath)
 	if err != nil {
 		exitErr(err)
 	}
@@ -352,12 +351,62 @@ func runSign(args []string) {
 	fmt.Printf("signed manifest: %s (signature=%s)\n", *manifestPath, m.Signature)
 }
 
+// resolveSigningKey 按优先级解析私钥：--key flag > CURSOR_SWITCH_SIGNING_KEY env > 默认文件路径。
+func resolveSigningKey(keyPathFlag string) (ed25519.PrivateKey, error) {
+	// 1. --key flag 显式指定 → 文件
+	if strings.TrimSpace(keyPathFlag) != "" {
+		return loadSigningKey(keyPathFlag)
+	}
+	// 2. env CURSOR_SWITCH_SIGNING_KEY（CI secret 注入）→ 直接 hex
+	if envHex := strings.TrimSpace(os.Getenv("CURSOR_SWITCH_SIGNING_KEY")); envHex != "" {
+		return parseSigningKeyHex(envHex)
+	}
+	// 3. 默认文件 ~/.cursor-switch-release.key
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	return loadSigningKey(filepath.Join(home, ".cursor-switch-release.key"))
+}
+
+// runVerify 校验 --manifest 的 update.json 签名是否有效。
+// 复用 internal/updater.VerifyManifestSignatureHex（与客户端 verifyManifestSignature 同一逻辑），
+// 保证 CI 签的 manifest 客户端能验过。供 CI 签名后自检，防私钥配错却静默发未签名 manifest。
+func runVerify(args []string) {
+	flags := flag.NewFlagSet("verify", flag.ExitOnError)
+	manifestPath := flags.String("manifest", "", "update.json path to verify")
+	_ = flags.Parse(args)
+
+	if strings.TrimSpace(*manifestPath) == "" {
+		exitf("manifest path is required")
+	}
+
+	raw, err := os.ReadFile(*manifestPath)
+	if err != nil {
+		exitErr(err)
+	}
+
+	if err := updater.VerifyManifestSignatureHex(raw); err != nil {
+		exitf("verify manifest %s: %v", *manifestPath, err)
+	}
+	fmt.Printf("verified manifest signature OK: %s\n", *manifestPath)
+}
+
 func loadSigningKey(path string) (ed25519.PrivateKey, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read signing key %s: %w", path, err)
 	}
-	hexStr := strings.TrimSpace(string(raw))
+	priv, err := parseSigningKeyHex(strings.TrimSpace(string(raw)))
+	if err != nil {
+		return nil, fmt.Errorf("signing key %s: %w", path, err)
+	}
+	return priv, nil
+}
+
+// parseSigningKeyHex 解析私钥 hex 字符串，接受 32 字节 seed 或 64 字节完整私钥。
+// 文件模式（loadSigningKey 读盘后调它）与 env 模式（CI secret 注入）共用。
+func parseSigningKeyHex(hexStr string) (ed25519.PrivateKey, error) {
 	seed, err := hex.DecodeString(hexStr)
 	if err != nil {
 		return nil, fmt.Errorf("decode signing key hex: %w", err)

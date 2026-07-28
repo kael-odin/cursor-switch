@@ -43,9 +43,11 @@ git push origin v0.0.41
 
 强制签名后:`update.json` 带 ed25519 签名,二进制内置公钥校验,签名不过一律拒绝更新。即使 release token 泄露,攻击者没有私钥就无法伪造可被接受的更新。
 
-> **当前状态(2026-07-20):已启用。** 公钥已填入 `internal/updater/pubkey.go`(`releasePublicKeyHex`)。私钥在维护者本地 `~/.cursor-switch-release.key`(0600,不入库)。**从此刻起每次发版后必须本地 `sign` 再重传 update.json**(见第 3 步),否则新版客户端会因 `manifest missing required signature` 拒绝更新。
+> **当前状态(2026-07-28)：已启用 + CI 自动签名)。** 公钥已填入 `internal/updater/pubkey.go`(`releasePublicKeyHex`)。私钥在维护者本地 `~/.cursor-switch-release.key`(0600，不入库)。
 >
-> **改名迁移说明(2026-07-26):** 产品由 `cursor-byok` 改名为 `cursor-switch`，签名私钥默认路径从 `~/.cursor-byok-release.key` 迁移到 `~/.cursor-switch-release.key`。**公钥不变**（`pubkey.go` 的 `releasePublicKeyHex` 未改），所以无需重新生成密钥对。维护者只需把现有私钥复制到新路径即可：
+> **CI 自动签名（方案 A，推荐）**：把私钥作为 GitHub repo secret `CURSOR_SIGNING_KEY` 存储，配 variable `CURSOR_SIGNING_ENABLED=true` 后，每次打 tag 发版 CI 自动签名 + 自检 verify 后把带签名的 `update.json` 发布到 release——**零本地操作**。一键配置见第三节方式一（`bash scripts/setup-ci-signing.sh`）。未配置时自动回退到本地补签流程（方式二），不破坏可用性。
+>
+> 改名迁移说明(2026-07-26):产品由 `cursor-byok` 改名为 `cursor-switch`，签名私钥默认路径从 `~/.cursor-byok-release.key` 迁移到 `~/.cursor-switch-release.key`。**公钥不变**（`pubkey.go` 的 `releasePublicKeyHex` 未改），所以无需重新生成密钥对。维护者只需把现有私钥复制到新路径即可：
 > ```bash
 > cp ~/.cursor-byok-release.key ~/.cursor-switch-release.key
 > chmod 600 ~/.cursor-switch-release.key
@@ -82,7 +84,36 @@ var releasePublicKeyHex = "b7787d81f16782b485c3c659b2ede84164b514babb57c2c381801
 
 **第 3 步:给每次发版的 update.json 签名**
 
-CI 生成的 `update.json` 是**未签名**的(CI 不持有私钥)。**自 2026-07-28 起 CI 不再把未签名 `update.json` 发布到 release 资产**（F-11：消除"公开未签名 manifest 窗口"），而是作为 build artifact `unsigned-update-json` 上传（保留 14 天）。发版后，在本地补签：
+CI 生成的 `update.json` 默认是未签名的。两种方式签名发布，任选其一：
+
+#### 方式一：CI 自动签名（推荐，零本地操作）
+
+把私钥作为 GitHub repo secret 存储，配一个开关 variable，之后每次打 tag 发版 CI 全自动签名 + 自检后发布。**一次性配置，永久受益。**
+
+一键配置脚本（本地已装 gh CLI 并登录 kael-odin 即可）：
+
+```bash
+bash scripts/setup-ci-signing.sh
+# 或指定私钥路径：bash scripts/setup-ci-signing.sh ~/.cursor-switch-release.key
+```
+
+脚本做的事：
+1. `gh secret set CURSOR_SIGNING_KEY` —— 把 `~/.cursor-switch-release.key` 内容推到 repo secret（加密存储）
+2. `gh variable set CURSOR_SIGNING_ENABLED=true` —— 打开 CI 签名总开关
+
+配好后，release.yml 的 `Sign or discard update.json` 步会在生成 manifest 后用 env 注入的私钥签名 + `verify` 子命令自检，再把带签名的 `update.json` 发布到 release 资产。**之后打 `git push origin vX.Y.Z` 就结束，无需任何本地命令。**
+
+> 安全取舍：GitHub secret 加密存储、不进日志，但拥有 repo admin 权限者能通过篡改 workflow 把 secret 读出来。单人维护场景下（owner = 你自己）增量风险约等于零。F-11 的实质目标（消除未签名 manifest 公开窗口）反而被更好达成——再也不存在"维护者忘记补签"的窗口。若某次发版不想让私钥经过 secret（极少见），临时 `gh variable set CURSOR_SIGNING_ENABLED --repo kael-odin/cursor-switch --body false` 切回方式二即可。
+
+撤销（切回本地补签）：
+
+```bash
+gh variable set CURSOR_SIGNING_ENABLED --repo kael-odin/cursor-switch --body false
+```
+
+#### 方式二：本地补签（保底，CI 不持私钥）
+
+不配置上述 secret/variable 时，CI 走 F-11 artifact 流程：未签名 `update.json` 不进 release，仅作为 build artifact `unsigned-update-json` 上传（保留 14 天）。发版后本地补签：
 
 ```bash
 # 0. 找到 release 对应的 workflow run（tag=v0.0.41 触发的那次）
@@ -98,7 +129,9 @@ gh release upload v0.0.41 /tmp/update.json
 
 > 2026-07-28 前：CI 直接把未签名 `update.json` 推到 release，维护者用 `gh release download` 拉取再 `--clobber` 回传。现已改为 artifact 流程，`--clobber` 仅在需要覆盖补签时使用。
 
-签好后 `update.json` 会多一个 `"signature": "..."` 字段。在维护者上传签名版本之前，release 上没有 `update.json`，客户端更新检查会 404 并静默保持当前版本（不会报错、不会被未签名 manifest 欺骗）。
+#### 签名后效果
+
+`update.json` 多一个 `"signature": "..."` 字段。方式一下维护者上传签名版本前 release 上没有 `update.json`，客户端更新检查会 404 并静默保持当前版本（不会报错、不会被未签名 manifest 欺骗）；方式二回退模式下同理。
 
 ### 验证签名是否生效
 
@@ -142,9 +175,10 @@ gh release upload v0.0.41 /tmp/update.json
 
 ## 五、相关文件索引
 
-- 签名工具:`scripts/release/main.go`(`keypair`、`sign` 子命令)
-- 更新校验:`internal/updater/pubkey.go`(`releasePublicKeyHex`、`verifyManifestSignature`)
+- 签名工具:`scripts/release/main.go`(`keypair`、`sign`、`verify` 子命令；`sign` 支持 `--key` 文件 / `CURSOR_SWITCH_SIGNING_KEY` env / 默认文件三种私钥来源)
+- CI 自动签名一键配置:`scripts/setup-ci-signing.sh`(`gh secret set` + `gh variable set`)
+- 更新校验:`internal/updater/pubkey.go`(`releasePublicKeyHex`、`verifyManifestSignature`、`VerifyManifestSignatureHex` 导出包装)
 - 更新主流程:`internal/updater/manager.go`(`fetchUpdateInfo` 调校验)
 - 版本比较:`internal/updater/semver.go`
-- 发版 CI:`.github/workflows/release.yml`
+- 发版 CI:`.github/workflows/release.yml`(`Sign or discard update.json` 步按 `CURSOR_SIGNING_ENABLED` 开关走 CI 签名或 artifact 回退)
 - CA 生成:`internal/certs/ca.go`(`EnsureMachineCA`)

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -59,4 +60,26 @@ func canonicalManifestBytes(data *manifest) ([]byte, error) {
 		return nil, err
 	}
 	return raw, nil
+}
+
+// VerifyManifestSignatureHex 是 verifyManifestSignature 的导出包装，供 scripts/release
+// 的 verify 子命令（CI 签名后自检）与外部工具复用。输入为 manifest 的原始 JSON 字节，
+// 内部解析为 manifest 后调 verifyManifestSignature。
+//
+// 返回 nil 表示签名有效或公钥未配置（兼容期）；返回 error 表示签名缺失/无效/编码错误。
+// 与 verifyManifestSignature 的 (bool, error) 语义对齐：ok && err == nil → nil；
+// !ok → 包装 error；ok && err != nil → err。
+func VerifyManifestSignatureHex(rawJSON []byte) error {
+	var m manifest
+	if err := json.Unmarshal(rawJSON, &m); err != nil {
+		return fmt.Errorf("parse manifest: %w", err)
+	}
+	ok, err := verifyManifestSignature(&m)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("manifest signature verification failed")
+	}
+	return nil
 }
