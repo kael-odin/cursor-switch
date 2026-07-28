@@ -208,6 +208,66 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 	return normalized, nil
 }
 
+// adapterIdentityKey 是 merge 时匹配"同一 adapter"的身份键（F-02）。
+// 与 NormalizeModelAdapterConfigs 的去重键同口径（baseURL/apiKey/displayName/modelID/endpoint 组合），
+// 用于在前端整包保存时把磁盘旧 adapter 的 CostMultiplier 继承到 patch 里同身份的 adapter。
+// 用 trim 后的原值拼接，不做 baseURL 归一化（patch 与磁盘旧值都未 normalize，原值比对即可；
+// 归一化在 merge 之后的 NormalizeConfig 统一做）。
+func adapterIdentityKey(a ModelAdapterConfig) string {
+	return strings.Join([]string{
+		strings.TrimSpace(a.DisplayName),
+		strings.TrimSpace(a.Type),
+		strings.TrimSpace(a.BaseURL),
+		strings.TrimSpace(a.APIKey),
+		strings.TrimSpace(a.ModelID),
+		strings.TrimSpace(a.OpenAIEndpoint),
+	}, "|")
+}
+
+// mergeUserPatchInto 把前端整包 patch merge 到磁盘最新配置 dst（F-02）。
+//
+// 前端 payload 只含它管理的字段子集（normalizeConfig/normalizeModelAdapter 产出的精简对象）。
+// merge 策略：
+//   - 前端管理字段直接覆盖 dst：Log/ProviderStreamIdleTimeout/BackendListenAddr/
+//     ProxyListenAddr/Routing.Mode/Routing.TabServerBaseURL/HomeMetrics/LastAgentModelHash/ModelAdapters。
+//   - 后端独占字段保留 dst：Pricing（前端从不携带，整块不动；S15 的 InputTokenSemantics 等靠此保留）。
+//   - adapter 列表整体替换，但每个 patch adapter 的 CostMultiplier 若为空，则从 dst 旧列表里
+//     同身份键的 adapter 继承（前端 normalizer 不带 costMultiplier，避免每次保存清空倍率）。
+//
+// merge 后由调用方（Store.Update）走 NormalizeConfig 兜底校验/默认值。
+func mergeUserPatchInto(dst *Config, patch Config) {
+	if dst == nil {
+		return
+	}
+	dst.Log = patch.Log
+	dst.ProviderStreamIdleTimeout = patch.ProviderStreamIdleTimeout
+	dst.BackendListenAddr = patch.BackendListenAddr
+	dst.ProxyListenAddr = patch.ProxyListenAddr
+	dst.Routing.Mode = patch.Routing.Mode
+	dst.Routing.TabServerBaseURL = patch.Routing.TabServerBaseURL
+	dst.HomeMetrics = patch.HomeMetrics
+	dst.LastAgentModelHash = patch.LastAgentModelHash
+
+	// adapter CostMultiplier 继承：先建 dst 旧列表的身份键 → 旧倍率索引。
+	legacyMultiplier := make(map[string]string, len(dst.ModelAdapters))
+	for _, a := range dst.ModelAdapters {
+		if cm := strings.TrimSpace(a.CostMultiplier); cm != "" {
+			legacyMultiplier[adapterIdentityKey(a)] = cm
+		}
+	}
+	patchedAdapters := make([]ModelAdapterConfig, len(patch.ModelAdapters))
+	for i, a := range patch.ModelAdapters {
+		if strings.TrimSpace(a.CostMultiplier) == "" {
+			if cm, ok := legacyMultiplier[adapterIdentityKey(a)]; ok {
+				a.CostMultiplier = cm
+			}
+		}
+		patchedAdapters[i] = a
+	}
+	dst.ModelAdapters = patchedAdapters
+	// Pricing 整块保留 dst，不动。
+}
+
 func validateJSONMap(value string, fieldName string) error {
 	text := strings.TrimSpace(value)
 	if text == "" {

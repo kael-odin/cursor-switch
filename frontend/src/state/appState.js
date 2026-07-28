@@ -423,6 +423,10 @@ export function normalizeModelAdapter(source) {
     priority: asInteger(raw.priority),
     enabled: asBoolean(raw.enabled ?? true),
     weight: asPositiveInteger(raw.weight),
+    // F-02: costMultiplier 透传——前端不解释此字段，仅 round-trip；
+    // 后端 merge 时若 patch 里为空会从磁盘旧值继承，所以这里必须 carry-through，
+    // 否则每次保存会把 per-adapter 倍率清空。
+    costMultiplier: asString(raw.costMultiplier),
   };
 }
 
@@ -569,11 +573,18 @@ function normalizeConfig(source) {
     modelAdapters: normalizeModelAdapters(raw.modelAdapters),
     routing: {
       mode: normalizeRouteMode(routing.mode),
+      // F-02: tabServerBaseURL carry-through——前端不解释，仅 round-trip。
+      // 后端 merge 忠实写 patch 值，所以前端必须携带，否则每次保存会清空 tab 地址。
+      tabServerBaseURL: asString(routing.tabServerBaseURL),
     },
     homeMetrics: {
       includeCacheWriteInHitRate: asBoolean(homeMetrics.includeCacheWriteInHitRate),
     },
     lastAgentModelHash: asString(raw.lastAgentModelHash),
+    // F-02: pricing 透传——前端从不解释 pricing 字段（CRUD 走 MetricsService 独立路径），
+    // 但 buildConfigPayload 整包保存时若不带 pricing，后端 merge 会保留磁盘值（主防线）。
+    // 这里 carry-through 仅保证 round-trip 一致，真正兜底在后端 MergeUserPatch。
+    pricing: raw.pricing && typeof raw.pricing === "object" ? raw.pricing : {},
   };
 }
 
@@ -615,6 +626,9 @@ function buildConfigPayload(source = appState) {
     routing: normalized.routing,
     homeMetrics: normalized.homeMetrics,
     lastAgentModelHash: normalized.lastAgentModelHash,
+    // F-02: pricing 透传到 payload——后端 MergeUserPatch 保留磁盘 pricing，
+    // 但前端必须把当前已加载的 pricing 带回去，避免 round-trip 后状态丢失。
+    pricing: normalized.pricing,
   };
 }
 

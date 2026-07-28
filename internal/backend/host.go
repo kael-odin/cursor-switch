@@ -70,6 +70,28 @@ func (host *Host) ConfigManager() *serverconfig.Manager {
 	return host.configs
 }
 
+// SaveUserConfigPatch 把前端整包 patch merge 到磁盘配置（F-02），保留 Pricing 等
+// 后端独占字段与 per-adapter CostMultiplier。前端整包保存改走此路径而非 SaveConfig 整包替换。
+func (host *Host) SaveUserConfigPatch(ctx context.Context, patch serverconfig.Config) (serverconfig.Config, error) {
+	if host == nil || host.configs == nil {
+		return serverconfig.Config{}, fmt.Errorf("backend config manager is not initialized")
+	}
+	normalized, err := host.configs.MergeUserPatch(ctx, patch)
+	if err != nil {
+		return serverconfig.Config{}, err
+	}
+	// F-35：读 httpServer 在 runMu 内；rebuild 保持锁外避免与 runMu 嵌套（同 SaveConfig）。
+	host.runMu.Lock()
+	needsRebuild := host.httpServer == nil
+	host.runMu.Unlock()
+	if needsRebuild {
+		if rebuildErr := host.rebuild(normalized); rebuildErr != nil {
+			return serverconfig.Config{}, rebuildErr
+		}
+	}
+	return normalized, nil
+}
+
 func (host *Host) LoadConfig(ctx context.Context) (serverconfig.Config, error) {
 	if host == nil || host.configs == nil {
 		return serverconfig.DefaultConfig(), nil

@@ -52,14 +52,17 @@ func (s *ProxyService) SaveUserConfig(cfg UserConfig) error {
 	if app != nil {
 		ctx = app.Context()
 	}
+	// F-02：改走 merge 路径而非整包替换——前端 payload 只含它管理的字段子集，
+	// merge 保留 Pricing 等 backend 独占字段与 per-adapter CostMultiplier，
+	// 避免每次保存清空定价/tab 地址/倍率。
 	var (
 		normalized UserConfig
 		err        error
 	)
 	if s.backendHost != nil {
-		normalized, err = s.backendHost.SaveConfig(ctx, cfg)
+		normalized, err = s.backendHost.SaveUserConfigPatch(ctx, cfg)
 	} else if s.store != nil {
-		normalized, err = s.store.Save(ctx, cfg)
+		normalized, err = s.store.MergeUserPatch(ctx, cfg)
 	} else {
 		return nil
 	}

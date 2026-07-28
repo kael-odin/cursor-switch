@@ -174,6 +174,19 @@ func (store *Store) Update(_ context.Context, mutator func(*Config) error) (Conf
 	return normalized, nil
 }
 
+// MergeUserPatch 把前端整包 patch merge 到磁盘最新配置（F-02）。
+// 转发到 Update 锁内事务，mutator 内 mergeUserPatchInto 以磁盘最新值为基线 merge。
+// 退化路径（无 backendHost 时 client.SaveUserConfig 直接走 store）。
+func (store *Store) MergeUserPatch(ctx context.Context, patch Config) (Config, error) {
+	if store == nil || strings.TrimSpace(store.path) == "" {
+		return Config{}, errors.New("配置存储未初始化")
+	}
+	return store.Update(ctx, func(cfg *Config) error {
+		mergeUserPatchInto(cfg, patch)
+		return nil
+	})
+}
+
 func (store *Store) saveLocked(normalized Config) error {
 	// F-18：config.yaml 含 API key / 自定义认证头，目录 0700、文件 0600。
 	if err := securefile.MkdirAll(filepath.Dir(store.path)); err != nil {

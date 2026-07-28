@@ -108,6 +108,21 @@ func (manager *Manager) Update(ctx context.Context, mutator func(*Config) error)
 	return normalized, nil
 }
 
+// MergeUserPatch 把前端整包 patch merge 到磁盘最新配置（F-02）。
+// 在 Store.Update 锁内事务完成 Load-Merge-Save：前端管理字段覆盖、Pricing 等后端独占字段
+// 保留磁盘值、per-adapter CostMultiplier 按身份键从磁盘旧值继承。
+// 消除前端整包保存丢弃 pricing/tabServerBaseURL/costMultiplier 的问题，且与并发
+// Pricing/hash 更新互不覆盖（F-03 事务）。
+func (manager *Manager) MergeUserPatch(ctx context.Context, patch Config) (Config, error) {
+	if manager == nil || manager.store == nil {
+		return Config{}, fmt.Errorf("config manager is not initialized")
+	}
+	return manager.Update(ctx, func(cfg *Config) error {
+		mergeUserPatchInto(cfg, patch)
+		return nil
+	})
+}
+
 func (manager *Manager) LastAgentModelHash() string {
 	if manager == nil {
 		return ""

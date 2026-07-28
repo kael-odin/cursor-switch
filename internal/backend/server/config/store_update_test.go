@@ -159,3 +159,168 @@ func TestManagerSaveLastAgentModelHashConcurrentWithUpdate(t *testing.T) {
 		t.Errorf("F-03 FAIL: Log lost under concurrent Update")
 	}
 }
+
+// --- F-02: 前端整包保存 merge ---
+
+// validAdapter 构造一个能通过 NormalizeModelAdapterConfigs 校验的 openai adapter。
+func validAdapter(displayName, modelID string) ModelAdapterConfig {
+	enabled := true
+	return ModelAdapterConfig{
+		DisplayName:     displayName,
+		Type:            "openai",
+		BaseURL:         "https://api.example.com",
+		APIKey:          "sk-test-key",
+		TooltipData:     "tip",
+		ModelID:         modelID,
+		ReasoningEffort: "medium",
+		OpenAIEndpoint:  "/v1/chat/completions",
+		Enabled:         &enabled,
+	}
+}
+
+// TestMergeUserPatchPreservesPricing 验证前端整包 patch 不携带 pricing 时，
+// merge 保留磁盘 pricing（S15 的 InputTokenSemantics 等靠此保留）。
+func TestMergeUserPatchPreservesPricing(t *testing.T) {
+	store := NewStore(t.TempDir()+"/config.yaml", "")
+	ctx := context.Background()
+
+	// 磁盘基线：非空 pricing + 一个 adapter。
+	base := DefaultConfig()
+	base.Pricing = PricingConfig{
+		DefaultCostMultiplier: "1.5",
+		Models: []ModelPricing{
+			{ModelID: "gpt-5", InputPerMillion: "5", OutputPerMillion: "25", InputTokenSemantics: "TOTAL"},
+		},
+	}
+	base.ModelAdapters = []ModelAdapterConfig{validAdapter("A", "gpt-5")}
+	if _, err := store.Save(ctx, base); err != nil {
+		t.Fatal(err)
+	}
+
+	// 前端 patch：只有它管理的字段，Pricing 是零值（前端从不携带）。
+	patch := Config{
+		Log:                       true,
+		ProviderStreamIdleTimeout: 60,
+		BackendListenAddr:         DefaultBackendListenAddr,
+		ProxyListenAddr:           DefaultProxyListenAddr,
+		Routing:                   RoutingConfig{Mode: DefaultRoutingMode},
+		ModelAdapters:             []ModelAdapterConfig{validAdapter("A", "gpt-5")},
+	}
+
+	merged, err := store.MergeUserPatch(ctx, patch)
+	if err != nil {
+		t.Fatalf("MergeUserPatch: %v", err)
+	}
+	if merged.Pricing.DefaultCostMultiplier != "1.5" {
+		t.Errorf("F-02 FAIL: pricing.DefaultCostMultiplier lost (got %q)", merged.Pricing.DefaultCostMultiplier)
+	}
+	// NormalizeConfig 会把内置 seed 价目表补进 Pricing.Models（INSERT OR IGNORE 语义），
+	// 所以这里不能断言 len==1；改断言用户编辑过的 gpt-5 条目（含 InputTokenSemantics）保留。
+	var gpt5 *ModelPricing
+	for i := range merged.Pricing.Models {
+		if merged.Pricing.Models[i].ModelID == "gpt-5" {
+			gpt5 = &merged.Pricing.Models[i]
+			break
+		}
+	}
+	if gpt5 == nil {
+		t.Fatalf("F-02 FAIL: user-edited pricing entry gpt-5 lost entirely")
+	}
+	if gpt5.InputPerMillion != "5" || gpt5.OutputPerMillion != "25" || gpt5.InputTokenSemantics != "TOTAL" {
+		t.Errorf("F-02 FAIL: gpt-5 pricing fields lost (got %+v)", gpt5)
+	}
+}
+
+// TestMergeUserPatchInheritsAdapterCostMultiplier 验证 patch adapter 的 CostMultiplier
+// 为空时，从磁盘旧列表同身份键 adapter 继承；改 baseURL（新身份键）则无继承。
+func TestMergeUserPatchInheritsAdapterCostMultiplier(t *testing.T) {
+	store := NewStore(t.TempDir()+"/config.yaml", "")
+	ctx := context.Background()
+
+	base := DefaultConfig()
+	a := validAdapter("A", "gpt-5")
+	a.CostMultiplier = "1.5"
+	b := validAdapter("B", "claude")
+	b.CostMultiplier = "2.0"
+	base.ModelAdapters = []ModelAdapterConfig{a, b}
+	if _, err := store.Save(ctx, base); err != nil {
+		t.Fatal(err)
+	}
+
+	// patch：A 不带 costMultiplier（应继承 1.5）；B 改了 baseURL（新身份键，不继承）。
+	patchA := validAdapter("A", "gpt-5")
+	patchA.CostMultiplier = "" // 前端 normalizer 不带此字段
+	patchB := validAdapter("B", "claude")
+	patchB.BaseURL = "https://api.different.com" // 新身份键
+	patchB.CostMultiplier = ""
+	patch := Config{
+		BackendListenAddr: DefaultBackendListenAddr,
+		ProxyListenAddr:   DefaultProxyListenAddr,
+		Routing:            RoutingConfig{Mode: DefaultRoutingMode},
+		ModelAdapters:     []ModelAdapterConfig{patchA, patchB},
+	}
+
+	merged, err := store.MergeUserPatch(ctx, patch)
+	if err != nil {
+		t.Fatalf("MergeUserPatch: %v", err)
+	}
+	byName := map[string]string{}
+	for _, ad := range merged.ModelAdapters {
+		byName[ad.DisplayName] = ad.CostMultiplier
+	}
+	if byName["A"] != "1.5" {
+		t.Errorf("F-02 FAIL: adapter A costMultiplier not inherited (got %q, want 1.5)", byName["A"])
+	}
+	if byName["B"] != "" {
+		t.Errorf("F-02 FAIL: adapter B changed identity (baseURL) should NOT inherit (got %q)", byName["B"])
+	}
+}
+
+// TestMergeUserPatchPreservesTabServerBaseURLWhenPatchOmits 验证即便前端未做
+// carry-through（patch routing 只带 mode），merge 也用 patch 值覆盖——
+// 这要求前端必须 carry-through tabServerBaseURL，否则会被清空。
+// 此测试锁定 merge 语义：patch.Routing.TabServerBaseURL 直接覆盖 dst（前端负责携带）。
+func TestMergeUserPatchPreservesTabServerBaseURLWhenPatchOmits(t *testing.T) {
+	store := NewStore(t.TempDir()+"/config.yaml", "")
+	ctx := context.Background()
+
+	base := DefaultConfig()
+	base.Routing.TabServerBaseURL = "https://tab.example.com"
+	base.ModelAdapters = []ModelAdapterConfig{validAdapter("A", "gpt-5")}
+	if _, err := store.Save(ctx, base); err != nil {
+		t.Fatal(err)
+	}
+
+	// 场景 A：前端 carry-through 后 patch 带 tabServerBaseURL → 保留。
+	patchWith := Config{
+		BackendListenAddr: DefaultBackendListenAddr,
+		ProxyListenAddr:   DefaultProxyListenAddr,
+		Routing:            RoutingConfig{Mode: DefaultRoutingMode, TabServerBaseURL: "https://tab.example.com"},
+		ModelAdapters:     []ModelAdapterConfig{validAdapter("A", "gpt-5")},
+	}
+	merged, err := store.MergeUserPatch(ctx, patchWith)
+	if err != nil {
+		t.Fatalf("MergeUserPatch: %v", err)
+	}
+	if merged.Routing.TabServerBaseURL != "https://tab.example.com" {
+		t.Errorf("F-02: tabServerBaseURL lost when patch carries it (got %q)",
+			merged.Routing.TabServerBaseURL)
+	}
+
+	// 场景 B：前端漏带（patch 只带 mode）→ merge 覆盖为空。
+	// 这是前端必须 carry-through 的契约证明：后端 merge 忠实反映 patch 值。
+	patchWithout := Config{
+		BackendListenAddr: DefaultBackendListenAddr,
+		ProxyListenAddr:   DefaultProxyListenAddr,
+		Routing:           RoutingConfig{Mode: DefaultRoutingMode},
+		ModelAdapters:     []ModelAdapterConfig{validAdapter("A", "gpt-5")},
+	}
+	merged2, err := store.MergeUserPatch(ctx, patchWithout)
+	if err != nil {
+		t.Fatalf("MergeUserPatch: %v", err)
+	}
+	if merged2.Routing.TabServerBaseURL != "" {
+		t.Errorf("F-02: merge should reflect patch value (got %q, want empty when patch omits)",
+			merged2.Routing.TabServerBaseURL)
+	}
+}
