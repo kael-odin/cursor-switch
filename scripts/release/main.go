@@ -523,20 +523,42 @@ func runSyncVersions(args []string) {
 		exitErr(fmt.Errorf("write info.json: %w", err))
 	}
 
-	// manifest：正则替换 assemblyIdentity 的 version（仅主 assemblyIdentity，不动 Common-Controls）。
+	// manifest：替换主 assemblyIdentity 的 version。
+	// 只替换不含 publicKeyToken 的 assemblyIdentity 行（name="com.cursor.wuxianxubei"）；
+	// <dependency> 里的 Microsoft.Windows.Common-Controls 带 publicKeyToken，其 version
+	// 恒为 6.0.0.0（Windows 通用控件 6.0 标准版本号，与项目版本无关），保留不动。
 	manifestPath := filepath.Join(configDir, "windows", "wails.exe.manifest")
 	manifest, err := os.ReadFile(manifestPath)
 	if err != nil {
 		exitErr(fmt.Errorf("read wails.exe.manifest: %w", err))
 	}
-	re := regexp.MustCompile(`(<assemblyIdentity[^>]*\bversion=")[^"]+(")`)
-	updated := re.ReplaceAll(manifest, []byte("${1}"+version+"${2}"))
-	if string(updated) == string(manifest) {
-		exitf("wails.exe.manifest: no assemblyIdentity version= attribute found to update")
+	updated, ok := rewriteManifestVersions(manifest, version)
+	if !ok {
+		exitf("wails.exe.manifest: no main assemblyIdentity (without publicKeyToken) version= found to update")
 	}
 	if err := os.WriteFile(manifestPath, updated, 0o644); err != nil {
 		exitErr(fmt.Errorf("write wails.exe.manifest: %w", err))
 	}
 
 	fmt.Printf("synced versions to %s (info.json + wails.exe.manifest)\n", version)
+}
+
+// rewriteManifestVersions 把 manifest 主 assemblyIdentity 的 version 改为指定值。
+// 只改不带 publicKeyToken 的主 assemblyIdentity（com.cursor.wuxianxubei）；
+// Common-Controls 依赖项（带 publicKeyToken，version 恒 6.0.0.0）原样保留。
+// 返回 (newManifest, ok)，ok=false 表示没找到主 assemblyIdentity 可改（manifest 结构异常）。
+// 幂等：传入已是目标 version 的 manifest 不会报错，原样返回 true。
+func rewriteManifestVersions(manifest []byte, version string) ([]byte, bool) {
+	assemblyRe := regexp.MustCompile(`<assemblyIdentity[^>]*\bversion="[^"]+"[^>]*>`)
+	versionRe := regexp.MustCompile(`(version=")[^"]+(")`)
+	mainSeen := false
+	updated := assemblyRe.ReplaceAllStringFunc(string(manifest), func(line string) string {
+		if strings.Contains(line, "publicKeyToken") {
+			// Common-Controls 依赖项：保留 6.0.0.0，不随项目版本变。
+			return line
+		}
+		mainSeen = true
+		return versionRe.ReplaceAllString(line, "${1}"+version+"${2}")
+	})
+	return []byte(updated), mainSeen
 }
