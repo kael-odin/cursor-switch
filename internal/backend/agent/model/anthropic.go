@@ -379,6 +379,10 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 	cacheReadPresent := false
 	cacheWritePresent := false
 	finishReason := "message_stop"
+	// sawTerminator 仅在真实收到 message_stop 事件时置真（F-20）。
+	// finishReason 默认 "message_stop" 仅用于 artifact 摘要展示，绝不代表流确已终止：
+	// 零事件 200 / 提前 EOF 同样会以默认值结束，必须靠本标志区分合法终止与"空成功"。
+	sawTerminator := false
 	firstEventAt := time.Time{}
 	fail := func(streamErr error) error {
 		finishedAt = time.Now().UTC()
@@ -637,6 +641,7 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 			if err := flushThinkingCompleted(); err != nil {
 				return err
 			}
+			sawTerminator = true // F-20：合法终止事件已收到
 			if err := sink(ModelEvent{
 				Kind:              ModelEventKindTurnFinished,
 				OccurredAt:        time.Now().UTC(),
@@ -693,6 +698,11 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 	}
 	if err := flushThinkingCompleted(); err != nil {
 		return fail(err)
+	}
+	if !sawTerminator {
+		// F-20：流以正常 EOF 结束但未收到 message_stop——视作被截断（典型：零事件 200
+		// 或上游提前断流）。作为可重试错误返回，触发 Router failover 换候选重试。
+		return fail(streamTerminatorMissingError("anthropic"))
 	}
 	finishedAt = time.Now().UTC()
 	recordLLMSummaryArtifact(req, buildLLMSummaryPayload(req, "anthropic", currentModel, startedAt, firstEventAt, finishedAt, finishReason, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, nil))

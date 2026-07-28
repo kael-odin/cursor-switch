@@ -473,6 +473,9 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 	cacheWritePresent := false
 	firstEventAt := time.Time{}
 	finishReason := ""
+	// F-20：流终止状态机。OpenAI Chat Completions 的合法终止是 [DONE] 行或
+	// chunk.choice.finish_reason 出现。EOF 但两者都没到即截断错误（可 failover）。
+	sawTerminator := false
 	turnFinishedPending := false
 	thinkingStarted := time.Time{}
 	thinkingActive := false
@@ -650,6 +653,7 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 		}
 		payloadLine := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payloadLine == "[DONE]" {
+			sawTerminator = true
 			if err := flushTaggedContentTail(); err != nil {
 				return fail(err)
 			}
@@ -760,6 +764,7 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 			}
 			tools = make(map[int]*openAIToolAccumulator)
 			finishReason = strings.TrimSpace(*choice.FinishReason)
+			sawTerminator = true
 			turnFinishedPending = true
 		}
 	}
@@ -793,6 +798,11 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 	}
 	if err := flushTurnFinished(); err != nil {
 		return fail(err)
+	}
+	// F-20：未收到合法终止事件（[DONE] 或 finish_reason）即 EOF——截断错误，可 failover。
+	// 此前正常 EOF 一律返回 nil，零事件 200 JSON 也被判成功。
+	if !sawTerminator {
+		return fail(streamTerminatorMissingError("openai"))
 	}
 	finishedAt = time.Now().UTC()
 	recordLLMSummaryArtifact(req, buildLLMSummaryPayload(req, "openai", currentModel, startedAt, firstEventAt, finishedAt, finishReason, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, nil))
@@ -977,9 +987,12 @@ func (adapter *OpenAIAdapter) streamResponses(ctx context.Context, req StreamReq
 	cacheWritePresent := false
 	firstEventAt := time.Time{}
 	finishReason := ""
+	// F-20：流终止状态机。Responses 的合法终止是 response.completed 事件
+	// （type=="response.completed" 或 event.response.status=="completed"）。
 	turnFinishedPending := false
 	emittedToolInvocation := false
 	emittedText := false
+	sawTerminator := false
 	thinkingStarted := time.Time{}
 	thinkingActive := false
 	emittedReasoningSignature := ""
@@ -1466,6 +1479,9 @@ func (adapter *OpenAIAdapter) streamResponses(ctx context.Context, req StreamReq
 				return fail(err)
 			}
 		case "response.completed", "response.incomplete":
+			if event.Type == "response.completed" {
+				sawTerminator = true
+			}
 			if event.Response != nil && !emittedText {
 				if strings.TrimSpace(event.Response.OutputText) != "" {
 					if err := emitTaggedContentParts(thinkParser.Consume(event.Response.OutputText)); err != nil {
@@ -1530,6 +1546,10 @@ func (adapter *OpenAIAdapter) streamResponses(ctx context.Context, req StreamReq
 	}
 	if err := flushTurnFinished(); err != nil {
 		return fail(err)
+	}
+	// F-20：未收到 response.completed 即 EOF——截断错误，可 failover。
+	if !sawTerminator {
+		return fail(streamTerminatorMissingError("openai"))
 	}
 	finishedAt = time.Now().UTC()
 	recordLLMSummaryArtifact(req, buildLLMSummaryPayload(req, "openai", currentModel, startedAt, firstEventAt, finishedAt, effectiveFinishReason(), inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, nil))

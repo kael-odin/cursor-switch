@@ -304,6 +304,8 @@ func isClientSideCancellation(ctx context.Context, err error) bool {
 //   - HTTP 5xx：buildHTTPStatusError 的 "status=5NN" 字符串形态。
 //   - HTTP 429：限流，换 provider 可绕过。
 //   - 流 idle 超时：providerStreamIdleTimeoutError 的 "provider stream idle timeout after ..." 字符串。
+//   - 流未合法终止（F-20）：streamTerminatorMissingError 的 "provider stream truncated: ..." 形态。
+//     provider 提前 EOF、缺终止事件、零事件——换 provider 可能正常完成流。
 //   - body 读取失败：buildHTTPStatusError 的 "body_read_error=" 形态（响应体中途断流）。
 //
 // 不可重试（换 provider 也会同样失败）：
@@ -324,6 +326,10 @@ func isRetryableChannelError(err error) bool {
 	text := err.Error()
 	// 流 idle 超时（两种字符串形态都以 "provider stream idle timeout after " 开头）。
 	if strings.HasPrefix(text, "provider stream idle timeout after ") {
+		return true
+	}
+	// F-20：流未以合法终止事件结束（缺 [DONE]/response.completed/message_stop 或零事件）。
+	if strings.HasPrefix(text, "provider stream truncated: ") {
 		return true
 	}
 	// HTTP 状态码错误：解析 "status=NNN"。
