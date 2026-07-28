@@ -62,6 +62,33 @@ func (service *Service) handleToolInvocation(stream *ActiveStream, invocation ru
 		}
 		return nil
 	}
+	// F-32：Delete 与 FetchMcpResource.downloadPath 在下发 exec bridge 前做 workspace 围栏。
+	// 此前这两类路径原样透传到 exec/bridge.go 的 openDelete / openReadMcpResource，
+	// 模型可删除工作区外文件、或把 MCP resource 下载到区外（绝对路径 / .. / workspace 内 symlink）。
+	// 这里在 service 层（持有 stream 上下文）围栏并改写 invocation.ArgsJSON 为围栏后的绝对路径，
+	// 后续 startedToolCall 构造与 OpenExec 读到的都是围栏后的路径。
+	if trimmedToolName == "Delete" {
+		fencedPath, err := ensureDeletePathWithinWorkspace(stream, extractDeletePath(invocation.ArgsJSON))
+		if err != nil {
+			return service.completePreDispatchToolError(stream, invocation, nil, false, false, err)
+		}
+		if rewritten, rewriteErr := rewriteDeletePath(invocation.ArgsJSON, fencedPath); rewriteErr != nil {
+			return service.completePreDispatchToolError(stream, invocation, nil, false, false, rewriteErr)
+		} else {
+			invocation.ArgsJSON = rewritten
+		}
+	}
+	if trimmedToolName == "FetchMcpResource" {
+		fencedPath, err := ensureDownloadPathWithinWorkspace(stream, extractDownloadPath(invocation.ArgsJSON))
+		if err != nil {
+			return service.completePreDispatchToolError(stream, invocation, nil, false, false, err)
+		}
+		if rewritten, rewriteErr := rewriteDownloadPath(invocation.ArgsJSON, fencedPath); rewriteErr != nil {
+			return service.completePreDispatchToolError(stream, invocation, nil, false, false, rewriteErr)
+		} else {
+			invocation.ArgsJSON = rewritten
+		}
+	}
 	isExecInvocation := isExecTool(trimmedToolName)
 	isInteractionInvocation := isInteractionTool(trimmedToolName)
 	isLocalStateInvocation := isLocalStateTool(trimmedToolName)
