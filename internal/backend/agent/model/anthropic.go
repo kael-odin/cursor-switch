@@ -521,10 +521,14 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	currentEvent := ""
 	dataLines := make([]string, 0, 2)
+	budget := newStreamBudget()
 	flush := func() error {
 		if currentEvent == "" || len(dataLines) == 0 {
 			dataLines = dataLines[:0]
 			return nil
+		}
+		if err := budget.addEvent(); err != nil {
+			return err
 		}
 		payloadLine := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
@@ -664,6 +668,9 @@ func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, 
 
 	for scanner.Scan() {
 		rawLine := scanner.Text()
+		if err := budget.addBytes(int64(len(rawLine))); err != nil {
+			return fail(err)
+		}
 		_, _ = appendLLMResponseArtifact(req, rawLine+"\n")
 		line := strings.TrimSpace(rawLine)
 		if line == "" {

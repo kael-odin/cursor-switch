@@ -641,12 +641,19 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), openAIStreamMaxTokenSize)
+	budget := newStreamBudget()
 	for scanner.Scan() {
 		rawLine := scanner.Text()
+		if err := budget.addBytes(int64(len(rawLine))); err != nil {
+			return fail(err)
+		}
 		_, _ = appendLLMResponseArtifact(req, redactOpenAIStreamArtifactLine(rawLine)+"\n")
 		line := strings.TrimSpace(rawLine)
 		if line == "" || !strings.HasPrefix(line, "data:") {
 			continue
+		}
+		if err := budget.addEvent(); err != nil {
+			return fail(err)
 		}
 		if firstEventAt.IsZero() {
 			firstEventAt = time.Now().UTC()
@@ -1360,12 +1367,19 @@ func (adapter *OpenAIAdapter) streamResponses(ctx context.Context, req StreamReq
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), openAIStreamMaxTokenSize)
+	budget := newStreamBudget()
 	for scanner.Scan() {
 		rawLine := scanner.Text()
+		if err := budget.addBytes(int64(len(rawLine))); err != nil {
+			return fail(err)
+		}
 		_, _ = appendLLMResponseArtifact(req, redactOpenAIStreamArtifactLine(rawLine)+"\n")
 		line := strings.TrimSpace(rawLine)
 		if line == "" || !strings.HasPrefix(line, "data:") {
 			continue
+		}
+		if err := budget.addEvent(); err != nil {
+			return fail(err)
 		}
 		if firstEventAt.IsZero() {
 			firstEventAt = time.Now().UTC()

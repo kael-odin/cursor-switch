@@ -332,6 +332,10 @@ func isRetryableChannelError(err error) bool {
 	if strings.HasPrefix(text, "provider stream truncated: ") {
 		return true
 	}
+	// F-21：流资源预算超限（总字节/总事件数），换 provider 可能不超限。
+	if strings.HasPrefix(text, "provider stream budget exceeded: ") {
+		return true
+	}
 	// HTTP 状态码错误：解析 "status=NNN"。
 	status, ok := extractHTTPStatus(text)
 	if !ok {
