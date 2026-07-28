@@ -453,28 +453,95 @@ func (store *ConversationFileStore) readConversationLocked(conversationID string
 	if err := json.Unmarshal(stateBody, &conversation); err != nil {
 		return nil, fmt.Errorf("decode conversation state %q: %w", conversationID, err)
 	}
-	context, err := store.readContextLocked(conversationID)
+	entries, contextVersion, contextConversationID, err := store.readContextWithVersionLocked(conversationID)
 	if err != nil {
 		return nil, err
 	}
-	conversation.Entries = context
+	conversation.Entries = entries
+	// F-13 崩溃一致性：state.ContextVersion 与 context.Version 不一致说明进程在
+	// writeContextLocked（新 context 已落盘）与 writeConversationMetaLocked（新 state
+	// 尚未落盘）之间退出，留下"新 context + 旧 state"。旧 state 的运行时派生字段
+	// （loop 状态/todos/plans/lastProviderCall 等）可能已与新条目脱节。
+	// context 是顺序追加的事实来源——以 context.Version 为准，作废旧 state 的运行时
+	// 派生字段，由 normalizeLoadedConversation 从条目重建 loop 状态与 ContextVersion。
+	// todos/plans/lastProviderCall 无法从条目精确重建，作废以避免陈旧值误导（模型可
+	// 下一轮重新获取）。只保留与条目无关的稳定元数据（Mode/parent IDs/CreatedAt）。
+	if contextVersionMismatch(conversation.ContextVersion, contextVersion, conversation.ConversationID, contextConversationID) {
+		invalidateStaleRuntimeState(&conversation)
+	}
 	normalizeLoadedConversation(conversationID, &conversation)
 	return &conversation, nil
 }
 
+// contextVersionMismatch 判断 state 与 context 是否处于 F-13 的不一致状态。
+// 一致条件：版本号相等（都为 0 的空对话也视为一致）。版本号不等即不一致。
+// ConversationID 不等是更严重的损坏（文件被错配），也判为不一致。
+func contextVersionMismatch(stateContextVersion int64, contextVersion int64, stateConversationID string, contextConversationID string) bool {
+	if stateContextVersion != contextVersion {
+		return true
+	}
+	if trimmed := strings.TrimSpace(contextConversationID); trimmed != "" {
+		if trimmed != strings.TrimSpace(stateConversationID) {
+			return true
+		}
+	}
+	return false
+}
+
+// invalidateStaleRuntimeState 作废旧 state 中可能与新 context 脱节的运行时派生字段
+// （F-13）。稳定元数据（Mode/parent IDs/CreatedAt/RootConversationID）保留——这些
+// 不随条目追加而变。loop 状态/todos/plans/lastProviderCall 等运行时字段在
+// normalizeLoadedConversation 里从条目重建或置空。
+func invalidateStaleRuntimeState(conversation *ConversationFile) {
+	if conversation == nil {
+		return
+	}
+	conversation.ContextVersion = 0
+	conversation.CurrentLoopID = ""
+	conversation.CurrentLoopStatus = ""
+	conversation.CurrentRequestID = ""
+	conversation.CurrentTurnSeq = 0
+	conversation.CurrentPlans = nil
+	conversation.CurrentTodos = nil
+	conversation.LastProviderCall = nil
+	conversation.LatestRequestPrefix = nil
+	conversation.AutoCompactionPending = false
+	conversation.AutoCompactionPromptTokens = 0
+	conversation.AutoCompactionReserveTokens = 0
+	conversation.AutoCompactionTriggeredAt = ""
+	conversation.AutoCompactionSourceModelCallID = ""
+	conversation.TokenDetailsUsedTokens = 0
+	conversation.TokenDetailsMaxTokens = 0
+}
+
 func (store *ConversationFileStore) readContextLocked(conversationID string) ([]HistoryEntry, error) {
+	entries, _, _, err := store.readContextWithVersionLocked(conversationID)
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// readContextWithVersionLocked 读取 context.json 并返回条目与 context 自身的
+// Version/ConversationID（F-13 崩溃一致性校验用）。
+//
+// state.json 的 ContextVersion 应与 context.json 的 Version 一致；不一致说明
+// 进程在 writeContextLocked 与 writeConversationMetaLocked 之间退出，留下
+// "新 context + 旧 state"。调用方据此重建 metadata，避免旧 state 覆盖新 context。
+func (store *ConversationFileStore) readContextWithVersionLocked(conversationID string) ([]HistoryEntry, int64, string, error) {
 	body, err := os.ReadFile(store.contextPath(conversationID))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return make([]HistoryEntry, 0, 16), nil
+			return make([]HistoryEntry, 0, 16), 0, "", nil
 		}
-		return nil, fmt.Errorf("read conversation context: %w", err)
+		return nil, 0, "", fmt.Errorf("read conversation context: %w", err)
 	}
 	var context conversationContextFile
 	if err := json.Unmarshal(body, &context); err != nil {
-		return nil, fmt.Errorf("decode conversation context %q: %w", conversationID, err)
+		return nil, 0, "", fmt.Errorf("decode conversation context %q: %w", conversationID, err)
 	}
-	return append([]HistoryEntry(nil), context.Items...), nil
+	entries := append([]HistoryEntry(nil), context.Items...)
+	return entries, context.Version, strings.TrimSpace(context.ConversationID), nil
 }
 
 func (store *ConversationFileStore) writeConversationLocked(conversationID string, conversation *ConversationFile) error {
@@ -867,6 +934,14 @@ func writeJSONFileAtomic(path string, payload any) error {
 	if _, err := file.Write(append(data, '\n')); err != nil {
 		file.Close()
 		return fmt.Errorf("write temp file: %w", err)
+	}
+	// F-13：rename 前 Sync 把数据刷到磁盘。此前只 Close 后 rename，OS 页缓存可能
+	// 在 rename 后才落盘——崩溃窗口内 rename 已完成但数据未持久，留下零字节/截断的
+	// 目标文件。Sync 后再 Close 再 rename，保证 rename 时数据已在稳定存储。
+	// Windows 上文件 rename 是原子的，Sync 仍提供崩溃耐久度；若 Sync 失败放弃写。
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return fmt.Errorf("sync temp file: %w", err)
 	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
