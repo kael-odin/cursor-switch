@@ -199,8 +199,10 @@ func logRouteDispatch(request *http.Request, route Route, mode ExecutionMode, st
 		request.Method, path, routeName, mode, statusCode)
 }
 
-func shouldUseUpstreamAction(ctx *Context, route Route) bool {
-	_ = route
+// shouldUseUpstreamAction 决定本请求走 Upstream（透传）还是 Local（byok 本地）分支。
+// 决策由 ctx.Mode 给出——PolicyMiddleware 已按 ctx.RouteName 查 per-namespace 覆盖表
+// （审计第二部分「优先级 2」），故这里只读 ctx.Mode，route 参数保留供调用点上下文可读。
+func shouldUseUpstreamAction(ctx *Context, _ Route) bool {
 	if ctx == nil {
 		return false
 	}

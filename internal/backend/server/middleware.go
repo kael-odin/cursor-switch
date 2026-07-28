@@ -45,8 +45,10 @@ func ServerContext() Middleware {
 func PolicyMiddleware(configs *serverconfig.Manager) Middleware {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx *Context) error {
-			ctx.Mode = parseExecutionMode(configs.RouteMode(ctx.UpstreamURL != nil))
-			logger.Infof("ctx.Mode=%s upstream=%t", ctx.Mode, ctx.UpstreamURL != nil)
+			// per-namespace 路由（审计第二部分「优先级 2」）：按 ctx.RouteName 查 Routing.PerNamespace
+			// 覆盖表，未列出则回退全局 Mode。native 请求（无 UpstreamURL）恒 local。
+			ctx.Mode = parseExecutionMode(configs.RouteModeFor(ctx.UpstreamURL != nil, ctx.RouteName))
+			logger.Infof("ctx.Mode=%s upstream=%t route=%s", ctx.Mode, ctx.UpstreamURL != nil, ctx.RouteName)
 			return next(ctx)
 		}
 	}

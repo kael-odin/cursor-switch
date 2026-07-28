@@ -150,6 +150,47 @@ function normalizeRouteMode(value, fallback = "local") {
   return fallback;
 }
 
+// 审计第二部分「优先级 2」per-namespace 路由覆盖：单个路由面可独立选 local/upstream，
+// 不改变全局 Mode。仅对 Local/Upstream 可切的路由有意义（officialProcedure 把两者设同一
+// DirectAction，覆盖对其无影响）。值 "auto"/空 = 跟随全局（不写入表，由后端 normalize 丢弃）。
+function normalizePerNamespace(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+  const cleaned = {};
+  for (const [name, mode] of Object.entries(raw)) {
+    const key = asString(name);
+    if (!key) continue;
+    const value = asString(mode).toLowerCase();
+    if (SUPPORTED_ROUTE_MODES.has(value)) {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned;
+}
+
+// 可配置的 per-namespace 路由目录（高价值子集，非全部 ~30 条路由）。
+// 推理面（run_sse/bidi_append/ai_service）默认 byok local，不暴露在此——它们强制本地是
+// 项目目标。此处只列「云端一体化服务」类，对应审计优先级 1：可按需透传到用户本人 cursor
+// 账号（牺牲隐私换召回质量）。value 为路由名（后端 host.go 的 server.Name）。
+export const PER_NAMESPACE_ROUTES = [
+  {
+    name: "cpp_service",
+    label: "Tab 补全 / Git 提交消息",
+    hint: "Cursor 专有小模型端点。默认走 Tab server 中转；可设为直连走本人 Cursor 账号。",
+  },
+  {
+    name: "file_sync",
+    label: "Codebase 索引 (@codebase)",
+    hint: "RepositoryService/* codebase 索引。默认 byok 本地简化版（文件哈希清单，无向量检索）；设为直连走 Cursor 云端语义索引（代码上传 Cursor 云）。",
+  },
+  {
+    name: "network_service",
+    label: "NetworkService / @docs 文档",
+    hint: "DocumentationQuery/@docs 等。默认 byok 本地文档库；设为直连复用 Cursor 云端预建文档索引。",
+  },
+];
+
 function normalizeBaseURL(value) {
   const text = asString(value);
   if (!text) {
@@ -576,6 +617,9 @@ function normalizeConfig(source) {
       // F-02: tabServerBaseURL carry-through——前端不解释，仅 round-trip。
       // 后端 merge 忠实写 patch 值，所以前端必须携带，否则每次保存会清空 tab 地址。
       tabServerBaseURL: asString(routing.tabServerBaseURL),
+      // 审计第二部分「优先级 2」per-namespace 路由覆盖 round-trip——前端不解释语义，
+      // 仅清洗（local/upstream 合法值）并原样回传。后端 merge 整块覆盖。
+      perNamespace: normalizePerNamespace(routing.perNamespace),
     },
     homeMetrics: {
       includeCacheWriteInHitRate: asBoolean(homeMetrics.includeCacheWriteInHitRate),
@@ -643,6 +687,7 @@ function applyConfigToState(config, { modelAdaptersOnly = false } = {}) {
   appState.configProxyListenAddr = normalized.proxyListenAddr;
   appState.routingMode = normalized.routing.mode;
   appState.tabServerBaseURL = normalized.routing.tabServerBaseURL || "";
+  appState.perNamespace = normalized.routing.perNamespace;
   appState.includeCacheWriteInHitRate = normalized.homeMetrics.includeCacheWriteInHitRate;
   return normalized;
 }
@@ -875,6 +920,7 @@ export const appState = reactive({
   configProxyListenAddr: cachedConfig.proxyListenAddr,
   routingMode: cachedConfig.routing.mode,
   tabServerBaseURL: cachedConfig.routing.tabServerBaseURL || "",
+  perNamespace: cachedConfig.routing.perNamespace,
   includeCacheWriteInHitRate: cachedConfig.homeMetrics.includeCacheWriteInHitRate,
 
   serviceRunning: asBoolean(cachedState.serviceRunning),
@@ -1141,6 +1187,7 @@ export async function persistUserConfig() {
     routing: {
       mode: appState.routingMode,
       tabServerBaseURL: appState.tabServerBaseURL || "",
+      perNamespace: normalizePerNamespace(appState.perNamespace),
     },
     homeMetrics: {
       ...currentConfig.homeMetrics,
@@ -1174,8 +1221,38 @@ export async function saveRoutingMode(mode) {
     routing: {
       mode: normalizeRouteMode(mode),
       tabServerBaseURL: currentConfig.routing?.tabServerBaseURL || "",
+      perNamespace: normalizePerNamespace(currentConfig.routing?.perNamespace),
     },
   });
+}
+
+// savePerNamespaceRoute 设置单条路由（namespace）的模式覆盖（审计第二部分「优先级 2」）。
+// mode = "local" | "upstream" | "auto"（auto = 跟随全局，等价于从覆盖表移除该路由）。
+export async function savePerNamespaceRoute(routeName, mode) {
+  const currentConfig = await loadPersistedUserConfig();
+  const previous = appState.perNamespace;
+  const next = { ...normalizePerNamespace(currentConfig.routing?.perNamespace) };
+  const key = asString(routeName);
+  const value = asString(mode).toLowerCase();
+  if (key && (value === "local" || value === "upstream")) {
+    next[key] = value;
+  } else if (key && (value === "auto" || value === "")) {
+    // auto / 空 = 跟随全局，从覆盖表移除。
+    delete next[key];
+  }
+  appState.perNamespace = next;
+  const result = await persistConfigPayload({
+    ...currentConfig,
+    routing: {
+      mode: currentConfig.routing?.mode || "local",
+      tabServerBaseURL: currentConfig.routing?.tabServerBaseURL || "",
+      perNamespace: next,
+    },
+  });
+  if (!result.ok) {
+    appState.perNamespace = previous;
+  }
+  return result;
 }
 
 // saveTabServerBaseURL 设置 tab 补全/git 消息流量的上游地址（H1）。
@@ -1190,6 +1267,7 @@ export async function saveTabServerBaseURL(value) {
     routing: {
       mode: currentConfig.routing?.mode || "local",
       tabServerBaseURL: nextValue,
+      perNamespace: normalizePerNamespace(currentConfig.routing?.perNamespace),
     },
   });
   if (!result.ok) {

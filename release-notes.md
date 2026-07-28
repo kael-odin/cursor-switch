@@ -1,3 +1,12 @@
+# 2.0.3
+
+## 按路由面覆盖（per-namespace 路由）
+
+- **第二部分「优先级 2」能力损失优化**：此前 `Routing.Mode` 是全局开关——要么全本地 byok，要么全直连 Cursor。现细化为**按面配置**：`Routing.PerNamespace` 按 route name 覆盖全局 Mode，单条路由可独立选 `local`（byok 本地）/ `upstream`（透传本人 Cursor 账号），未列出则跟随全局。
+- **实现**：`RoutingConfig` 加 `PerNamespace map[string]string`；`Manager.RouteModeFor(hasUpstreamURL, routeName)` 优先查覆盖表回退全局；`PolicyMiddleware` 改按 `ctx.RouteName` 查表（`ctx.RouteName` 本就每请求填充，无需新管道）。native 请求（无 UpstreamURL）恒 local，覆盖也无效——本地直连没有上游可切。`normalizePerNamespace` 清洗非法值并丢弃"auto"（等价不覆盖），全空返回 nil 向后兼容旧配置。
+- **前端**：Config 页加「按路由面覆盖」面板——Tab 补全 / Codebase 索引 / @docs 文档 三条高价值「云端一体化服务」各一 Select（跟随全局 / 本地 byok / 直连 Cursor），单条即时保存。推理面（RunSSE / BidiAppend）刻意不暴露——强制本地是项目目标。把 codebase/docs 设为直连即对应审计「优先级 1」：透传到本人 Cursor 云端语义索引（代码/文档会经 Cursor 云，用户知情）。
+- **测试**：7 config 层（normalize 清洗/RouteModeFor 覆盖胜全局/native 恒 local/覆盖双向/NormalizeConfig 往返/空保持 nil）+ 4 PolicyMiddleware 层（按路由分流/native 恒 local/全局 upstream 下覆盖 local/空 RouteName 回退）。
+
 # 2.0.2
 
 ## F-09 官方回源 NoRedirect 策略修复

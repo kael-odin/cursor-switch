@@ -60,6 +60,16 @@ type RoutingConfig struct {
 	// 非空 = 把 StreamCpp/CppConfig/WriteGitCommitMessage 等流量导向该地址。
 	// 历史默认值 "https://tab.leokun.cn" 是上游作者的共享池；用户可填自建 cursor-tab-server 地址或留空。
 	TabServerBaseURL string `json:"tabServerBaseURL" yaml:"tabServerBaseURL"`
+	// PerNamespace 是按路由名（namespace）的模式覆盖，审计第二部分「优先级 2」能力损失优化。
+	// 全局 Mode 是粗粒度开关（要么全 byok 本地，要么全直连 cursor）；PerNamespace 让单个路由面
+	// 独立选择 local（byok 本地重建）/ upstream（透传到用户本人 cursor 账号），不改变其它面。
+	// key = route name（见 host.go 的 server.Name(...)，如 run_sse / bidi_append /
+	// repository_status / cpp_service 等）；value = "local" | "upstream"。
+	// 未列出的路由跟随全局 Mode。仅对 Local/Upstream 可切的路由有意义——officialProcedure
+	// 把 Local 与 Upstream 设为同一 DirectAction，覆盖对其无影响（恒走透传）。
+	// 例如：路由模式保持 local（byok），单独把 codebase 索引透传到 cursor 云——
+	// perNamespace: { repository_status: upstream }。
+	PerNamespace map[string]string `json:"perNamespace,omitempty" yaml:"perNamespace,omitempty"`
 }
 
 type HomeMetricsConfig struct {
@@ -113,6 +123,7 @@ func NormalizeConfig(input Config) (Config, error) {
 		output.Routing.Mode = DefaultRoutingMode
 	}
 	output.Routing.TabServerBaseURL = strings.TrimSpace(input.Routing.TabServerBaseURL)
+	output.Routing.PerNamespace = normalizePerNamespace(input.Routing.PerNamespace)
 	adapters, err := NormalizeModelAdapterConfigs(input.ModelAdapters)
 	if err != nil {
 		return Config{}, err
@@ -245,6 +256,12 @@ func mergeUserPatchInto(dst *Config, patch Config) {
 	dst.ProxyListenAddr = patch.ProxyListenAddr
 	dst.Routing.Mode = patch.Routing.Mode
 	dst.Routing.TabServerBaseURL = patch.Routing.TabServerBaseURL
+	// PerNamespace：前端管理的整块覆盖（与 Mode/TabServerBaseURL 一致）。
+	// patch.Routing.PerNamespace 为 nil 时不动 dst（前端 payload 未带此字段则保留旧值）。
+	// 非 nil（含空 map）覆盖，随后 NormalizeConfig 会清洗/归一。
+	if patch.Routing.PerNamespace != nil {
+		dst.Routing.PerNamespace = patch.Routing.PerNamespace
+	}
 	dst.HomeMetrics = patch.HomeMetrics
 	dst.LastAgentModelHash = patch.LastAgentModelHash
 
@@ -407,4 +424,34 @@ func normalizeRoutingMode(value string) string {
 	default:
 		return ""
 	}
+}
+
+// normalizePerNamespace 过滤并归一化 per-namespace 路由覆盖表：
+// 丢弃空 key、非法值；合法值仅 local/upstream。"auto"（跟随全局）等价于不列出，故也丢弃以保持表精简。
+// 全部丢弃后返回 nil（向后兼容：旧配置无此字段，序列化也不多一个空 map）。
+func normalizePerNamespace(input map[string]string) map[string]string {
+	if len(input) == 0 {
+		return nil
+	}
+	cleaned := make(map[string]string, len(input))
+	for name, mode := range input {
+		key := strings.TrimSpace(name)
+		if key == "" {
+			continue
+		}
+		normalized := normalizeRoutingMode(mode)
+		// normalizeRoutingMode 把 "" 归一为 "local"，但这里空值语义应是"不覆盖/跟随全局"，
+		// 故非法值与空值都跳过（不写入表），让该路由回退到全局 Mode。
+		if strings.TrimSpace(mode) == "" {
+			continue
+		}
+		if normalized == "" {
+			continue
+		}
+		cleaned[key] = normalized
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return cleaned
 }

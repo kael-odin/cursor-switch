@@ -237,6 +237,28 @@ func (manager *Manager) RouteMode(hasUpstreamURL bool) string {
 	return mode
 }
 
+// RouteModeFor 返回某条路由（namespace）应使用的执行模式，审计第二部分「优先级 2」
+// per-namespace 路由覆盖。优先查 Routing.PerNamespace[routeName]；未列出则回退全局
+// RouteMode(hasUpstreamURL)。native 请求（无 UpstreamURL）恒 local，覆盖也无效——
+// 本地直连没有上游可切。返回值已是归一后的 "local"/"upstream"。
+func (manager *Manager) RouteModeFor(hasUpstreamURL bool, routeName string) string {
+	if !hasUpstreamURL {
+		return DefaultRoutingMode
+	}
+	if manager == nil {
+		return DefaultRoutingMode
+	}
+	routeName = strings.TrimSpace(routeName)
+	if routeName != "" {
+		if override, ok := manager.Current().Routing.PerNamespace[routeName]; ok {
+			if mode := normalizeRoutingMode(override); mode != "" {
+				return mode
+			}
+		}
+	}
+	return manager.RouteMode(hasUpstreamURL)
+}
+
 func (manager *Manager) setCurrent(cfg Config) {
 	next := cfg
 	manager.current.Store(&next)
