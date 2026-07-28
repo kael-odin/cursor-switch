@@ -69,12 +69,22 @@ func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(M
 	idleTimeout := router.resolver.ProviderStreamIdleTimeout(ctx)
 	candidates := router.orderCandidates(channels)
 
+	// 诊断日志（审计 B8）：把"路由损失到底损失在哪一步"打出来，便于排查
+	// 候选选择 / 熔断跳过 / failover / 流中途失败 / 成功命中。统一带 requestID/
+	// conversationID/modelID 便于跨日志关联，单行 key=value 格式与既有 log 风格一致。
+	logRouteDiagnostic(req, "candidates_resolved",
+		"candidate_count", strconv.Itoa(len(candidates)),
+		"first_channel", channelLogID(candidates[0]))
+
 	var lastErr error
 	for index, channel := range candidates {
 		cb := router.breakerFor(channel.ID)
 		permit := cb.AllowRequest()
 		if !permit.Allowed {
 			// 熔断中：跳过本候选，保留兜底（末尾候选熔断时仍会被跳过，最终走 lastErr）。
+			logRouteDiagnostic(req, "channel_skipped_circuit_open",
+				"channel", channelLogID(channel),
+				"index", strconv.Itoa(index))
 			if lastErr == nil {
 				lastErr = fmt.Errorf("channel %q circuit open", channel.ID)
 			}
@@ -111,6 +121,9 @@ func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(M
 
 		if streamErr == nil && sinkErr == nil {
 			cb.RecordSuccess(permit.UsedHalfOpenPermit)
+			logRouteDiagnostic(req, "channel_succeeded",
+				"channel", channelLogID(channel),
+				"index", strconv.Itoa(index))
 			return nil
 		}
 		// 失败原因归类后决定是否计入 provider 熔断：
@@ -128,27 +141,85 @@ func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(M
 
 		// 已首字节 → 绝不 failover（双发比报错更糟）。
 		if sinkStarted {
+			// 流已开始后失败：不 failover，透传错误。打日志让用户能区分
+			// "流中途断"（本分支）与"所有候选都没起来"（循环末尾 lastErr）。
+			logRouteDiagnostic(req, "channel_failed_after_sink_started",
+				"channel", channelLogID(channel),
+				"index", strconv.Itoa(index),
+				"reason", effErr.Error())
 			return lastErr
 		}
 		// 客户端取消 → 不 failover（客户端已走，换候选无意义）。
 		if isClientSideCancellation(ctx, effErr) {
+			logRouteDiagnostic(req, "channel_skipped_client_cancelled",
+				"channel", channelLogID(channel),
+				"index", strconv.Itoa(index))
 			return lastErr
 		}
 		// 不可重试错误（4xx 除 429）→ 换候选也会同样失败，透传。
 		if !isRetryableChannelError(effErr) {
+			logRouteDiagnostic(req, "channel_failed_non_retryable",
+				"channel", channelLogID(channel),
+				"index", strconv.Itoa(index),
+				"reason", effErr.Error())
 			return lastErr
 		}
 		// 可重试 + 未吐事件 → 换下一个候选。
 		if index < len(candidates)-1 {
-			log.Printf("router failover: model=%q from=%s to=%s reason=%v",
-				strings.TrimSpace(req.ModelID), strings.TrimSpace(channel.ID),
-				strings.TrimSpace(candidates[index+1].ID), effErr)
+			logRouteDiagnostic(req, "channel_failed_failover",
+				"from_channel", channelLogID(channel),
+				"to_channel", channelLogID(candidates[index+1]),
+				"from_index", strconv.Itoa(index),
+				"to_index", strconv.Itoa(index+1),
+				"reason", effErr.Error())
+		} else {
+			logRouteDiagnostic(req, "channel_failed_no_more_candidates",
+				"channel", channelLogID(channel),
+				"index", strconv.Itoa(index),
+				"reason", effErr.Error())
 		}
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no usable channel for model %q", req.ModelID)
 	}
 	return lastErr
+}
+
+// channelLogID 返回用于诊断日志的渠道标识（ID + 展示名，去空白）。
+// 仅暴露渠道自身信息，不含 API key 等敏感字段。
+func channelLogID(channel *legacyruntime.ResolvedChannel) string {
+	if channel == nil {
+		return ""
+	}
+	id := strings.TrimSpace(channel.ID)
+	name := strings.TrimSpace(channel.Name)
+	if name == "" || name == id {
+		return id
+	}
+	return id + " (" + name + ")"
+}
+
+// logRouteDiagnostic 打一条路由诊断日志（审计 B8）。统一前缀 router.diagnostic
+// + 关联字段（requestID/conversationID/modelID），便于在 app.log 里按请求 grep 追踪
+// "候选选择 → 熔断跳过 → failover → 流中途失败 → 成功命中"整条链路。失败不阻断主流程。
+func logRouteDiagnostic(req StreamRequest, event string, kv ...string) {
+	fields := make([]string, 0, 6+len(kv))
+	fields = append(fields,
+		"event="+event,
+		"request_id="+strings.TrimSpace(req.RequestID),
+		"conversation_id="+strings.TrimSpace(req.ConversationID),
+		"model="+strings.TrimSpace(req.ModelID),
+	)
+	// kv 是 key,value 交替对，规整成 key=value。
+	for i := 0; i+1 < len(kv); i += 2 {
+		k := strings.TrimSpace(kv[i])
+		v := strings.TrimSpace(kv[i+1])
+		if k == "" {
+			continue
+		}
+		fields = append(fields, k+"="+v)
+	}
+	log.Printf("router.diagnostic %s", strings.Join(fields, " "))
 }
 
 // orderCandidates 把熔断中（IsAvailable==false）的候选排到末尾，保留兜底。
