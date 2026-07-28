@@ -43,8 +43,9 @@ type ProxyService struct {
 	// cursorSettingsApplied 表示当前是否已完成宿主代理设置注入。
 	cursorSettingsApplied bool
 
-	// configMu 表示当前声明中的 configMu。
-	configMu sync.Mutex
+	// lifecycleMu 串行化 Start/Stop/Save（F-35），此前声明为 configMu 但调用链未使用，
+	// 导致三入口可并发产生数据竞争与半完成状态。
+	lifecycleMu sync.Mutex
 	// configPath 表示当前声明中的 configPath。
 	configPath string
 	// store 表示统一的配置存储。

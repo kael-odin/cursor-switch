@@ -44,6 +44,9 @@ func (s *ProxyService) SaveUserConfig(cfg UserConfig) error {
 	if s == nil {
 		return nil
 	}
+	// F-35：串行化 Start/Stop/Save，避免 Save 与 Start/Stop 并发改 store + rebuild。
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	app := application.Get()
 	ctx := context.Background()
 	if app != nil {

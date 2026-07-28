@@ -85,7 +85,12 @@ func (host *Host) SaveConfig(ctx context.Context, cfg serverconfig.Config) (serv
 	if err != nil {
 		return serverconfig.Config{}, err
 	}
-	if host.httpServer == nil {
+	// F-35：读 httpServer 在 runMu 内，与 Start/Stop 串行（此前未持锁读造成数据竞争）。
+	// rebuild 自带 runMu.Lock()，故此处只在锁内读状态、锁外决定是否 rebuild，避免嵌套。
+	host.runMu.Lock()
+	needsRebuild := host.httpServer == nil
+	host.runMu.Unlock()
+	if needsRebuild {
 		if rebuildErr := host.rebuild(normalized); rebuildErr != nil {
 			return serverconfig.Config{}, rebuildErr
 		}

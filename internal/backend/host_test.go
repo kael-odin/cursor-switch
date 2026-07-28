@@ -1,9 +1,14 @@
 package backend
 
 import (
+	"context"
 	"net/url"
+	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
+	"cursor/internal/appdata"
 	serverconfig "cursor/internal/backend/server/config"
 )
 
@@ -65,4 +70,45 @@ func TestRoutingTabServerBaseURLNormalized(t *testing.T) {
 	if def.Routing.TabServerBaseURL != "" {
 		t.Errorf("DefaultConfig TabServerBaseURL = %q, want empty (disabled by default)", def.Routing.TabServerBaseURL)
 	}
+}
+
+// newTestHost 构造一个指向临时配置目录的 Host，用于 F-35 并发测试。
+func newTestHost(t *testing.T) *Host {
+	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp) // appdata.RootDir 从 HOME 推导
+	if err := appdata.EnsureAssistantHome(); err != nil {
+		t.Fatalf("EnsureAssistantHome: %v", err)
+	}
+	store := serverconfig.NewStore(filepath.Join(appdata.ConfigFilePath()), filepath.Join(appdata.LogsRootPath()))
+	host, err := NewHost(store)
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	return host
+}
+
+// TestSaveConfigVsStartNoRace (F-35) 验证 SaveConfig 读 httpServer 在 runMu 内，
+// 与并发 Start 不产生 data race。用 -race 跑时若 SaveConfig 未持锁读 httpServer 会触发告警。
+func TestSaveConfigVsStartNoRace(t *testing.T) {
+	host := newTestHost(t)
+	ctx := context.Background()
+	cfg := host.configs.Current()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = host.Start()
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = host.SaveConfig(ctx, cfg)
+		}()
+	}
+	wg.Wait()
+	stopCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	_ = host.Stop(stopCtx)
 }

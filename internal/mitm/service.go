@@ -58,6 +58,10 @@ type ProxyServer struct {
 	httpServer *http.Server
 	// serveErrCh 表示当前声明中的 serveErrCh。
 	serveErrCh chan error
+	// connMu 保护 conns 注册表（F-14）。独立于 runMu，避免 ConnState 回调与 Stop 死锁。
+	connMu sync.Mutex
+	// conns 跟踪所有入站连接（含 hijacked CONNECT 隧道）。F-14：Stop 后强制关闭残留。
+	conns map[net.Conn]struct{}
 }
 
 // Snapshot 定义了当前模块中的 Snapshot 类型。
@@ -199,6 +203,7 @@ func NewProxyServer(addr, baseURL, _ string, _ string, certManager *certs.Manage
 		certManager:  certManager,
 		baseEndpoint: u,
 		relayProof:   proof,
+		conns:        make(map[net.Conn]struct{}),
 		upstreamClient: &http.Client{
 			Transport: &http.Transport{
 				DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -304,12 +309,18 @@ func (s *ProxyServer) Start() error {
 		WriteTimeout:      0, // 流式响应不能整体限时，靠 idle watchdog 管
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1 MiB 头上限
+		// F-14：跟踪所有入站连接，用于 Stop 时强制关闭 hijacked CONNECT 隧道。
+		// StateHijacked 是终态（不转 StateClosed），hijacked 隧道由 goproxy io.Copy 持有、
+		// http.Server.Shutdown 不会关闭它们，故保留在注册表中由 Stop 显式关闭。
+		ConnState: s.handleConnState,
 	}
 
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return err
 	}
+	// 记录实际绑定地址（s.addr 可能是 :0），供 Snapshot/IsRunning 返回真实监听端口。
+	s.addr = ln.Addr().String()
 
 	s.httpServer = httpServer
 	s.serveErrCh = make(chan error, 1)
@@ -340,13 +351,69 @@ func (s *ProxyServer) Start() error {
 func (s *ProxyServer) Stop(ctx context.Context) error {
 	s.runMu.Lock()
 	httpServer := s.httpServer
-	if httpServer == nil {
-		s.runMu.Unlock()
-		return nil
-	}
 	s.httpServer = nil
 	s.runMu.Unlock()
-	return httpServer.Shutdown(ctx)
+	if httpServer == nil {
+		return nil
+	}
+	// Shutdown 排干监听器与非 hijacked 活动请求；hijacked CONNECT 隧道由 goproxy 持有，
+	// http.Server 不再管理（StateHijacked 是终态），Shutdown 不会关闭它们。
+	shutdownErr := httpServer.Shutdown(ctx)
+	// F-14：强制关闭残留 hijacked CONNECT 隧道，杜绝"停止代理后旧隧道继续转发"。
+	s.closeAllConns()
+	return shutdownErr
+}
+
+// handleConnState 是 http.Server.ConnState 回调，维护活动连接注册表（F-14）。
+// StateNew 注册；StateClosed 移除；StateHijacked 保留（隧道需由 Stop 显式关闭）；
+// StateActive/StateIdle no-op（已在注册表中）。
+func (s *ProxyServer) handleConnState(c net.Conn, state http.ConnState) {
+	switch state {
+	case http.StateNew:
+		s.registerConn(c)
+	case http.StateClosed:
+		s.unregisterConn(c)
+	}
+}
+
+func (s *ProxyServer) registerConn(c net.Conn) {
+	if c == nil {
+		return
+	}
+	s.connMu.Lock()
+	s.conns[c] = struct{}{}
+	s.connMu.Unlock()
+}
+
+func (s *ProxyServer) unregisterConn(c net.Conn) {
+	if c == nil {
+		return
+	}
+	s.connMu.Lock()
+	delete(s.conns, c)
+	s.connMu.Unlock()
+}
+
+// closeAllConns 强制关闭所有仍在注册表中的连接（主要是 hijacked CONNECT 隧道）。
+// 用 SetDeadline(time.Now()) 触发阻塞在 io.Copy 的隧道退出（比直接 Close 更稳，
+// 让 goproxy 的 io.Copy 循环收到 deadline 错误自行退出并 defer 关闭 conn），
+// 再兜底 Close 处理无响应的对端。
+func (s *ProxyServer) closeAllConns() {
+	s.connMu.Lock()
+	snapshot := make([]net.Conn, 0, len(s.conns))
+	for c := range s.conns {
+		snapshot = append(snapshot, c)
+	}
+	s.conns = make(map[net.Conn]struct{}, 0)
+	s.connMu.Unlock()
+	if len(snapshot) == 0 {
+		return
+	}
+	logger.Infof("forced_close_active_conns count=%d", len(snapshot))
+	for _, c := range snapshot {
+		_ = c.SetDeadline(time.Now())
+		_ = c.Close()
+	}
 }
 
 // IsRunning 用于处理与 IsRunning 相关的逻辑。
