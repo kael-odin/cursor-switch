@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"cursor/gen/agentv1"
+	"cursor/internal/securefile"
 )
 
 type debugLogConfig interface {
@@ -156,15 +157,17 @@ func (recorder *debugRecorder) appendJSONL(ctx context.Context, requestID string
 	}
 	recorder.mu.Lock()
 	defer recorder.mu.Unlock()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// F-18：debug JSONL 含完整请求体（消息/上下文/工具参数），目录 0700、文件 0600。
+	if err := securefile.MkdirAll(dir); err != nil {
 		return
 	}
-	file, err := os.OpenFile(filepath.Join(dir, filename), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	file, err := os.OpenFile(filepath.Join(dir, filename), os.O_CREATE|os.O_WRONLY|os.O_APPEND, securefile.FileMode)
 	if err != nil {
 		return
 	}
 	defer file.Close()
 	_, _ = file.Write(append(payload, '\n'))
+	_ = securefile.EnsureMode(filepath.Join(dir, filename), securefile.FileMode)
 }
 
 func (recorder *debugRecorder) debugDir(requestID string, conversationID string) string {

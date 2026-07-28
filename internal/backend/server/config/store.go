@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 
+	"cursor/internal/securefile"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -173,7 +175,8 @@ func (store *Store) Update(_ context.Context, mutator func(*Config) error) (Conf
 }
 
 func (store *Store) saveLocked(normalized Config) error {
-	if err := os.MkdirAll(filepath.Dir(store.path), 0o755); err != nil {
+	// F-18：config.yaml 含 API key / 自定义认证头，目录 0700、文件 0600。
+	if err := securefile.MkdirAll(filepath.Dir(store.path)); err != nil {
 		return fmt.Errorf("创建用户配置目录失败: %w", err)
 	}
 
@@ -182,13 +185,12 @@ func (store *Store) saveLocked(normalized Config) error {
 		return fmt.Errorf("序列化用户配置失败: %w", err)
 	}
 
+	// F-18：原子写 + 0600 权限，写后 EnsureMode 收紧既有宽松文件（旧版 0644）。
 	tempPath := store.path + ".tmp"
-	if err := os.WriteFile(tempPath, data, 0o644); err != nil {
-		return fmt.Errorf("写入临时配置失败: %w", err)
+	if err := securefile.WriteViaTemp(store.path, ".tmp", data); err != nil {
+		return fmt.Errorf("写入配置失败: %w", err)
 	}
-	if err := os.Rename(tempPath, store.path); err != nil {
-		return fmt.Errorf("保存用户配置失败: %w", err)
-	}
+	_ = tempPath // WriteViaTemp 自管临时文件
 	return nil
 }
 

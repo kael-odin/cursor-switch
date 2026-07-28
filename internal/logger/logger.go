@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"cursor/internal/appdata"
+	"cursor/internal/securefile"
 
 	"github.com/lmittmann/tint"
 	"github.com/mattn/go-colorable"
@@ -180,10 +181,12 @@ func (writer *lineWindowFileWriter) Write(payload []byte) (int, error) {
 }
 
 func (writer *lineWindowFileWriter) openLocked() error {
-	file, err := os.OpenFile(writer.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	// F-18：app.log 可能含敏感调试信息，0600 创建；既有 0644 文件由启动迁移 EnsureTree 收紧。
+	file, err := os.OpenFile(writer.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, securefile.FileMode)
 	if err != nil {
 		return err
 	}
+	_ = securefile.EnsureMode(writer.path, securefile.FileMode)
 	writer.file = file
 	logFile = file
 	return nil
@@ -204,7 +207,8 @@ func (writer *lineWindowFileWriter) trimToLastLinesLocked(targetLines int) error
 		return err
 	}
 	trimmed, lineCount := lastLinesBytes(payload, targetLines)
-	if err := os.WriteFile(writer.path, trimmed, 0o644); err != nil {
+	// F-18：trim 后写回保持 0600。
+	if err := os.WriteFile(writer.path, trimmed, securefile.FileMode); err != nil {
 		if reopenErr := writer.openLocked(); reopenErr != nil {
 			return errors.Join(err, reopenErr)
 		}

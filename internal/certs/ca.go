@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"cursor/internal/securefile"
+
 	"github.com/denisbrodbeck/machineid"
 )
 
@@ -199,28 +201,92 @@ func loadCAFromPEM(certPEM, keyPEM []byte) (*x509.Certificate, crypto.PrivateKey
 		return nil, nil, errors.New("invalid CA key PEM")
 	}
 
+	var caKey crypto.PrivateKey
 	switch keyBlock.Type {
 	case "RSA PRIVATE KEY":
 		key, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
 		if err != nil {
 			return nil, nil, err
 		}
-		return caCert, key, nil
+		caKey = key
 	case "EC PRIVATE KEY":
 		key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
 		if err != nil {
 			return nil, nil, err
 		}
-		return caCert, key, nil
+		caKey = key
 	case "PRIVATE KEY":
 		key, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
 		if err != nil {
 			return nil, nil, err
 		}
-		return caCert, key, nil
+		caKey = key
 	default:
 		return nil, nil, errors.New("unsupported CA key format")
 	}
+
+	// F-12：加载后校验 CA 属性，防用户把"叶子证书"或"过期/损坏 CA"当 CA 用，
+	// 导致 leaf 签发静默失败或签出无效证书。
+	if err := validateCALoaded(caCert, caKey); err != nil {
+		return nil, nil, err
+	}
+	return caCert, caKey, nil
+}
+
+// validateCALoaded 校验加载到的 CA 证书 + 私钥对满足 CA 使用前提（F-12）：
+//   - 公私钥匹配：证书的 PublicKey 与从私钥导出的公钥一致。不匹配说明 cert/key 来自不同对，
+//     用此 key 签发的 leaf 不会被此 cert 验证通过。
+//   - IsCA=true 且 KeyUsage 含 CertSign：CA 必须具备签发能力。
+//   - NotAfter 未过期：过期 CA 签发的 leaf 在多数 TLS 校验链里会连带失败。
+//
+// 不匹配/非 CA/过期均拒绝，调用方（EnsureMachineCA）会落到重新生成路径。
+func validateCALoaded(caCert *x509.Certificate, caKey crypto.PrivateKey) error {
+	if !caCert.IsCA {
+		return errors.New("CA cert is not a CA (IsCA=false)")
+	}
+	if caCert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return errors.New("CA cert lacks KeyUsageCertSign")
+	}
+	if time.Now().After(caCert.NotAfter) {
+		return fmt.Errorf("CA cert expired at %s", caCert.NotAfter.Format(time.RFC3339))
+	}
+	if err := validateKeyPairMatch(caCert, caKey); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateKeyPairMatch 比对证书公钥与私钥导出公钥，确认两者属同一密钥对。
+func validateKeyPairMatch(caCert *x509.Certificate, caKey crypto.PrivateKey) error {
+	switch pub := caCert.PublicKey.(type) {
+	case *rsa.PublicKey:
+		priv, ok := caKey.(*rsa.PrivateKey)
+		if !ok {
+			return errors.New("CA cert is RSA but key is not RSA private key")
+		}
+		if pub.N.Cmp(priv.N) != 0 || pub.E != priv.E {
+			return errors.New("CA cert/key public key mismatch (RSA)")
+		}
+	case *ecdsa.PublicKey:
+		priv, ok := caKey.(*ecdsa.PrivateKey)
+		if !ok {
+			return errors.New("CA cert is ECDSA but key is not ECDSA private key")
+		}
+		if pub.X.Cmp(priv.X) != 0 || pub.Y.Cmp(priv.Y) != 0 {
+			return errors.New("CA cert/key public key mismatch (ECDSA)")
+		}
+	case ed25519.PublicKey:
+		priv, ok := caKey.(ed25519.PrivateKey)
+		if !ok {
+			return errors.New("CA cert is Ed25519 but key is not Ed25519 private key")
+		}
+		if !pub.Equal(priv.Public()) {
+			return errors.New("CA cert/key public key mismatch (Ed25519)")
+		}
+	default:
+		return errors.New("unsupported CA public key type")
+	}
+	return nil
 }
 
 // normalizeHost 用于处理与 normalizeHost 相关的逻辑。
@@ -243,13 +309,25 @@ func EnsureMachineCA(certPath, keyPath string) (certPEM, keyPEM []byte, err erro
 	if certPath == "" || keyPath == "" {
 		return nil, nil, errors.New("ca cert/key path is empty")
 	}
-	if err := os.MkdirAll(filepath.Dir(certPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(certPath), 0o700); err != nil {
 		return nil, nil, fmt.Errorf("create ca dir: %w", err)
 	}
 
+	// F-18：CA 目录收紧到 0700（含 cert 和 key），防止其他本地用户进入目录。
+	_ = securefile.EnsureMode(filepath.Dir(certPath), 0o700)
+
 	existingCert, existingKey, loadErr := loadCAPEMFromFiles(certPath, keyPath)
 	if loadErr == nil {
-		return existingCert, existingKey, nil
+		// F-12：既有文件能解析——loadCAFromPEM 会做 IsCA/KeyUsage/NotAfter/公私钥匹配校验，
+		// 校验失败 loadErr != nil 走到下面重新生成。成功则返回。
+		if _, _, err := loadCAFromPEM(existingCert, existingKey); err != nil {
+			// 既有 CA 已损坏/过期/不匹配：备份后重建，不静默覆盖。
+			_ = os.Rename(certPath, certPath+".corrupt.bak")
+			_ = os.Rename(keyPath, keyPath+".corrupt.bak")
+			loadErr = err
+		} else {
+			return existingCert, existingKey, nil
+		}
 	}
 	// 部分存在（只有证书或只有私钥）视为损坏，重新生成覆盖。
 	if !os.IsNotExist(loadErr) && !errors.Is(loadErr, os.ErrNotExist) {
@@ -297,12 +375,30 @@ func EnsureMachineCA(certPath, keyPath string) (certPEM, keyPEM []byte, err erro
 		return nil, nil, fmt.Errorf("marshal ca key: %w", err)
 	}
 
-	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+	// F-12：原子写——先写临时文件再 rename，防止写一半崩溃留下半截 CA。
+	// cert 公开可读（0644），key 仅属主（0600，沿用既有）；目录 0700。
+	tempCert := certPath + ".tmp"
+	tempKey := keyPath + ".tmp"
+	if err := os.WriteFile(tempCert, certPEM, 0o644); err != nil {
+		_ = os.Remove(tempCert)
+		_ = os.Remove(tempKey)
 		return nil, nil, fmt.Errorf("write ca cert: %w", err)
 	}
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
-		_ = os.Remove(certPath)
+	if err := os.WriteFile(tempKey, keyPEM, 0o600); err != nil {
+		_ = os.Remove(tempCert)
+		_ = os.Remove(tempKey)
 		return nil, nil, fmt.Errorf("write ca key: %w", err)
+	}
+	// F-18：key 显式 chmod 0600，收紧既有或被 umask 放宽的情况。
+	_ = securefile.EnsureMode(tempKey, 0o600)
+	if err := os.Rename(tempCert, certPath); err != nil {
+		_ = os.Remove(tempCert)
+		_ = os.Remove(tempKey)
+		return nil, nil, fmt.Errorf("rename ca cert: %w", err)
+	}
+	if err := os.Rename(tempKey, keyPath); err != nil {
+		_ = os.Remove(tempKey)
+		return nil, nil, fmt.Errorf("rename ca key: %w", err)
 	}
 
 	// 复用既有校验路径，确保写盘的 CA 能被正常加载。
