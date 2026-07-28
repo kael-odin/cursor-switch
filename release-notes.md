@@ -1,3 +1,18 @@
+# 2.0.4
+
+## Token 口径异常修复（消除 487 条误报 + 成本低估）
+
+- **根因**：usage.json 落盘的 `input` token 在两类 adapter 里都已折算成 **fresh_input**——Anthropic adapter 原样存 API 返回的 `input_tokens`（本就只算非缓存部分），OpenAI adapter 存 `prompt_tokens - cached_tokens`。所有 OpenAI 兼容 provider（DeepSeek/Gemini/Grok/Kimi/Qwen/GLM/MiniMax/MiMo/Doubao/…）都经 openai.go 同一条路，落盘 input 一律 fresh。但内置 seed 价目表此前把 OpenAI 标 `TOTAL`（假设 input 含 cache_read+cache_write）、Anthropic 标 `legacy`（假设 input 含 cache_read），与落盘口径**矛盾**——`billableInputTokens` 走 TOTAL/legacy 分支重复扣 cache（clamp 到 0）导致成本低估，`isCalibrationAnomaly` 走 TOTAL/legacy 分支几乎对每条带缓存的请求误判异常（input 恒小于 cacheRead+cacheWrite），仪表盘持续红字「⚠ 检测到 487 条请求存在成本口径异常」。
+- **修复**：内置 seed 全部改标 `FRESH`（与 adapter 落盘口径一致）。`billableInputTokens` FRESH 分支原样返回 input → 成本 = fresh_input×input 价 + cacheRead×cacheRead 价 + cacheWrite×cacheWrite 价，缓存部分各计一次；`isCalibrationAnomaly` FRESH 分支恒 false → 误报清零。等价 cc-switch 在 SQL 数据层把所有 provider 归一 fresh_input 的做法，区别是 cursor-switch 在 adapter 落盘时归一、计算层按 FRESH 直读。
+- **老用户迁移**：`normalizePricingConfig` 给命中 seed 的内置记录把残留 TOTAL/legacy 语义迁到 seed 当前值（FRESH），仅迁语义标签不动用户编辑过的价格/倍率；自定义模型（非 seed）的语义原样保留。确保老用户磁盘配置里的 `gpt-5.6-sol: TOTAL`、`claude-opus-5: legacy` 升级后自动生效，487 条误报立即消失。逻辑删除（Disabled）的内置记录同样迁移，恢复默认价后语义正确。
+- **测试**：`TestSeedPricingAllFresh`（seed 全 FRESH 回归保险）、`TestNormalizeMigratesBuiltinSemanticsToFresh`（TOTAL→FRESH 迁移 + 价格保留 + 自定义模型不迁）、`TestDisabledBuiltinAlsoMigratedToFresh`（禁用记录也迁）。原 `TestMergeUserPatchPreservesPricing` 改用非 seed 模型 `my-custom-model`，避免被迁移干扰真正测出「用户 pricing 编辑被保留」契约。
+- **未动**：adapter 落盘逻辑、usage.json 历史数据、`billableInputTokens`/`realTotalTokensForModel`/`isCalibrationAnomaly` 计算分支全不动——只改 seed 标注 + 加迁移。TOTAL/legacy 语义保留在计算层供自定义模型按其 provider 原始口径标注（罕见，adapter 已统一归一）。
+
+## 定价管理编辑 UX 优化
+
+- **编辑器自动滚入视口**：此前点「编辑」后编辑 UI 出现在表格最下方，长列表滚动条不自动到底，用户误以为点击无效。现 `openEdit`/`openAdd` 在 `nextTick` 后把编辑器 `scrollIntoView({block:'center'})` 并聚焦首个可编辑输入框，编辑器加蓝色 ring 高亮，打开即明确可见可输入。
+- **表格价格行内直接编辑**：输入/输出/缓存读/缓存写 四列价格单元格可点击就地变 input，回车保存 / Esc 取消 / 失焦保存。规避「点编辑滚到底下找表单」的来回，常用微调（改输入价/缓存价）就地完成。modelId/displayName 不开放行内编辑（是键/标识，仍走下方完整编辑器）。重入保护防 Enter+blur 双发请求。
+
 # 2.0.3
 
 ## 按路由面覆盖（per-namespace 路由）

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import Button from "@/components/ui/Button.vue";
 import Input from "@/components/ui/Input.vue";
@@ -27,6 +27,10 @@ const editorIsNew = ref(true);
 const editorForm = ref(emptyForm());
 const editorError = ref("");
 const saving = ref(false);
+// 编辑器 section 的 ref：openEdit/openAdd 后 nextTick 把它滚进视口 + 聚焦首个输入框，
+// 避免「点了编辑没反应」的错觉（编辑器出现在表格下方，长列表时需滚动才可见）。
+const editorSectionRef = ref(null);
+const firstFieldRef = ref(null);
 
 const multiplierInput = ref("1");
 const multiplierDirty = ref(false);
@@ -70,6 +74,7 @@ function openAdd() {
   editorForm.value = emptyForm();
   editorError.value = "";
   editorVisible.value = true;
+  focusEditor();
 }
 
 function openEdit(model) {
@@ -84,6 +89,23 @@ function openEdit(model) {
   };
   editorError.value = "";
   editorVisible.value = true;
+  focusEditor();
+}
+
+// 编辑器出现在表格下方，长列表时不在视口内——打开后滚进视口并聚焦首个可编辑输入框，
+// 让用户立刻看到「点击编辑」确实展开了编辑 UI，不再误以为点击无效。
+// nextTick 等 v-if 渲染出 DOM 后再操作。
+function focusEditor() {
+  nextTick(() => {
+    const section = editorSectionRef.value;
+    if (!section) return;
+    section.scrollIntoView({ behavior: "smooth", block: "center" });
+    // 聚焦首个可编辑 input（编辑态 modelId 禁用，故跳过 disabled）。
+    const input =
+      section.querySelector("input:not([disabled])") ||
+      section.querySelector("textarea:not([disabled])");
+    if (input) input.focus();
+  });
 }
 
 function closeEditor() {
@@ -188,6 +210,76 @@ function formatPrice(v) {
   return n.toFixed(n > 0 && n < 1 ? 4 : 2);
 }
 
+// 行内直接编辑表格价格单元格：点价格 → 该格变 input → 回车/失焦保存。
+// 规避「点编辑滚到底下找表单」的来回，常用微调（改输入价/缓存价）就地完成。
+// modelId/displayName 不开放行内编辑（是键/标识，仍走下方编辑器）。
+const inlineEdit = ref({ modelId: "", field: "", value: "" });
+const inlineSaving = ref(false);
+
+function startInlineEdit(model, field) {
+  if (inlineSaving.value) return;
+  inlineEdit.value = { modelId: model.modelId, field, value: String(model[field] ?? "") };
+  nextTick(() => {
+    // 聚焦刚出现的 input 并全选，方便直接覆盖输入。
+    // 用 data-row + data-field 精确定位当前行的当前字段，避免多行同字段歧义。
+    const el = document.querySelector(
+      `[data-row="${cssEscape(model.modelId)}"][data-field="${field}"] input`,
+    );
+    if (el) {
+      el.focus();
+      el.select();
+    }
+  });
+}
+
+// cssEscape 转义 modelId 里的特殊字符用于 attribute 选择器（modelId 可能含 / . : 等）。
+function cssEscape(s) {
+  return (window.CSS && window.CSS.escape) ? window.CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&");
+}
+
+function cancelInlineEdit() {
+  inlineEdit.value = { modelId: "", field: "", value: "" };
+}
+
+async function commitInlineEdit(model) {
+  const { modelId, field, value } = inlineEdit.value;
+  if (!modelId || !field) return;
+  // 重入保护：Enter 会触发 commit，随后 input 卸载又触发 blur→commit，避免双发请求。
+  // 先清 inlineEdit 使第二次调用命中顶部 guard 直接返回。
+  cancelInlineEdit();
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0) {
+    errorMsg.value = `${field} 必须是 ≥ 0 的数字`;
+    return;
+  }
+  if (num === Number(model[field] ?? 0)) {
+    // 未改动，不请求。
+    return;
+  }
+  // UpdateModelPricing 是整记录覆盖（后端把 0 也当有效价写盘），故须用行现值补齐全部四价，
+  // 仅替换当前编辑字段。
+  const payload = {
+    modelId,
+    displayName: model.displayName || modelId,
+    inputPerMillion: Number(model.inputPerMillion) || 0,
+    outputPerMillion: Number(model.outputPerMillion) || 0,
+    cacheReadPerMillion: Number(model.cacheReadPerMillion) || 0,
+    cacheWritePerMillion: Number(model.cacheWritePerMillion) || 0,
+  };
+  payload[field] = num;
+  inlineSaving.value = true;
+  errorMsg.value = "";
+  try {
+    await updateModelPricing(payload);
+    cancelInlineEdit();
+    await refresh();
+  } catch (e) {
+    errorMsg.value = `保存失败: ${e?.message ?? e}`;
+  } finally {
+    inlineSaving.value = false;
+  }
+}
+
 onMounted(refresh);
 </script>
 
@@ -271,10 +363,78 @@ onMounted(refresh);
                   >
                 </td>
                 <td class="px-3 py-2">{{ m.displayName }}</td>
-                <td class="px-3 py-2 text-right tabular-nums">{{ formatPrice(m.inputPerMillion) }}</td>
-                <td class="px-3 py-2 text-right tabular-nums">{{ formatPrice(m.outputPerMillion) }}</td>
-                <td class="px-3 py-2 text-right tabular-nums">{{ formatPrice(m.cacheReadPerMillion) }}</td>
-                <td class="px-3 py-2 text-right tabular-nums">{{ formatPrice(m.cacheWritePerMillion) }}</td>
+                <td
+                  class="px-3 py-2 text-right tabular-nums"
+                  :class="m.disabled ? '' : 'cursor-text hover:bg-[#262626]'"
+                  :data-row="m.modelId"
+                  data-field="inputPerMillion"
+                  @click="m.disabled ? null : startInlineEdit(m, 'inputPerMillion')"
+                >
+                  <Input
+                    v-if="!m.disabled && inlineEdit.modelId === m.modelId && inlineEdit.field === 'inputPerMillion'"
+                    v-model="inlineEdit.value"
+                    type="number"
+                    class="!w-20"
+                    @blur="commitInlineEdit(m)"
+                    @keyup.enter="commitInlineEdit(m)"
+                    @keyup.esc="cancelInlineEdit"
+                  />
+                  <span v-else>{{ formatPrice(m.inputPerMillion) }}</span>
+                </td>
+                <td
+                  class="px-3 py-2 text-right tabular-nums"
+                  :class="m.disabled ? '' : 'cursor-text hover:bg-[#262626]'"
+                  :data-row="m.modelId"
+                  data-field="outputPerMillion"
+                  @click="m.disabled ? null : startInlineEdit(m, 'outputPerMillion')"
+                >
+                  <Input
+                    v-if="!m.disabled && inlineEdit.modelId === m.modelId && inlineEdit.field === 'outputPerMillion'"
+                    v-model="inlineEdit.value"
+                    type="number"
+                    class="!w-20"
+                    @blur="commitInlineEdit(m)"
+                    @keyup.enter="commitInlineEdit(m)"
+                    @keyup.esc="cancelInlineEdit"
+                  />
+                  <span v-else>{{ formatPrice(m.outputPerMillion) }}</span>
+                </td>
+                <td
+                  class="px-3 py-2 text-right tabular-nums"
+                  :class="m.disabled ? '' : 'cursor-text hover:bg-[#262626]'"
+                  :data-row="m.modelId"
+                  data-field="cacheReadPerMillion"
+                  @click="m.disabled ? null : startInlineEdit(m, 'cacheReadPerMillion')"
+                >
+                  <Input
+                    v-if="!m.disabled && inlineEdit.modelId === m.modelId && inlineEdit.field === 'cacheReadPerMillion'"
+                    v-model="inlineEdit.value"
+                    type="number"
+                    class="!w-20"
+                    @blur="commitInlineEdit(m)"
+                    @keyup.enter="commitInlineEdit(m)"
+                    @keyup.esc="cancelInlineEdit"
+                  />
+                  <span v-else>{{ formatPrice(m.cacheReadPerMillion) }}</span>
+                </td>
+                <td
+                  class="px-3 py-2 text-right tabular-nums"
+                  :class="m.disabled ? '' : 'cursor-text hover:bg-[#262626]'"
+                  :data-row="m.modelId"
+                  data-field="cacheWritePerMillion"
+                  @click="m.disabled ? null : startInlineEdit(m, 'cacheWritePerMillion')"
+                >
+                  <Input
+                    v-if="!m.disabled && inlineEdit.modelId === m.modelId && inlineEdit.field === 'cacheWritePerMillion'"
+                    v-model="inlineEdit.value"
+                    type="number"
+                    class="!w-20"
+                    @blur="commitInlineEdit(m)"
+                    @keyup.enter="commitInlineEdit(m)"
+                    @keyup.esc="cancelInlineEdit"
+                  />
+                  <span v-else>{{ formatPrice(m.cacheWritePerMillion) }}</span>
+                </td>
                 <td class="whitespace-nowrap px-3 py-2 text-center">
                   <Button variant="text" @click="openEdit(m)">编辑</Button>
                   <Button v-if="m.disabled" variant="text" @click="confirmRestore(m)">恢复默认价</Button>
@@ -287,17 +447,21 @@ onMounted(refresh);
           </table>
         </div>
         <p class="mt-2 text-xs text-[#737373]">
-          内置标准价目表来自公开模型定价；点「编辑」可改任意模型价格，点「+ 添加自定义模型」可为你接入的第三方模型设价。
+          内置标准价目表来自公开模型定价。<span class="text-[#a3a3a3]">直接点击表格中的价格格即可就地修改</span>（回车保存 / Esc 取消），点「编辑」可改模型 ID / 显示名等全部字段，点「+ 添加自定义模型」可为你接入的第三方模型设价。
         </p>
       </section>
 
       <section
         v-if="editorVisible"
-        class="mb-6 rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] p-4"
+        ref="editorSectionRef"
+        class="mb-6 rounded-lg border border-[#3a3a3a] bg-[#1a1a1a] p-4 shadow-[0_0_0_1px_rgba(96,165,250,0.15)] ring-1 ring-blue-500/20"
       >
-        <h3 class="mb-3 text-base font-medium text-[#e5e5e5]">
+        <h3 class="mb-1 text-base font-medium text-[#e5e5e5]">
           {{ editorIsNew ? "添加模型定价" : "编辑模型定价" }}
         </h3>
+        <p class="mb-3 text-xs text-[#737373]">
+          {{ editorIsNew ? "填入新模型的价格后点「添加」。" : "修改价格后点「保存」生效。" }}
+        </p>
         <div class="grid grid-cols-2 gap-3">
           <label class="block">
             <span class="text-xs text-[#a3a3a3]">模型 ID</span>

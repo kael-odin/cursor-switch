@@ -180,6 +180,10 @@ func validAdapter(displayName, modelID string) ModelAdapterConfig {
 
 // TestMergeUserPatchPreservesPricing 验证前端整包 patch 不携带 pricing 时，
 // merge 保留磁盘 pricing（S15 的 InputTokenSemantics 等靠此保留）。
+//
+// 注意：测试模型用自定义 id "my-custom-model"（不在 seed 表里），避免被
+// normalizePricingConfig 的内置口径迁移（命中 seed 的记录语义会被迁到 seed 当前值）。
+// 用非 seed 模型才能真正测出"用户 pricing 编辑被原样保留"这一 S15 契约。
 func TestMergeUserPatchPreservesPricing(t *testing.T) {
 	store := NewStore(t.TempDir()+"/config.yaml", "")
 	ctx := context.Background()
@@ -189,7 +193,7 @@ func TestMergeUserPatchPreservesPricing(t *testing.T) {
 	base.Pricing = PricingConfig{
 		DefaultCostMultiplier: "1.5",
 		Models: []ModelPricing{
-			{ModelID: "gpt-5", InputPerMillion: "5", OutputPerMillion: "25", InputTokenSemantics: "TOTAL"},
+			{ModelID: "my-custom-model", InputPerMillion: "5", OutputPerMillion: "25", InputTokenSemantics: "TOTAL"},
 		},
 	}
 	base.ModelAdapters = []ModelAdapterConfig{validAdapter("A", "gpt-5")}
@@ -215,19 +219,19 @@ func TestMergeUserPatchPreservesPricing(t *testing.T) {
 		t.Errorf("F-02 FAIL: pricing.DefaultCostMultiplier lost (got %q)", merged.Pricing.DefaultCostMultiplier)
 	}
 	// NormalizeConfig 会把内置 seed 价目表补进 Pricing.Models（INSERT OR IGNORE 语义），
-	// 所以这里不能断言 len==1；改断言用户编辑过的 gpt-5 条目（含 InputTokenSemantics）保留。
-	var gpt5 *ModelPricing
+	// 所以这里不能断言 len==1；改断言用户编辑过的 my-custom-model 条目（含 InputTokenSemantics）保留。
+	var custom *ModelPricing
 	for i := range merged.Pricing.Models {
-		if merged.Pricing.Models[i].ModelID == "gpt-5" {
-			gpt5 = &merged.Pricing.Models[i]
+		if merged.Pricing.Models[i].ModelID == "my-custom-model" {
+			custom = &merged.Pricing.Models[i]
 			break
 		}
 	}
-	if gpt5 == nil {
-		t.Fatalf("F-02 FAIL: user-edited pricing entry gpt-5 lost entirely")
+	if custom == nil {
+		t.Fatalf("F-02 FAIL: user-edited pricing entry my-custom-model lost entirely")
 	}
-	if gpt5.InputPerMillion != "5" || gpt5.OutputPerMillion != "25" || gpt5.InputTokenSemantics != "TOTAL" {
-		t.Errorf("F-02 FAIL: gpt-5 pricing fields lost (got %+v)", gpt5)
+	if custom.InputPerMillion != "5" || custom.OutputPerMillion != "25" || custom.InputTokenSemantics != "TOTAL" {
+		t.Errorf("F-02 FAIL: my-custom-model pricing fields lost (got %+v)", custom)
 	}
 }
 
