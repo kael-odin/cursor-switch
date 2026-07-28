@@ -1,6 +1,27 @@
 # 未发布
 
-## 多 provider 故障转移候选链 + 熔断器接入（B2 + A1）
+# 2.0.0
+
+## 安全审计完整收尾 · 生产级路由 · 成本精确化
+
+2.0.0 是 1.1.0 之后的收尾大版本：完成 gpt-5.6 全量静态安全审计（37 finding，35 项闭合）、并入生产级路由能力（多 provider 候选链 + 熔断器）、并收口一批计费正确性与性能修复。完整审计证据与每项修复摘要见 [docs/AUDIT_2026-07-26.md](./docs/AUDIT_2026-07-26.md)。
+
+### 安全审计（gpt-5.6 全量 37 finding，35 项闭合）
+
+S1-S20 安全批次 + 后续闭合项（按修复面归纳）：
+
+- **信任边界 / SSRF**：WebFetch DNS 解析固定 IP 防 rebinding（F-24）、provider redirect 禁跟随防 `x-api-key` 泄漏（F-22）、conversation ID 目录逃逸防护（F-04）。
+- **工作区围栏 / 只读 capability**：realpath 双 `EvalSymlinks` 堵 symlink 逃逸 + Delete/downloadPath 覆盖（F-32）、Ask/Plan 子代理后端强制只读能力集（F-31）、禁止服务端读 `SelectedImage.path`（F-30）。
+- **流资源预算**：三 provider 流字节/事件预算（F-21）、broker backlog 硬上限 + upstream 32MiB LimitReader + mitm http.Server 超时（F-28）、artifact session 回收堵 map 永久增长（F-36）、流成功终止状态机 + 缺终止事件可重试（F-20）。
+- **配置事务 / 数值校验**：配置字段级 patch + 锁内 Load-Modify-Save 事务（F-02/F-03）、Pricing 更新保留 `InputTokenSemantics`（F-16）、倍率 NaN/Inf/零/负值校验（F-34）、extra params denylist 防覆盖协议字段（F-19）。
+- **CA / 权限**：CA 加载校验 IsCA/KeyUsage/有效期/公私钥匹配 + 损坏重生（F-12）、文件权限集中 0600/0700 助手 + 启动迁移收紧（F-18）、MITM leaf 证书 ECDSA P-256 + TTL（M7）。
+- **发布链加固**：ed25519 验签前置（F-27）、manifest/下载字节数限流（F-25）、触发版本与 config.yml 对齐硬失败（F-26）、未签名 manifest 不进 release 资产（F-11）。
+- **生命周期 / 持久化**：hijacked CONNECT 隧道强制关闭 + Start/Stop/Save 串行化 + 显式状态机 + 阶段失败定向回滚（F-14/F-35）、会话崩溃一致性 context/state 版本校验 + atomic write Sync（F-13）、旧目录迁移两阶段 + 备份保留绝不删（F-29）、legacy usage 索引一次性回填（F-05）、endpoint net/url 拼接保留 query/fragment（F-23）。
+- **部署 / 前端**：cursor-tab-server 默认 loopback + 入站 token 校验（F-33）、生产前端 console 脱敏（F-37）、上游 HTTP 超时单位 typo（F-10）、客户端取消/sink 错误不计 provider 故障（F-06）、disabled adapter UI 过滤（F-08）。
+
+未闭合（非纯代码或架构决策）：**F-15**（本地 MITM 客户端认证，需架构决策，暂缓）、**F-07**（401/403/404 failover 是否放宽，留后续策略）、**F-01**（B2 已修 failover 核心，UI 暴露逻辑模型 ID 残留）、**F-09 / F-17**（低优先）。
+
+### 生产级路由（B2 候选链 + A1 熔断）
 
 单 channel 架构升级为多 provider 候选链 + 故障转移：同 modelID 配多个适配器时，按优先级组成主→备候选链，主候选在输出内容前失败（连接错误 / 5xx / 429 / 流超时）自动切到下一个，已开始输出的请求绝不切换避免双发。熔断器（A1）接入：单个 provider 连续失败或错误率过高自动熔断，熔断中的候选排到候选链末尾兜底。
 
@@ -8,6 +29,15 @@
 - 模型编辑器新增「故障转移候选链」分组（优先级 / 权重 / 启用开关）。
 - 模型列表对「同 modelID 多启用适配器」显示 `候选 P{优先级}` 徽章，停用的显示 `已停用`。
 - 本期只实现 Failover 策略（主→备按序）；ConversationRoundRobin / RequestRoundRobin / WeightedRoundRobin 三种轮转策略留后续。
+
+### 成本精确化 / 性能
+
+- `usage.json` `EventIndex` 独立持久化，不再被 `RecentEvents` 500 条截断影响 turn 计费（H5）；legacy 文件首次加载一次性回填完整索引（F-05）。
+- `GetThoughtAnnotation` 建 requestID→entry 反向索引，消除 O(会话数 × entry 数) 全量扫描（H4）。
+- `realTotalTokens` 按 `InputTokenSemantics` 修正 TOTAL 语义重复计 cache（M1）；成本口径异常检测提示（M9）。
+- `model_pricing_candidates` 7 段剥离补全 + 内置定价表同步 v3.18.0（A7），候选匹配去命名空间/版本/日期/推理努力后缀让 `openai.gpt-5` / `claude-opus-4-6-20251114` 命中价目。
+
+> 阶段三（云端一体化服务透传 / 细粒度路由）、阶段四（会话管理 + 项目 Profile）保持待办，详见审计 md 第四部分。
 
 # 1.1.0
 

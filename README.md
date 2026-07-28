@@ -29,7 +29,8 @@
 | 模型定价匹配 | 无 | **候选匹配**（去命名空间/版本/日期/推理努力后缀）+ **FRESH/TOTAL/legacy 成本语义**（避免缓存部分重复计费） |
 | 用量与成本可视化 | 基础 token 计数 | **ECharts 使用统计仪表盘**：按日趋势 / 模型 / Provider 维度 + 真实消耗 token + 缓存命中率 + 成本估算 |
 | 默认 token 参数 | 65536 输出 / 固定压缩预留 | **128K 输出**（对齐 Opus 5 / 4.8 等旗舰上限）+ **动态压缩预留**（按通道上下文窗口 8% 自适应） |
-| 更新安全 | checksum 校验 | **ed25519 强制签名** + 每机器独立 CA + loopback 信任分离 + 写路径围栏 |
+| 路由可靠性 | 单 channel，主渠道失败即断 | **多 provider 候选链 + 熔断 failover**（主→备自动切换，已输出不切换，熔断兜底） |
+| 更新安全 | checksum 校验 | **gpt-5.6 全量安全审计 35/37 项闭合**：ed25519 强制签名 + 每机器独立 CA + loopback 信任分离 + SSRF 防护 + workspace 写路径围栏 + 流资源预算 |
 
 > 完整架构与接口分类见 [docs/接口与架构速查.md](./docs/接口与架构速查.md)，重构决策历程见 [docs/架构重构记录.md](./docs/架构重构记录.md)。
 
@@ -78,6 +79,24 @@ Tab 代码补全 / Git Commit / 分支名生成（`StreamCpp` / `CppConfig` / `W
 
 - **配置页 → Tab 补全服务地址**：留空 = 走官方 Cursor 上游（默认，最透明）；填自建 `cursor-tab-server` 地址可回源自己的账号
 - 流量目的地在前端 UI 一目了然，不再有写死在二进制里的第三方私有域名
+
+---
+
+## 🛡️ 2.0.0 安全与路由加固
+
+2.0.0 是 1.1.0 之后的收尾大版本：完成 gpt-5.6 全量静态安全审计、并入生产级路由能力、收口计费正确性与性能。完整审计证据见 [docs/AUDIT_2026-07-26.md](./docs/AUDIT_2026-07-26.md)，发版变更见 [release-notes.md](./release-notes.md)。
+
+### gpt-5.6 全量安全审计（37 finding，35 项闭合）
+
+按修复面归纳：SSRF 防护 + provider redirect 禁跟随 + conversation 目录逃逸防护；workspace 写路径围栏（realpath 双 `EvalSymlinks`）+ 子代理只读 capability；流资源预算（字节/事件/单条 64KiB/证书缓存 TTL）；配置字段级 patch 事务 + 倍率 NaN/Inf 校验；CA 加载校验 + 文件权限 0600/0700 迁移；发布链 ed25519 验签前置 + manifest 限流 + 版本对齐；生命周期显式状态机 + 阶段失败定向回滚 + 会话崩溃一致性。未闭合项：F-15（本地 MITM 客户端认证，需架构决策）、F-07/F-01/F-09/F-17（留后续策略）。
+
+### 生产级路由（多 provider 候选链 + 熔断）
+
+同 modelID 配多个适配器时按优先级组成主→备候选链，主候选在输出内容前失败（连接错误 / 5xx / 429 / 流超时）自动切下一个，已开始输出的请求绝不切换避免双发。熔断器接入：单个 provider 连续失败或错误率过高自动熔断，熔断中的候选排到候选链末尾兜底。
+
+### 成本与用量精确化收尾
+
+`EventIndex` 独立持久化不被 500 条截断影响 turn 计费；`GetThoughtAnnotation` 反向索引消除全量扫描；`realTotalTokens` 按 `InputTokenSemantics` 修正；`model_pricing_candidates` 7 段候选匹配 + 内置定价表同步 v3.18.0。
 
 ---
 
@@ -206,7 +225,7 @@ wails3 task build:windows:amd64
 
 ```bash
 GOOS=windows CGO_ENABLED=0 GOARCH=amd64 go build -tags production -trimpath \
-  -ldflags="-w -s -H windowsgui -X cursor/internal/buildinfo.Version=1.0.0" \
+  -ldflags="-w -s -H windowsgui -X cursor/internal/buildinfo.Version=2.0.0" \
   -o "bin/Cursor助手.exe" .
 ```
 

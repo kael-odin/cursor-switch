@@ -29,7 +29,8 @@ This is an enhanced fork of [leookun/cursor-byok](https://github.com/leookun/cur
 | Model pricing match | None | **Candidate matching** (strip namespace/version/date/reasoning-effort suffix) + **FRESH/TOTAL/legacy cost semantics** (no double-billing on cached parts) |
 | Usage & cost visualization | Basic token counts | **ECharts usage dashboard**: daily trend / by-model / by-provider + real consumed tokens + cache hit rate + cost estimate |
 | Default token params | 65536 output / fixed compaction reserve | **128K output** (aligns with Opus 5 / 4.8 flagship ceiling) + **dynamic compaction reserve** (8% of channel context window, adaptive) |
-| Update safety | checksum | **ed25519 enforced signing** + per-machine independent CA + loopback trust separation + write-path fence |
+| Routing reliability | Single channel — main channel failure breaks the request | **Multi-provider candidate chain + circuit-breaker failover** (primary→backup auto-switch, never switches mid-output, breaker backstops) |
+| Update safety | checksum | **gpt-5.6 full security audit, 35/37 closed**: ed25519 enforced signing + per-machine independent CA + loopback trust separation + SSRF protection + workspace write-path fence + stream resource budgets |
 
 > Full architecture & route classification in [docs/接口与架构速查.md](./docs/接口与架构速查.md); refactor decision history in [docs/架构重构记录.md](./docs/架构重构记录.md).
 
@@ -78,6 +79,24 @@ Historically 1.0.x hardcoded this traffic to the author's shared pool `tab.leoku
 
 - **Config page → Tab-completion server URL**: empty = official Cursor upstream (default, most transparent); fill in your self-hosted `cursor-tab-server` URL to source from your own account
 - The traffic destination is visible in the UI — no more third-party private domain hardcoded in the binary
+
+---
+
+## 🛡️ 2.0.0 Security & routing hardening
+
+2.0.0 is the consolidation release after 1.1.0: completes the gpt-5.6 full static security audit, folds in production-grade routing, and closes out billing-correctness and performance work. Full audit evidence in [docs/AUDIT_2026-07-26.md](./docs/AUDIT_2026-07-26.md); release changes in [release-notes.md](./release-notes.md).
+
+### gpt-5.6 full security audit (37 findings, 35 closed)
+
+By fix surface: SSRF protection + provider redirect no-follow + conversation path-traversal; workspace write-path fence (realpath dual `EvalSymlinks`) + subagent readonly capability; stream resource budgets (bytes/events/64KiB-per-entry/cert-cache TTL); config field-level patch transaction + multiplier NaN/Inf validation; CA load validation + 0600/0700 file-perm migration; release-chain ed25519 pre-verification + manifest size limits + version alignment; lifecycle explicit state machine + directional stage-failure rollback + crash-consistency. Not closed: F-15 (local MITM client auth, needs architecture decision), F-07/F-01/F-09/F-17 (deferred policy).
+
+### Production-grade routing (multi-provider candidate chain + circuit breaker)
+
+When the same modelID has multiple adapters, a primary→backup candidate chain is built by priority; if the primary fails before producing output (connection error / 5xx / 429 / stream timeout), it auto-switches to the next — never mid-output to avoid double-sends. Circuit breaker: a provider with repeated failures or high error rate trips and backs off to the end of the chain.
+
+### Cost & usage precision close-out
+
+`EventIndex` persisted independently so 500-entry truncation no longer affects turn billing; `GetThoughtAnnotation` reverse index removes full-scan blowup; `realTotalTokens` corrected by `InputTokenSemantics`; `model_pricing_candidates` 7-segment matching + built-in pricing table synced to v3.18.0.
 
 ---
 
@@ -206,7 +225,7 @@ Quick pure-Go backend build (for dev self-test):
 
 ```bash
 GOOS=windows CGO_ENABLED=0 GOARCH=amd64 go build -tags production -trimpath \
-  -ldflags="-w -s -H windowsgui -X cursor/internal/buildinfo.Version=1.0.0" \
+  -ldflags="-w -s -H windowsgui -X cursor/internal/buildinfo.Version=2.0.0" \
   -o "bin/CursorAssistant.exe" .
 ```
 
