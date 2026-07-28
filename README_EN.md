@@ -225,7 +225,7 @@ Quick pure-Go backend build (for dev self-test):
 
 ```bash
 GOOS=windows CGO_ENABLED=0 GOARCH=amd64 go build -tags production -trimpath \
-  -ldflags="-w -s -H windowsgui -X cursor/internal/buildinfo.Version=2.0.0" \
+  -ldflags="-w -s -H windowsgui -X cursor/internal/buildinfo.Version=2.0.1" \
   -o "bin/CursorAssistant.exe" .
 ```
 

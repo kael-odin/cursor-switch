@@ -1,5 +1,16 @@
 # 未发布
 
+# 2.0.1
+
+## CI 发版链修复 · 彻底切 CI 自动签名
+
+2.0.0 的发版链有两个问题，2.0.1 修复并完成 CI 自动签名切换：
+
+- **check.yml `version sync` job cgo 依赖**：`scripts/release` 经 `cursor/internal/updater` 传递依赖 wails v3 cgo 包，`verify-versions` 这种纯字符串校验也触发 pkg-config 探测 gtk/webkit，但该 job 没装 GUI deps 而红。给 `versions` job 加装 `libgtk-3-dev libwebkit2gtk-4.1-dev`，与 `go` job 对齐。
+- **Windows protoc 改直连官方 release**：不再用 choco（`community.chocolatey.org` 偶发 503 会让整个 release 挂），改为从 `protocolbuffers/protobuf` GitHub release 下载 `protoc-35.0-win64.zip`。
+- **彻底切 CI 自动签名**：release.yml 删除"本地补签 fallback artifact"分支（本地补签已废），保留 `Sign or discard` 门控防 secret 缺失时误发未签名 manifest。签名私钥作为 GitHub Actions secret `CURSOR_SIGNING_KEY` 注入 CI，打 tag 即发版即签名，零本地操作。
+- **F-11 姿态演化说明**：F-11 实质目标（消除未签名 manifest 公开窗口）已达成，但实现从"维护者本地补签"演化为 CI 自动签名——泄露面从"仅本地"扩大到"本地 + GitHub secret"，单人 fork、branch protection 开启时判断可接受。详见 [docs/RELEASE_SIGNING.md](./docs/RELEASE_SIGNING.md) 第三节与审计 md 第五部分 F-11。
+
 # 2.0.0
 
 ## 安全审计完整收尾 · 生产级路由 · 成本精确化
