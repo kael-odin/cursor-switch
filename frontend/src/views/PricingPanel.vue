@@ -138,8 +138,9 @@ async function confirmDelete(model) {
 
 async function saveMultiplier() {
   const value = Number(multiplierInput.value);
-  if (!Number.isFinite(value) || value < 0) {
-    errorMsg.value = "倍率必须是非负数字";
+  // F-34：与后端 validatePositiveFiniteMultiplier 同规则——必须有限且大于零。
+  if (!Number.isFinite(value) || value <= 0) {
+    errorMsg.value = "倍率必须是大于零的有限数字";
     return;
   }
   multiplierSaving.value = true;

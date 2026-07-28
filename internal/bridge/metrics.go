@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -202,8 +203,9 @@ func (service *MetricsService) SetDefaultCostMultiplier(value string) error {
 		return fmt.Errorf("config store unavailable")
 	}
 	value = strings.TrimSpace(value)
-	if _, err := strconv.ParseFloat(value, 64); err != nil {
-		return fmt.Errorf("倍率必须是数字: %w", err)
+	// F-34：统一要求有限正数，拒绝 NaN/Inf/零/负值，与计算层 parsePositiveFiniteFloatOr 同规则。
+	if err := validatePositiveFiniteMultiplier(value); err != nil {
+		return err
 	}
 	ctx := context.Background()
 	cfg, err := service.store.Load(ctx)
@@ -231,8 +233,9 @@ func (service *MetricsService) loadAdapterMultipliers() map[string]float64 {
 		if value == "" {
 			continue
 		}
-		parsed, err := strconv.ParseFloat(value, 64)
-		if err != nil || parsed <= 0 {
+		// F-34：用 parsePositiveFiniteFloatOr 统一拒绝 NaN/Inf/<=0。
+		parsed := parsePositiveFiniteFloatOr(value, 0)
+		if parsed <= 0 {
 			continue
 		}
 		out[strings.ToLower(strings.TrimSpace(a.ModelID))] = parsed
@@ -277,7 +280,8 @@ func toPricingSnapshot(in config.PricingConfig) PricingSnapshot {
 // multiplier 解析优先级：per-adapter（adapterMultipliers 按 modelId 查）> 全局默认 > 1。
 func computeCostByModel(byModel []historymetrics.ModelUsage, pricing PricingSnapshot, adapterMultipliers map[string]float64) ([]ModelCost, float64) {
 	defaultMultiplier := pricing.DefaultCostMultiplier
-	if defaultMultiplier <= 0 {
+	// F-34：用 parsePositiveFiniteFloatOr 拒绝 NaN/Inf/<=0，保证默认倍率始终有限且 > 0。
+	if defaultMultiplier <= 0 || math.IsNaN(defaultMultiplier) || math.IsInf(defaultMultiplier, 0) {
 		defaultMultiplier = 1
 	}
 	costs := make([]ModelCost, 0, len(byModel))
@@ -285,7 +289,8 @@ func computeCostByModel(byModel []historymetrics.ModelUsage, pricing PricingSnap
 	for _, usage := range byModel {
 		price := findPrice(pricing.Models, usage.ModelID)
 		multiplier := defaultMultiplier
-		if am, ok := adapterMultipliers[strings.ToLower(strings.TrimSpace(usage.ModelID))]; ok && am > 0 {
+		// per-adapter 倍率同样拒绝 NaN/Inf/<=0（loadAdapterMultipliers 已过滤，这里防御性二次校验）。
+		if am, ok := adapterMultipliers[strings.ToLower(strings.TrimSpace(usage.ModelID))]; ok && am > 0 && !math.IsNaN(am) && !math.IsInf(am, 0) {
 			multiplier = am
 		}
 		cost := ModelCost{
@@ -403,5 +408,36 @@ func parseFloatOr(value string, fallback float64) float64 {
 	if err != nil {
 		return fallback
 	}
+	// F-34：拒绝 NaN/Inf——非有限值会导致 JSON/Wails 序列化失败，并在计算层传播为 NaN 成本。
+	if math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return fallback
+	}
 	return parsed
+}
+
+// parsePositiveFiniteFloatOr 解析倍率字符串：要求有限且 > 0。
+// F-34：倍率 NaN/Inf/零/负值此前会混入计算或导致序列化失败；计算层对 <=0 回退为 1，
+// 保存语义与显示不一致。此函数统一规则：非法值（非数字/NaN/Inf/<=0）一律回落 fallback。
+func parsePositiveFiniteFloatOr(value string, fallback float64) float64 {
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+// validatePositiveFiniteMultiplier 校验倍率字符串是否为合法的有限正数（F-34）。
+// 供 SetDefaultCostMultiplier / adapter CostMultiplier 保存前校验，与计算层 parsePositiveFiniteFloatOr 复用同一规则。
+func validatePositiveFiniteMultiplier(value string) error {
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil {
+		return fmt.Errorf("倍率必须是数字: %w", err)
+	}
+	if math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return fmt.Errorf("倍率必须是有限数字，不支持 NaN/Inf")
+	}
+	if parsed <= 0 {
+		return fmt.Errorf("倍率必须大于零")
+	}
+	return nil
 }
