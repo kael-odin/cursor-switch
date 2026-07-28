@@ -148,9 +148,17 @@ func (service *MetricsService) UpdateModelPricing(pricing TokenPricing) error {
 		CacheReadPerMillion:  strconv.FormatFloat(pricing.CacheReadPerMillion, 'f', -1, 64),
 		CacheWritePerMillion: strconv.FormatFloat(pricing.CacheWritePerMillion, 'f', -1, 64),
 	}
+	// F-16：InputTokenSemantics 必须跨编辑保留。
+	// - 更新已有记录时：若 payload 未带语义（前端只改价格的常见路径），从原记录继承，
+	//   否则编辑 TOTAL/FRESH 模型后会退化到 legacy 成本口径，OpenAI billable input 与成本错误。
+	// - payload 显式带语义时：归一化校验，非法值回落 legacy（计算层对未知值也回落，保持一致）。
+	updated.InputTokenSemantics = config.NormalizeInputTokenSemantics(pricing.InputTokenSemantics)
 	found := false
 	for i := range cfg.Pricing.Models {
 		if strings.EqualFold(strings.TrimSpace(cfg.Pricing.Models[i].ModelID), modelID) {
+			if updated.InputTokenSemantics == config.InputSemanticsLegacy && cfg.Pricing.Models[i].InputTokenSemantics != "" {
+				updated.InputTokenSemantics = cfg.Pricing.Models[i].InputTokenSemantics
+			}
 			cfg.Pricing.Models[i] = updated
 			found = true
 			break

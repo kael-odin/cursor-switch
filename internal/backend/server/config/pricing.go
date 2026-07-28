@@ -22,6 +22,20 @@ const (
 	InputSemanticsTotal  InputTokenSemantics = "TOTAL" // TOTAL：input 含 cache_read+cache_creation，减两者
 )
 
+// NormalizeInputTokenSemantics 把任意输入归一为合法语义值。
+// 空串/大小写变体/已知值原样归一；未知值回落 legacy（与计算层 switch default 行为一致，向后兼容旧配置）。
+// 供 F-16 在 pricing 更新时显式校验：避免任意字符串写入配置后在序列化/前端展示中暴露脏值。
+func NormalizeInputTokenSemantics(value string) InputTokenSemantics {
+	switch InputTokenSemantics(strings.ToUpper(strings.TrimSpace(value))) {
+	case InputSemanticsFresh, InputSemanticsTotal:
+		// 已知非空语义——保留 trim 后的大写形式。
+		trimmed := strings.ToUpper(strings.TrimSpace(value))
+		return InputTokenSemantics(trimmed)
+	default:
+		return InputSemanticsLegacy
+	}
+}
+
 // ModelPricing 是单个模型的定价记录。价格单位：USD / 1,000,000 tokens。
 // 照搬 cc-switch 的 model_pricing 表结构，用字符串存储以保留十进制精度（避免 float 误差）。
 type ModelPricing struct {
