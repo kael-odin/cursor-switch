@@ -44,12 +44,17 @@ type requestArtifactPrefix struct {
 }
 
 func newArtifactRecorder(store *ConversationFileStore, broker *StreamBroker, debug *debugRecorder) *artifactRecorder {
-	return &artifactRecorder{
+	recorder := &artifactRecorder{
 		store:    store,
 		broker:   broker,
 		debug:    debug,
 		sessions: make(map[string]artifactSession),
 	}
+	// F-36：broker 删除终态流时清掉该 request 的 session，避免 sessions map 永久增长。
+	if broker != nil {
+		broker.OnStreamRemoved = recorder.ClearActiveArtifactsByRequest
+	}
+	return recorder
 }
 
 func (recorder *artifactRecorder) RecordLLMRequest(requestID string, _ string, modelCallID string, payload map[string]any) (string, error) {
@@ -134,6 +139,27 @@ func (recorder *artifactRecorder) ClearActiveArtifacts(requestID string, modelCa
 	}
 	recorder.mu.Lock()
 	delete(recorder.sessions, artifactSessionKey(requestID, modelCallID))
+	recorder.mu.Unlock()
+}
+
+// ClearActiveArtifactsByRequest 清掉给定 request 下的全部 session（含 B2 failover 链各候选的
+// model_call_id 产生的多条记录）。F-36：在 StreamBroker 删除活动流时由 OnStreamRemoved 回调，
+// 终止"每次 provider request 永久保留请求/摘要 payload"的内存泄漏。
+func (recorder *artifactRecorder) ClearActiveArtifactsByRequest(requestID string) {
+	if recorder == nil {
+		return
+	}
+	normalizedRequestID := strings.TrimSpace(requestID)
+	if normalizedRequestID == "" {
+		return
+	}
+	prefix := normalizedRequestID + "::"
+	recorder.mu.Lock()
+	for key := range recorder.sessions {
+		if strings.HasPrefix(key, prefix) {
+			delete(recorder.sessions, key)
+		}
+	}
 	recorder.mu.Unlock()
 }
 

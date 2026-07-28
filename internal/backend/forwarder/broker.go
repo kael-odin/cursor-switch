@@ -20,6 +20,11 @@ type StreamBroker struct {
 	mu      sync.RWMutex
 	streams map[string]*ActiveStream
 	nextID  atomic.Uint64
+
+	// OnStreamRemoved 在一条活动流被 RemoveIfIdle 从注册表删除时同步回调，
+	// 用于 F-36：让 artifactRecorder 清掉该 request 的缓存 session，避免永久增长。
+	// 在锁内触发，回调实现必须避免反过来获取 broker 锁（只动自己的状态）。
+	OnStreamRemoved func(requestID string)
 }
 
 // NewStreamBroker 创建活动流注册表。
@@ -288,14 +293,21 @@ func (broker *StreamBroker) RemoveIfIdle(requestID string) bool {
 	if subscriberCount > 0 {
 		return false
 	}
+	removed := false
 	if status == StreamStatusCompleted || status == StreamStatusCanceled || status == StreamStatusFailed {
 		delete(broker.streams, normalizedRequestID)
-		return true
+		removed = true
 	}
-	if isActive || hasBacklog || hasConversation {
+	if !removed && (isActive || hasBacklog || hasConversation) {
 		return false
 	}
-	delete(broker.streams, normalizedRequestID)
+	if !removed {
+		delete(broker.streams, normalizedRequestID)
+		removed = true
+	}
+	if removed && broker.OnStreamRemoved != nil {
+		broker.OnStreamRemoved(normalizedRequestID)
+	}
 	return true
 }
 
