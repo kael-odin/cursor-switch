@@ -66,10 +66,18 @@ jobs:
     # P0 release gate：前端此前 CI 只 stub frontend/dist 占位编译，从不验证前端能真正构建。
     # S17（生产 console 脱敏）等修复改了 clientApi.js，需保证 production build 不破。
     # 暂不加 ESLint/Vitest——前端无现成 lint/test 基础设施，从零搭建投入大，留后续决策。
+    # 复刻 release.yml 的前端构建链：wails3 generate bindings 生成 frontend/bindings/*
+    # （wails-typed-events 插件依赖 eventcreate 模块），不先生成 bindings 直接 yarn build
+    # 会报 "Event bindings module not found"。
     name: frontend build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: false
 
       - uses: actions/setup-node@v5
         with:
@@ -78,13 +86,30 @@ jobs:
       - name: Install yarn
         run: npm install -g yarn
 
-      - name: Install deps
-        working-directory: frontend
-        run: yarn install --frozen-lockfile
+      - name: Install Linux GUI deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
 
-      - name: Build
+      - name: Install wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.74
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "35.0"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate proto + bindings
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.19.1
+          wails3 task common:generate:proto
+          wails3 task common:generate:bindings
+
+      - name: Build frontend
         working-directory: frontend
-        run: yarn build
+        run: yarn install --frozen-lockfile && yarn build
 
   versions:
     name: version sync
