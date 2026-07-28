@@ -21,7 +21,15 @@ import { Call } from "@wailsio/runtime";
 const API_LOG_PREFIX = "[clientApi]";
 const PROXY_SERVICE_NAME = "cursor/internal/bridge.ProxyService";
 
+// F-37：生产构建移除 API 日志。这些 console 调用会把 SaveUserConfig / testModelAdapter /
+// fetchProviderModels 等的完整 payload（含 apiKey / customHeadersJSON / Authorization）和
+// 原始响应打印到 WebView 控制台——本机调试面虽不外传，但生产 WebView 不应留存。
+// 仅 dev 构建保留日志；prod 构建经 import.meta.env.DEV 静态替换为 false 后，
+// Vite tree-shaking 会整段删除 logSuccess/logError 调用。
+const LOG_API = import.meta.env.DEV;
+
 function logSuccess(name, payload, result) {
+  if (!LOG_API) return;
   console.log(`${API_LOG_PREFIX} ${name} response`, {
     payload,
     result,
@@ -29,6 +37,7 @@ function logSuccess(name, payload, result) {
 }
 
 function logError(name, payload, error) {
+  if (!LOG_API) return;
   console.error(`${API_LOG_PREFIX} ${name} error`, {
     payload,
     error,
@@ -36,6 +45,10 @@ function logError(name, payload, error) {
 }
 
 function withApiLogging(name, payload, runner) {
+  if (!LOG_API) {
+    // 生产构建：直接跑 runner，不记录任何 payload/result，避免敏感字段进控制台。
+    return Promise.resolve().then(runner);
+  }
   return Promise.resolve()
     .then(() => runner())
     .then((result) => {
