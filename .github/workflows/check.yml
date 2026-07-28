@@ -64,6 +64,14 @@ jobs:
           go-version: "1.25"
           cache: true
 
+      - name: Install Linux GUI deps
+        # scripts/release 经 cursor/internal/updater → wails v3 传递依赖 cgo 包
+        # (internal/assetserver/webview 等)，go run 任意子命令（含 verify-versions
+        # 这种纯字符串校验）都会触发 pkg-config 探测 gtk/webkit。与 go job 一致装 dev 库。
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
+
       - name: Verify version sync
         # 校验 build/config.yml 与 windows/info.json、wails.exe.manifest 三处版本一致，
         # 防止发版时资产版本与二进制自报版本错位。

@@ -43,9 +43,11 @@ git push origin v0.0.41
 
 强制签名后:`update.json` 带 ed25519 签名,二进制内置公钥校验,签名不过一律拒绝更新。即使 release token 泄露,攻击者没有私钥就无法伪造可被接受的更新。
 
-> **当前状态(2026-07-28)：已启用 + CI 自动签名)。** 公钥已填入 `internal/updater/pubkey.go`(`releasePublicKeyHex`)。私钥在维护者本地 `~/.cursor-switch-release.key`(0600，不入库)。
+> **当前状态(2026-07-28)：已启用 + CI 自动签名（已彻底切换，本地补签仅作应急）。** 公钥已填入 `internal/updater/pubkey.go`(`releasePublicKeyHex`)。私钥作为 GitHub repo secret `CURSOR_SIGNING_KEY` 存储（加密），维护者本地 `~/.cursor-switch-release.key`(0600，不入库) 仅作应急本地补签用。
 >
-> **CI 自动签名（方案 A，推荐）**：把私钥作为 GitHub repo secret `CURSOR_SIGNING_KEY` 存储，配 variable `CURSOR_SIGNING_ENABLED=true` 后，每次打 tag 发版 CI 自动签名 + 自检 verify 后把带签名的 `update.json` 发布到 release——**零本地操作**。一键配置见第三节方式一（`bash scripts/setup-ci-signing.sh`）。未配置时自动回退到本地补签流程（方式二），不破坏可用性。
+> **CI 自动签名（方案 A，当前唯一常规路径）**：把私钥作为 GitHub repo secret `CURSOR_SIGNING_KEY` 存储，配 variable `CURSOR_SIGNING_ENABLED=true` 后，每次打 tag 发版 CI 自动签名 + 自检 verify 后把带签名的 `update.json` 发布到 release——**零本地操作**。一键配置见第三节（`bash scripts/setup-ci-signing.sh`）。应急时（`CURSOR_SIGNING_ENABLED=false`）CI 丢弃 `update.json`，需本地补签（见"应急本地补签"）。
+>
+> **F-11 姿态变化说明（重要）**：F-11 审计项的原始姿态是"CI 不持有私钥"——签名只在维护者本地完成。当前采用 CI 自动签名把私钥放进了 Actions secret，这是**用便利换安全的已知降级**：泄露面从"仅本地"扩大到"本地 + GitHub secret"，任何能 push 恶意 workflow 的人可 exfil 私钥。单人维护 fork、branch protection 开启时判断可接受。ed25519 公私钥分离本身未破，只是"谁能触发使用私钥的 workflow"扩大了。审计 md 中 F-11 已标注此姿态变化。
 >
 > 改名迁移说明(2026-07-26):产品由 `cursor-byok` 改名为 `cursor-switch`，签名私钥默认路径从 `~/.cursor-byok-release.key` 迁移到 `~/.cursor-switch-release.key`。**公钥不变**（`pubkey.go` 的 `releasePublicKeyHex` 未改），所以无需重新生成密钥对。维护者只需把现有私钥复制到新路径即可：
 > ```bash
@@ -86,7 +88,7 @@ var releasePublicKeyHex = "b7787d81f16782b485c3c659b2ede84164b514babb57c2c381801
 
 CI 生成的 `update.json` 默认是未签名的。两种方式签名发布，任选其一：
 
-#### 方式一：CI 自动签名（推荐，零本地操作）
+#### CI 自动签名（当前唯一常规路径，零本地操作）
 
 把私钥作为 GitHub repo secret 存储，配一个开关 variable，之后每次打 tag 发版 CI 全自动签名 + 自检后发布。**一次性配置，永久受益。**
 
@@ -103,35 +105,33 @@ bash scripts/setup-ci-signing.sh
 
 配好后，release.yml 的 `Sign or discard update.json` 步会在生成 manifest 后用 env 注入的私钥签名 + `verify` 子命令自检，再把带签名的 `update.json` 发布到 release 资产。**之后打 `git push origin vX.Y.Z` 就结束，无需任何本地命令。**
 
-> 安全取舍：GitHub secret 加密存储、不进日志，但拥有 repo admin 权限者能通过篡改 workflow 把 secret 读出来。单人维护场景下（owner = 你自己）增量风险约等于零。F-11 的实质目标（消除未签名 manifest 公开窗口）反而被更好达成——再也不存在"维护者忘记补签"的窗口。若某次发版不想让私钥经过 secret（极少见），临时 `gh variable set CURSOR_SIGNING_ENABLED --repo kael-odin/cursor-switch --body false` 切回方式二即可。
+> 安全取舍（已知降级，详见顶部 F-11 姿态变化说明）：GitHub secret 加密存储、不进日志，但泄露面从"仅本地"扩大到"本地 + GitHub secret"——任何能 push 恶意 workflow 到 `main` 的人可 exfil 私钥。单人维护 fork、branch protection 开启时判断可接受。F-11 的实质目标（消除未签名 manifest 公开窗口）被更好达成——再也不存在"维护者忘记补签"的窗口。应急时 `gh variable set CURSOR_SIGNING_ENABLED --repo kael-odin/cursor-switch --body false` 关闭 CI 签名（CI 丢弃 update.json，需本地补签，见"应急本地补签"）。
 
-撤销（切回本地补签）：
+应急关闭 CI 签名（怀疑 secret 泄露或 CI 签名出问题时）：
 
 ```bash
 gh variable set CURSOR_SIGNING_ENABLED --repo kael-odin/cursor-switch --body false
 ```
 
-#### 方式二：本地补签（保底，CI 不持私钥）
+#### 应急本地补签（仅当 CI 签名关闭时）
 
-不配置上述 secret/variable 时，CI 走 F-11 artifact 流程：未签名 `update.json` 不进 release，仅作为 build artifact `unsigned-update-json` 上传（保留 14 天）。发版后本地补签：
+正常发版不需要此步骤。仅当 `CURSOR_SIGNING_ENABLED=false`（应急关闭 CI 签名，如怀疑 secret 泄露或 CI 签名出问题）且需要给某版本签名时，本地补签：
 
 ```bash
-# 0. 找到 release 对应的 workflow run（tag=v0.0.41 触发的那次）
-# 1. 下载未签名 manifest 的 build artifact
-gh run download <run-id> -n unsigned-update-json -D /tmp/
-
-# 2. 用私钥签名(原地写回 signature 字段)
-go run ./scripts/release sign --manifest /tmp/update.json
-
-# 3. 把签名后的 update.json 作为 release 资产上传（首次上传，非 --clobber）
-gh release upload v0.0.41 /tmp/update.json
+# 0. 找到 release 对应的 workflow run（tag=vX.Y.Z 触发的那次）
+# 1. CI 在关闭签名模式下会丢弃 update.json，需本地重新生成 manifest（需先 checkout 对应 tag 并构建产物到 bin/release/<VERSION>）
+go run ./scripts/release manifest -config ./build/config.yml -assets-dir bin/release/<VERSION> \
+  -out bin/release/<VERSION>/update.json -repo kael-odin/cursor-switch -base-name cursor-switch -notes release-notes.md
+# 2. 用私钥签名(原地写回 signature 字段) + 自检
+go run ./scripts/release sign --manifest bin/release/<VERSION>/update.json
+go run ./scripts/release verify --manifest bin/release/<VERSION>/update.json
+# 3. 把签名后的 update.json 作为 release 资产上传
+gh release upload vX.Y.Z bin/release/<VERSION>/update.json --clobber
 ```
-
-> 2026-07-28 前：CI 直接把未签名 `update.json` 推到 release，维护者用 `gh release download` 拉取再 `--clobber` 回传。现已改为 artifact 流程，`--clobber` 仅在需要覆盖补签时使用。
 
 #### 签名后效果
 
-`update.json` 多一个 `"signature": "..."` 字段。方式一下维护者上传签名版本前 release 上没有 `update.json`，客户端更新检查会 404 并静默保持当前版本（不会报错、不会被未签名 manifest 欺骗）；方式二回退模式下同理。
+`update.json` 多一个 `"signature": "..."` 字段。维护者上传签名版本前 release 上没有 `update.json`，客户端更新检查会 404 并静默保持当前版本（不会报错、不会被未签名 manifest 欺骗）。
 
 ### 验证签名是否生效
 

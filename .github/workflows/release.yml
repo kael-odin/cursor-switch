@@ -67,8 +67,14 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install protobuf
       - name: Install protoc (Windows)
+        # 不用 choco：community.chocolatey.org 偶发 503 会让整个 release 挂。
+        # 直接从 protocolbuffers/protobuf 官方 release 拉预编译 win64 二进制，最稳。
         if: runner.os == 'Windows'
-        run: choco install protoc --version=35.0 -y
+        shell: bash
+        run: |
+          curl -sSL -o /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v35.0/protoc-35.0-win64.zip
+          unzip -q /tmp/protoc.zip -d /tmp/protoc
+          echo "/tmp/protoc/bin" >> "$GITHUB_PATH"
 
       - name: Generate proto code
         run: |
@@ -159,10 +165,12 @@ jobs:
             -notes release-notes.md
 
       - name: Sign or discard update.json
-        # 方案 A（CI 自动签名）：配了 secret CURSOR_SIGNING_KEY + variable CURSOR_SIGNING_ENABLED=true 时，
-        # CI 直接签名 + 自检 verify 后保留，Create release 会把它发到 release 资产。零本地操作。
-        # 未配置时回退到 F-11 artifact 流程：删掉 assets/update.json（不进 release），
-        # 未签名 manifest 仅作 build artifact 供维护者本地补签。
+        # CI 自动签名（已彻底切换）：配了 secret CURSOR_SIGNING_KEY 时，CI 直接签名 + 自检 verify 后保留，
+        # Create release 会把它发到 release 资产。零本地操作，打 tag 即发版即签名。
+        # 安全姿态说明：私钥放 GitHub Actions secret（加密存储）——比"CI 不持有私钥"的 F-11 原始姿态
+        # 扩大了泄露面（任何能 push 恶意 workflow 的人可 exfil 私钥），单人维护 fork 可接受。
+        # 未配置 secret 时（应急：gh variable set CURSOR_SIGNING_ENABLED --body false）丢弃 update.json，
+        # release 上无 update.json，客户端更新检查 404 静默保持当前版本（不报错、不被未签名 manifest 欺骗）。
         # 用 variable（而非直接判 secret 非空）作开关：Actions 的 if 不能可靠判 secret 空字符串，且显式开关更可控。
         shell: bash
         env:
@@ -171,22 +179,11 @@ jobs:
           if [ "${{ vars.CURSOR_SIGNING_ENABLED }}" = "true" ] && [ -n "$CURSOR_SWITCH_SIGNING_KEY" ]; then
             go run ./scripts/release sign --manifest assets/update.json
             go run ./scripts/release verify --manifest assets/update.json
-            echo "signed=true" >> "$GITHUB_OUTPUT"
             echo "✅ update.json signed and verified in CI"
           else
             rm -f assets/update.json
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "ℹ️  CI 签名未配置（CURSOR_SIGNING_ENABLED!=true 或 secret 缺失），回退 artifact 流程"
+            echo "ℹ️  CI 签名未配置（CURSOR_SIGNING_ENABLED!=true 或 secret 缺失），已丢弃 update.json（release 上无 manifest，客户端静默不更新）"
           fi
-
-      - name: Upload unsigned manifest as build artifact (F-11, fallback only)
-        # CI 签名模式下不再需要（已签名 manifest 直接进 release）。仅回退模式上传未签名 artifact 供本地补签。
-        if: ${{ vars.CURSOR_SIGNING_ENABLED != 'true' }}
-        uses: actions/upload-artifact@v5
-        with:
-          name: unsigned-update-json
-          path: assets/update.json
-          retention-days: 14
 
       - name: Create release
         uses: softprops/action-gh-release@v3
