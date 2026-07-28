@@ -15,6 +15,37 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
+// lifecycleStage 是 ProxyService 生命周期的显式状态机（F-35 残留）。
+// 记录最近一次 Start/Stop 走到哪一步，供诊断与测试断言。由 s.mu 保护。
+// 不替换 ProxyState 的 BackendRunning/ProxyRunning/CursorSettingsApplied 布尔
+// （那些是前端 JSON 契约），本枚举仅 Go 侧可见，经 ProxyState.Stage（json:"-"）暴露。
+type lifecycleStage int
+
+const (
+	stageIdle lifecycleStage = iota // 从未启动或已停止
+	stageStarting                   // StartProxy 进行中
+	stageRunning                    // StartProxy 全部阶段成功
+	stageStopping                   // StopProxy 进行中
+	stageFailed                     // StartProxy 某阶段失败已回滚
+)
+
+func (st lifecycleStage) String() string {
+	switch st {
+	case stageIdle:
+		return "idle"
+	case stageStarting:
+		return "starting"
+	case stageRunning:
+		return "running"
+	case stageStopping:
+		return "stopping"
+	case stageFailed:
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
 // ProxyState 定义了当前模块中的 ProxyState 类型。
 type ProxyState struct {
 	// ListenAddr 保留旧字段兼容前端缓存，实际值等于 proxyListenAddr。
@@ -49,6 +80,8 @@ type ProxyState struct {
 	NetProxyDescription string `json:"netProxyDescription"`
 	// LastError 表示当前声明中的 LastError。
 	LastError string `json:"lastError"`
+	// Stage 是生命周期状态机当前阶段（F-35 残留）。仅诊断/测试用，不进前端 JSON 契约。
+	Stage string `json:"-"`
 }
 
 // StartProxy 用于处理与 StartProxy 相关的逻辑。
@@ -56,24 +89,49 @@ func (s *ProxyService) StartProxy() (ProxyState, error) {
 	// F-35：串行化 Start/Stop/Save，避免并发产生数据竞争与半完成状态。
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
+	// F-35 残留：显式状态机 + 阶段失败定向回滚。
+	s.setStage(stageStarting)
 	logger.Infof("start service requested config_path=%s logs_root=%s", s.configPath, s.logsRoot)
-	fail := func(step string, err error) (ProxyState, error) {
-		logger.Errorf("start service failed step=%s err=%v", step, err)
+
+	// 快照本次启动前的运行态：StartProxy 幂等（已运行的 backend/proxy 跳过启动），
+	// 回滚时只停本次新启动的组件，不动先前健康的——修正此前无条件停 proxy+backend
+	// 会误停先前健康组件的潜在回归。
+	backendWasRunning := s.backendHost != nil && s.backendHost.IsRunning()
+	proxyWasRunning := s.proxy != nil && s.proxy.IsRunning()
+
+	// rollback：阶段失败时定向回滚本次启动的组件（非 wasRunning 才停），setStage(failed)，
+	// 记错误 + emit。对 nil backend/proxy 或未运行的组件是 no-op，安全。
+	rollback := func(step string, err error) (ProxyState, error) {
+		logger.Errorf("start service failed step=%s err=%v, rolling back", step, err)
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		if s.proxy != nil && s.proxy.IsRunning() && !proxyWasRunning {
+			if stopErr := s.proxy.Stop(stopCtx); stopErr != nil {
+				logger.Errorf("rollback: stop mitm proxy failed: %v", stopErr)
+			}
+		}
+		if s.backendHost != nil && s.backendHost.IsRunning() && !backendWasRunning {
+			if stopErr := s.backendHost.Stop(stopCtx); stopErr != nil && !errors.Is(stopErr, context.Canceled) {
+				logger.Errorf("rollback: stop backend failed: %v", stopErr)
+			}
+		}
+		s.setStage(stageFailed)
 		s.setLastError(err)
 		s.emitState()
 		return s.GetState(), err
 	}
+
 	cfg, err := s.LoadUserConfig()
 	if err != nil {
-		return fail("load_user_config", err)
+		return rollback("load_user_config", err)
 	}
 	if err := s.ensureBackendHost(); err != nil {
-		return fail("ensure_backend_host", err)
+		return rollback("ensure_backend_host", err)
 	}
 	if !s.backendHost.IsRunning() {
 		logger.Infof("starting embedded backend listen_addr=%s", s.backendHost.ListenAddr())
 		if err := s.backendHost.Start(); err != nil {
-			return fail("start_backend", err)
+			return rollback("start_backend", err)
 		}
 	} else {
 		logger.Infof("embedded backend already running listen_addr=%s", s.backendHost.ListenAddr())
@@ -81,11 +139,11 @@ func (s *ProxyService) StartProxy() (ProxyState, error) {
 	healthCtx, healthCancel := context.WithTimeout(context.Background(), backendReadyTimeout)
 	defer healthCancel()
 	if err := s.waitForBackend(healthCtx); err != nil {
-		return fail("wait_backend_ready", err)
+		return rollback("wait_backend_ready", err)
 	}
 	logger.Infof("embedded backend ready listen_addr=%s", s.backendHost.ListenAddr())
 	if err := s.ensureProxy(cfg); err != nil {
-		return fail("ensure_proxy", err)
+		return rollback("ensure_proxy", err)
 	}
 
 	// 一次性修复历史遗留的假账号注入：仅当 state.vscdb 完整匹配旧假指纹时，
@@ -99,24 +157,17 @@ func (s *ProxyService) StartProxy() (ProxyState, error) {
 	if s.proxy != nil && !s.proxy.IsRunning() {
 		logger.Infof("starting mitm proxy listen_addr=%s", s.proxy.Snapshot().ListenAddr)
 		if err := s.proxy.Start(); err != nil {
-			return fail("start_mitm_proxy", err)
+			return rollback("start_mitm_proxy", err)
 		}
 	}
 
 	if err := s.ApplyCursorSettings(); err != nil {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer stopCancel()
-		if s.proxy != nil {
-			_ = s.proxy.Stop(stopCtx)
-		}
-		_ = s.backendHost.Stop(stopCtx)
-		startErr := fmt.Errorf("服务已启动，但注入 Cursor 配置失败: %w", err)
-		logger.Errorf("start service failed step=apply_cursor_settings err=%v", startErr)
-		s.setLastError(startErr)
-		s.emitState()
-		return s.GetState(), startErr
+		// F-35 残留：定向回滚——只停本次启动的 proxy/backend，不动先前健康的。
+		// 此前无条件停 proxy+backend 会误停 StartProxy 之前就在运行的组件。
+		return rollback("apply_cursor_settings", fmt.Errorf("服务已启动，但注入 Cursor 配置失败: %w", err))
 	}
 
+	s.setStage(stageRunning)
 	s.setLastError(nil)
 	s.emitState()
 	state := s.GetState()
@@ -134,6 +185,8 @@ func (s *ProxyService) StopProxy() (ProxyState, error) {
 	// F-35：串行化 Start/Stop/Save。
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
+	// F-35 残留：显式状态机。停止向语义——已停组件保持停，Stop 的失败不回滚。
+	s.setStage(stageStopping)
 	logger.Infof("stop service requested")
 	fail := func(step string, err error) (ProxyState, error) {
 		logger.Errorf("stop service failed step=%s err=%v", step, err)
@@ -160,6 +213,7 @@ func (s *ProxyService) StopProxy() (ProxyState, error) {
 		}
 	}
 
+	s.setStage(stageIdle)
 	s.setLastError(nil)
 	s.emitState()
 	state := s.GetState()
@@ -181,6 +235,7 @@ func (s *ProxyService) GetState() ProxyState {
 	s.mu.RLock()
 	lastError := s.lastError
 	cursorSettingsApplied := s.cursorSettingsApplied
+	stage := s.stage
 	s.mu.RUnlock()
 	backendListenAddr := ""
 	backendRunning := false
@@ -206,6 +261,7 @@ func (s *ProxyService) GetState() ProxyState {
 		NetProxyPACIgnored:    netProxy.PACIgnored,
 		NetProxyDescription:   netProxy.Description,
 		LastError:             lastError,
+		Stage:                 stage.String(),
 	}
 }
 
@@ -238,6 +294,20 @@ func (s *ProxyService) setLastError(err error) {
 		msg = "unknown error"
 	}
 	s.lastError = msg
+}
+
+// setStage 更新生命周期状态机当前阶段（F-35 残留）。由 s.mu 保护，与 lastError 同区。
+func (s *ProxyService) setStage(stage lifecycleStage) {
+	s.mu.Lock()
+	s.stage = stage
+	s.mu.Unlock()
+}
+
+// currentStage 读取当前生命周期阶段（s.mu 保护）。
+func (s *ProxyService) currentStage() lifecycleStage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.stage
 }
 
 // emitState 用于处理与 emitState 相关的逻辑。

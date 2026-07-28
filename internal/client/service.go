@@ -46,6 +46,10 @@ type ProxyService struct {
 	// lifecycleMu 串行化 Start/Stop/Save（F-35），此前声明为 configMu 但调用链未使用，
 	// 导致三入口可并发产生数据竞争与半完成状态。
 	lifecycleMu sync.Mutex
+	// stage 记录最近一次生命周期阶段（F-35 残留：显式状态机），由 s.mu 保护，
+	// 与 lastError/cursorSettingsApplied 同区。仅诊断/测试用，经 ProxyState.Stage（json:"-"）
+	// 暴露给 Go 侧，不进前端 JSON 契约。
+	stage lifecycleStage
 	// configPath 表示当前声明中的 configPath。
 	configPath string
 	// store 表示统一的配置存储。

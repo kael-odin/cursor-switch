@@ -67,6 +67,20 @@ func Init() {
 	})
 }
 
+// CloseLogFile 关闭日志文件句柄并清空 initOnce，使下一次 Init() 重新按当前
+// appdata 路径打开新文件。仅用于测试：测试把 HOME/USERPROFILE 重定向到 t.TempDir()
+// 后，logger 单例首次写日志会打开该 tmp 下的 app.log 并在进程内长期持有句柄，
+// 导致 t.TempDir 的 RemoveAll 清理报 "being used by another process"。测试在
+// t.Cleanup 里调本函数释放句柄。非测试路径不要调用。
+func CloseLogFile() {
+	if logFile != nil {
+		_ = logFile.Close()
+		logFile = nil
+	}
+	logFilePath = ""
+	initOnce = sync.Once{}
+}
+
 // Info 输出 info 级日志。
 func Info(msg string, args ...any) {
 	Init()
