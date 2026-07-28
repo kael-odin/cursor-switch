@@ -298,6 +298,12 @@ func (s *ProxyServer) Start() error {
 		Addr:     s.addr,
 		Handler:  s.proxy,
 		ErrorLog: stdlog.New(&httpErrorFilterWriter{}, "", stdlog.LstdFlags),
+		// F-28：本地 MITM 入站连接资源预算——慢客户端/恶意连接防护。
+		ReadHeaderTimeout: 30 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      0, // 流式响应不能整体限时，靠 idle watchdog 管
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MiB 头上限
 	}
 
 	ln, err := net.Listen("tcp", s.addr)

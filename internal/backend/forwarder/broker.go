@@ -16,6 +16,14 @@ const subscriberSignalBufferSize = 1
 const orphanSubscriberGracePeriod = 30 * time.Second
 const terminalStreamRetentionPeriod = 30 * time.Second
 
+// maxStreamBacklogEvents 是单条活动流 backlog 的硬上限（F-28）。
+// Cursor 客户端不读 RunSSE 事件时 backlog 会持续累积；无上限可被海量 provider 事件耗尽内存。
+// 超限时丢弃最旧的非终态事件，保留最近事件供追赶读取——终态事件（End=true）永不丢弃。
+const maxStreamBacklogEvents = 8192
+
+// backlogCap 是 backlog 实际生效上限，默认取常量；测试可覆盖以小阈值验证淘汰逻辑。
+var backlogCap = int(maxStreamBacklogEvents)
+
 type StreamBroker struct {
 	mu      sync.RWMutex
 	streams map[string]*ActiveStream
@@ -323,6 +331,21 @@ func (broker *StreamBroker) Publish(requestID string, event StreamEvent) error {
 		return nil
 	}
 	stream.Backlog = append(stream.Backlog, event)
+	// F-28：backlog 硬上限——客户端不读时防止海量事件耗尽内存。超限丢最旧非终态事件。
+	if backlogCap > 0 && len(stream.Backlog) > backlogCap {
+		overflow := len(stream.Backlog) - backlogCap
+		// 从前向后跳过 End 事件（保证终态不丢），丢前 overflow 个非终态事件。
+		kept := stream.Backlog[:0]
+		dropped := 0
+		for _, ev := range stream.Backlog {
+			if dropped < overflow && !ev.End {
+				dropped++
+				continue
+			}
+			kept = append(kept, ev)
+		}
+		stream.Backlog = kept
+	}
 	stream.UpdatedAt = time.Now().UTC()
 	subscribers := make([]*StreamSubscriber, 0, len(stream.Subscribers))
 	for _, subscriber := range stream.Subscribers {

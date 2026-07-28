@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -9,6 +10,11 @@ import (
 
 	"cursor/internal/backend/server"
 )
+
+// maxCompatRouteBodyBytes 限制 compat 路由读取的入站 body 大小（F-28）。
+// 此前用无界 io.ReadAll(ctx.Request.Body)；恶意/超大请求可耗尽内存。
+// 32 MiB 足以覆盖正常 chat completion 请求（含长上下文 + 图片 base64）。
+const maxCompatRouteBodyBytes = 32 * 1024 * 1024
 
 type CompatRouteConfig struct {
 	Name          string
@@ -69,9 +75,12 @@ func newCompatRouteObjects(ctx *server.Context, deps Dependencies, cfg CompatRou
 	if ctx == nil || ctx.Request == nil {
 		return nil, nil, nil
 	}
-	body, err := io.ReadAll(ctx.Request.Body)
+	body, err := io.ReadAll(io.LimitReader(ctx.Request.Body, maxCompatRouteBodyBytes+1))
 	if err != nil {
 		return nil, nil, err
+	}
+	if int64(len(body)) > maxCompatRouteBodyBytes {
+		return nil, nil, fmt.Errorf("compat route body exceeds %d bytes: %w", maxCompatRouteBodyBytes, server.ErrCompatRouteBodyTooLarge)
 	}
 	ctx.Request.Body = io.NopCloser(bytes.NewReader(body))
 	targetURL := ctx.UpstreamURL

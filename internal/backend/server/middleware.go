@@ -133,6 +133,9 @@ func writeServerError(writer http.ResponseWriter, err error) {
 	case errors.Is(err, legacyruntime.ErrChannelNotAvailable):
 		status = http.StatusServiceUnavailable
 		message = "no available channel"
+	case errors.Is(err, ErrCompatRouteBodyTooLarge):
+		status = http.StatusRequestEntityTooLarge
+		message = "request body too large"
 	}
 	http.Error(writer, message, status)
 }
