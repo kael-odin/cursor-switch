@@ -54,9 +54,6 @@ func PolicyMiddleware(configs *serverconfig.Manager) Middleware {
 	}
 }
 
-// healthzPath 与 internal/backend/host.go 的 healthPath 保持一致，loopback 鉴权对其放行。
-const loopbackAuthExemptPath = "/healthz"
-
 // ErrRelayUnauthorized 表示请求缺少或携带无效的 MITM relay proof。映射到 401。
 var ErrRelayUnauthorized = errors.New("relay auth: unauthorized")
 
@@ -72,7 +69,9 @@ func LoopbackAuth() Middleware {
 			if ctx == nil || ctx.Request == nil {
 				return fmt.Errorf("relay auth: nil request")
 			}
-			if ctx.Request.URL.Path == loopbackAuthExemptPath {
+			// 健康检查端点放行：探测请求不带 relay proof，且 HealthCheck 用于判定后端存活，
+			// 若被拦截会误判宕机。路径常量与 host.go 的路由注册同源（HealthzPath，审计 M10）。
+			if ctx.Request.URL.Path == HealthzPath {
 				return next(ctx)
 			}
 			if err != nil || proof == nil {

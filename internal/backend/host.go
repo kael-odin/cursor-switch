@@ -22,7 +22,8 @@ import (
 	legacyruntime "cursor/internal/runtime"
 )
 
-const healthPath = "/healthz"
+// 健康检查端点路径复用 server.HealthzPath 单一常量源（审计 M10），
+// 与 LoopbackAuth 的放行路径同源，避免两处靠注释维持一致。
 
 // tab server 地址由 config.Routing.TabServerBaseURL 控制（H1）：
 //   - 空：禁用第三方 tab server 重定向，tab 补全/git 消息流量透传官方 api2.cursor.sh（走用户自己 Cursor 账号）。
@@ -223,7 +224,7 @@ func (host *Host) HealthCheck(ctx context.Context) error {
 	if runErr := host.LastRunError(); runErr != nil {
 		return runErr
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, host.BaseURL()+healthPath, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, host.BaseURL()+server.HealthzPath, nil)
 	if err != nil {
 		return err
 	}
@@ -258,7 +259,7 @@ func (host *Host) InProcessHealthCheck() error {
 	if host.mux == nil {
 		return fmt.Errorf("backend handler is nil")
 	}
-	request := httptest.NewRequest(http.MethodGet, "http://inprocess"+healthPath, nil)
+	request := httptest.NewRequest(http.MethodGet, "http://inprocess"+server.HealthzPath, nil)
 	recorder := httptest.NewRecorder()
 	host.mux.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -312,7 +313,7 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 			server.PolicyMiddleware(host.configs),
 			server.ErrorEncoder(),
 		),
-		server.GET(healthPath,
+		server.GET(server.HealthzPath,
 			server.Name("healthz"),
 			server.HTTP(),
 			server.Local(server.Health()),

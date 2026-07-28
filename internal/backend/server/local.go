@@ -6,6 +6,13 @@ import (
 	"cursor/internal/logger"
 )
 
+// HealthzPath 是内置后端健康检查端点路径，单一事实源（审计 M10）。
+// internal/backend/host.go 在此路由 Health() handler 并用于 HealthCheck 探测；
+// internal/backend/server/middleware.go 的 LoopbackAuth 对此路径放行（健康检查不带 relay proof）。
+// 三处引用同一常量，避免此前「middleware 与 host 各定义一份 /healthz 靠注释保持一致」——
+// 若 healthPath 改了而 exemptPath 没跟上，LoopbackAuth 会拦截健康检查导致 HealthCheck 误判后端宕机。
+const HealthzPath = "/healthz"
+
 func Health() HandlerFunc {
 	return func(ctx *Context) error {
 		if ctx == nil || ctx.Writer == nil {
