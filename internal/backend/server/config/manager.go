@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -85,6 +86,28 @@ func (manager *Manager) Save(ctx context.Context, cfg Config) (Config, error) {
 	return normalized, nil
 }
 
+// Update 在 Store 锁内事务中执行 Load-Modify-Save（F-03）。
+//
+// mutator 接收以磁盘最新配置为基线的 *Config，修改后由 Store 原子写回，
+// 消除此前 Load/Save 分锁导致的并发覆盖。写回后同步 current 快照与监听器。
+func (manager *Manager) Update(ctx context.Context, mutator func(*Config) error) (Config, error) {
+	if manager == nil || manager.store == nil {
+		return Config{}, fmt.Errorf("config manager is not initialized")
+	}
+	normalized, err := manager.store.Update(ctx, mutator)
+	if err != nil {
+		return Config{}, err
+	}
+	manager.setCurrent(normalized)
+	manager.reloadMu.Lock()
+	manager.snapshot = manager.store.snapshot()
+	manager.lastReload = time.Now()
+	manager.reloadError = ""
+	manager.reloadMu.Unlock()
+	manager.notify(normalized)
+	return normalized, nil
+}
+
 func (manager *Manager) LastAgentModelHash() string {
 	if manager == nil {
 		return ""
@@ -97,14 +120,25 @@ func (manager *Manager) SaveLastAgentModelHash(ctx context.Context, value string
 		return fmt.Errorf("config manager is not initialized")
 	}
 	normalizedValue := strings.TrimSpace(value)
-	current := manager.Current()
-	if strings.TrimSpace(current.LastAgentModelHash) == normalizedValue {
+	// F-03：改用 Update 锁内事务——此前 Current()+Save() 不在同一临界区，
+	// 与并发的 Pricing/前端保存互相覆盖会丢失 hash 或丢失对方字段。
+	_, err := manager.Update(ctx, func(cfg *Config) error {
+		if strings.TrimSpace(cfg.LastAgentModelHash) == normalizedValue {
+			// 值未变，仍走正常写回路径（幂等）；用 sentinel 提示调用方无需变更。
+			return errConfigUnchanged
+		}
+		cfg.LastAgentModelHash = normalizedValue
 		return nil
+	})
+	if err != nil && err != errConfigUnchanged {
+		return err
 	}
-	current.LastAgentModelHash = normalizedValue
-	_, err := manager.Save(ctx, current)
-	return err
+	return nil
 }
+
+// errConfigUnchanged 是 SaveLastAgentModelHash 的内部 sentinel：
+// mutator 判定无需变更时返回，Update 仍会写回一次（幂等），调用方视为成功。
+var errConfigUnchanged = errors.New("config unchanged")
 
 func (manager *Manager) ProviderStreamIdleTimeout(ctx context.Context) time.Duration {
 	if manager == nil {
