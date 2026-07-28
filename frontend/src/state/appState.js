@@ -18,8 +18,13 @@ import {
   stopProxyService,
   testModelAdapter,
 } from "@/services/clientApi";
+import { migrateLegacyStorageKeys } from "@/state/migrateStorage";
 
-const APP_STATE_STORAGE_KEY = "cursor-client:runtime-state:v2";
+// 把旧品牌 key（cursor-client:）一次性迁到 cursor-switch: 前缀，再读新 key。
+// 必须在 loadCachedState 之前执行，否则老用户升级后运行态（服务监听地址/代理态等）丢失。
+migrateLegacyStorageKeys();
+
+const APP_STATE_STORAGE_KEY = "cursor-switch:runtime-state:v2";
 const GENERIC_SERVICE_ERROR = "服务错误";
 const SUPPORTED_MODEL_ADAPTER_TYPES = new Set(["openai", "anthropic"]);
 const SUPPORTED_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);

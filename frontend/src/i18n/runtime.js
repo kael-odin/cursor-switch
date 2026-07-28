@@ -7,9 +7,14 @@ import {
   SOURCE_LOCALE,
   SUPPORTED_LOCALES,
 } from "@/i18n/config";
+import { migrateLegacyStorageKeys } from "@/state/migrateStorage";
 import zhCNMessages from "@/i18n/locales/zh-CN.json";
 import enUSMessages from "@/i18n/locales/en-US.json";
 import jaJPMessages from "@/i18n/locales/ja-JP.json";
+
+// 把旧品牌 key（cursor-client:）一次性迁到 cursor-switch: 前缀，再读新 key。
+// 必须在 resolveInitialLocale 之前执行，否则老用户升级后语言偏好丢失回退到系统默认。
+migrateLegacyStorageKeys();
 
 const localeMessages = {
   "zh-CN": zhCNMessages,
