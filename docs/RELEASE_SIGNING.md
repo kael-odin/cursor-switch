@@ -82,20 +82,23 @@ var releasePublicKeyHex = "b7787d81f16782b485c3c659b2ede84164b514babb57c2c381801
 
 **第 3 步:给每次发版的 update.json 签名**
 
-CI 生成的 `update.json` 是**未签名**的(CI 不持有私钥)。发版后,在本地补签:
+CI 生成的 `update.json` 是**未签名**的(CI 不持有私钥)。**自 2026-07-28 起 CI 不再把未签名 `update.json` 发布到 release 资产**（F-11：消除"公开未签名 manifest 窗口"），而是作为 build artifact `unsigned-update-json` 上传（保留 14 天）。发版后，在本地补签：
 
 ```bash
-# 1. 从 GitHub release 下载刚生成的 update.json
-gh release download v0.0.41 --pattern update.json --dir /tmp/
+# 0. 找到 release 对应的 workflow run（tag=v0.0.41 触发的那次）
+# 1. 下载未签名 manifest 的 build artifact
+gh run download <run-id> -n unsigned-update-json -D /tmp/
 
 # 2. 用私钥签名(原地写回 signature 字段)
 go run ./scripts/release sign --manifest /tmp/update.json
 
-# 3. 重新上传签名后的 update.json(覆盖)
-gh release upload v0.0.41 /tmp/update.json --clobber
+# 3. 把签名后的 update.json 作为 release 资产上传（首次上传，非 --clobber）
+gh release upload v0.0.41 /tmp/update.json
 ```
 
-签好后 `update.json` 会多一个 `"signature": "..."` 字段。
+> 2026-07-28 前：CI 直接把未签名 `update.json` 推到 release，维护者用 `gh release download` 拉取再 `--clobber` 回传。现已改为 artifact 流程，`--clobber` 仅在需要覆盖补签时使用。
+
+签好后 `update.json` 会多一个 `"signature": "..."` 字段。在维护者上传签名版本之前，release 上没有 `update.json`，客户端更新检查会 404 并静默保持当前版本（不会报错、不会被未签名 manifest 欺骗）。
 
 ### 验证签名是否生效
 

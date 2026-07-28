@@ -26,6 +26,15 @@ import (
 
 const checkInterval = 20 * time.Minute
 
+// F-25：约束 manifest 解析与更新包下载的资源上限，防止恶意更新服务耗尽内存或临时盘。
+//   - maxManifestBytes：update.json 体积上限（1 MiB 远超正常 manifest，仅作硬墙）。
+//   - maxAssetBytes：单个更新包全局上限（512 MiB，覆盖所有平台包；manifest 声明的 asset.Size
+//     另作精确校验）。下载按 min(asset.Size+1, maxAssetBytes) 限流并核对实际字节数。
+const (
+	maxManifestBytes int64 = 1 << 20 // 1 MiB
+	maxAssetBytes    int64 = 512 << 20
+)
+
 type State string
 
 const (
@@ -67,8 +76,10 @@ type Manager struct {
 	app *application.App
 
 	client *http.Client
-	ctx    context.Context
-	cancel context.CancelFunc
+	// baseURL 用于拉取 update.json，默认 buildinfo.UpdateBaseURL；测试可注入本地 httptest 地址。
+	baseURL string
+	ctx     context.Context
+	cancel  context.CancelFunc
 
 	mu             sync.Mutex
 	state          State
@@ -80,11 +91,24 @@ type Manager struct {
 func NewManager(app *application.App) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
-		app:    app,
-		client: netproxy.NewHTTPClient(5 * time.Minute),
-		ctx:    ctx,
-		cancel: cancel,
-		state:  StateIdle,
+		app:     app,
+		client:  netproxy.NewHTTPClient(5 * time.Minute),
+		baseURL: buildinfo.UpdateBaseURL,
+		ctx:     ctx,
+		cancel:  cancel,
+		state:   StateIdle,
+	}
+}
+
+// newTestManager 构造一个可注入 client 与 baseURL 的 Manager，供 F-25/F-27 测试。
+func newTestManager(client *http.Client, baseURL string) *Manager {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Manager{
+		client:  client,
+		baseURL: baseURL,
+		ctx:     ctx,
+		cancel:  cancel,
+		state:   StateIdle,
 	}
 }
 
@@ -184,7 +208,7 @@ func (m *Manager) checkNow(manual bool) {
 }
 
 func (m *Manager) fetchUpdateInfo(ctx context.Context) (*UpdateInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, buildinfo.UpdateBaseURL+"update.json", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"update.json", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -199,21 +223,32 @@ func (m *Manager) fetchUpdateInfo(ctx context.Context) (*UpdateInfo, error) {
 		return nil, fmt.Errorf("update manifest request failed: %s", resp.Status)
 	}
 
+	// F-25：限制 manifest 体积，拒绝过大或声明超限的响应，防恶意更新服务耗尽内存。
+	if resp.ContentLength > 0 && resp.ContentLength > maxManifestBytes {
+		return nil, fmt.Errorf("update manifest too large: %d > %d", resp.ContentLength, maxManifestBytes)
+	}
 	var data manifest
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, err
+	// LimitReader(+1) 让超限的 manifest 在 Decode 后可被检测：若实际超过上限，
+	// Decode 会因截断报错或 maxManifestBytes+1 字节后停读，配合下方实际字节数校验兜底。
+	limited := io.LimitReader(resp.Body, maxManifestBytes+1)
+	if err := json.NewDecoder(limited).Decode(&data); err != nil {
+		return nil, fmt.Errorf("decode manifest: %w", err)
 	}
 
-	if compareVersions(data.Version, buildinfo.CurrentVersion()) <= 0 {
-		return nil, nil
-	}
-
-	// 校验 manifest 签名：公钥已配置时强制校验，拒绝被篡改的 update.json（即使 release token 泄露）。
+	// F-27：验签必须在信任 Version 字段之前。
+	// 此前先 compareVersions(data.Version, current) 再 verifyManifestSignature——
+	// 伪造同版本/低版本 manifest 可被当作"已是最新"冻结更新或抑制提示（下载安装仍受签名+checksum 保护，
+	// 但提示层被欺骗）。现改为解析受限 manifest 后立即验签，之后才允许信任任何字段。
+	// 公钥未配置时 verifyManifestSignature 兼容返回 true（仅依赖 checksum），不破坏既有路径。
 	if ok, err := verifyManifestSignature(&data); err != nil || !ok {
 		if err != nil {
 			logger.Errorf("manifest signature rejected: %v", err)
 		}
 		return nil, fmt.Errorf("update manifest signature verification failed")
+	}
+
+	if compareVersions(data.Version, buildinfo.CurrentVersion()) <= 0 {
+		return nil, nil
 	}
 
 	platformKey, err := currentPlatformKey()
@@ -252,6 +287,18 @@ func (m *Manager) downloadUpdate(ctx context.Context, info *UpdateInfo) (string,
 		return "", fmt.Errorf("download request failed: %s", resp.Status)
 	}
 
+	// F-25：限制下载体积。manifest 声明的 asset.Size 是主要约束（+1 兜底防恰好超限），
+	// maxAssetBytes 是全局硬上限。任一取小者作为 LimitReader 上界。
+	expectedSize := info.Asset.Size
+	downloadLimit := maxAssetBytes
+	if expectedSize > 0 && expectedSize+1 < downloadLimit {
+		downloadLimit = expectedSize + 1
+	}
+	// Content-Length 声明超限直接拒绝，避免无谓下载。
+	if resp.ContentLength > 0 && resp.ContentLength > downloadLimit {
+		return "", fmt.Errorf("download too large: declared %d > limit %d", resp.ContentLength, downloadLimit)
+	}
+
 	tempFile, err := os.CreateTemp("", "cursor-switch-update-*"+archiveSuffix(info.Asset.URL))
 	if err != nil {
 		return "", err
@@ -269,9 +316,17 @@ func (m *Manager) downloadUpdate(ctx context.Context, info *UpdateInfo) (string,
 		m.emitProgress(info, downloaded, total)
 	})
 	m.emitProgress(info, 0, total)
-	if _, err := io.Copy(io.MultiWriter(tempFile, hasher, progress), resp.Body); err != nil {
+	// LimitReader 截断下载到 downloadLimit；MultiWriter 同步写文件/哈希/进度。
+	n, err := io.Copy(io.MultiWriter(tempFile, hasher, progress), io.LimitReader(resp.Body, downloadLimit))
+	if err != nil {
 		_ = os.Remove(tempFile.Name())
 		return "", err
+	}
+	// 实际字节数校验：若 manifest 声明了 size，下载量必须精确等于声明 size
+	// （LimitReader 允许 +1 兜底，但声明 size 应精确命中；多/少都说明资产被篡改或截断）。
+	if expectedSize > 0 && n != expectedSize {
+		_ = os.Remove(tempFile.Name())
+		return "", fmt.Errorf("download size mismatch: declared %d got %d", expectedSize, n)
 	}
 	m.emitProgress(info, total, total)
 

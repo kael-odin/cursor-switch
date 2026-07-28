@@ -81,6 +81,20 @@ jobs:
         # 不一致则发版前直接失败，避免资产版本与二进制自报版本错位。
         run: go run ./scripts/release verify-versions -config ./build/config.yml
 
+      - name: Verify trigger version matches config (F-26)
+        # F-26：发布触发版本（tag 或 workflow_dispatch input）必须与 build/config.yml 一致。
+        # 此前只校验仓库内部三处版本同步，触发版本与配置版本错配会产生 release vX / 二进制 manifest vY 错配。
+        shell: bash
+        run: |
+          CONFIG_VER="$(go run ./scripts/release version -config ./build/config.yml)"
+          TRIGGER="${{ github.event.inputs.version || github.ref_name }}"
+          TRIGGER="${TRIGGER#v}"
+          if [ "$CONFIG_VER" != "$TRIGGER" ]; then
+            echo "::error::trigger version '$TRIGGER' != config.yml version '$CONFIG_VER'"
+            exit 1
+          fi
+          echo "trigger version matches config: $CONFIG_VER"
+
       - name: Set version (tag trigger)
         if: startsWith(github.ref, 'refs/tags/v')
         run: echo "Building from tag ${{ github.ref_name }}"
@@ -125,14 +139,14 @@ jobs:
           find assets -type f -name 'cursor-switch-*' -exec mv {} assets/ \;
           find assets -type f | head
 
-      - name: Generate update.json
-        # The manifest generated here is UNSIGNED. The ed25519 public key is
-        # already populated in internal/updater/pubkey.go (releasePublicKeyHex),
-        # so clients REJECT unsigned manifests. A maintainer MUST run locally
-        # after each release to sign and re-upload update.json:
-        #   go run ./scripts/release sign -manifest <downloaded update.json>
-        #   gh release upload v<x.y.z> update.json --clobber
-        # See docs/RELEASE_SIGNING.md.
+      - name: Generate update.json (unsigned, as build artifact — F-11)
+        # F-11：签名私钥 ~/.cursor-switch-release.key 仅本地持有，绝不进 CI。
+        # 此前 CI 生成未签名 update.json 并直接作为 release 资产上传——形成"公开未签名 manifest 窗口"，
+        # 客户端虽会拒绝未签名 manifest，但维护者若忘记签名重传，用户长期看到更新失败。
+        # 现改为：CI 只把未签名 manifest 作为 build artifact 上传，不发布到 release；
+        # 维护者下载 artifact → 本地 sign → gh release upload，签名后再发布。
+        # 这样 release 上要么没有 update.json（用户无更新提示，不报错），要么是已签名版本，杜绝未签名窗口。
+        # F-26：manifest 生成失败必须终止 workflow（此前用 `|| echo` 吞掉，可能发布缺 manifest 的 release）。
         run: |
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
           VERSION="${VERSION#v}"
@@ -142,16 +156,25 @@ jobs:
             -out assets/update.json \
             -repo "kael-odin/cursor-switch" \
             -base-name "cursor-switch" \
-            -notes release-notes.md || echo "manifest generation skipped"
+            -notes release-notes.md
+
+      - name: Upload unsigned manifest as build artifact (F-11)
+        # 未签名 manifest 仅作 artifact 供维护者本地签名，绝不直接进 release 资产。
+        uses: actions/upload-artifact@v5
+        with:
+          name: unsigned-update-json
+          path: assets/update.json
+          retention-days: 14
 
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
           name: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
+          # F-11：故意不发布 update.json——签名前的 manifest 不可作为 release 资产。
+          # 维护者本地签名后用 `gh release upload vX update.json --clobber` 补传。
           files: |
             assets/cursor-switch-*
-            assets/update.json
           prerelease: ${{ contains(github.event.inputs.version || github.ref_name, 'beta') }}
           body_path: release-notes.md
         env:
