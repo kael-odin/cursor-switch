@@ -646,7 +646,13 @@ func trimDanglingAssistantToolCalls(input []Message) []Message {
 	return trimmed
 }
 
-func normalizeRuntimeThinkingEffort(raw string) string {
+// NormalizeRuntimeThinkingEffort 把各种表示「思考强度」的输入归一化为运行时口径：
+// disabled/low/medium/high/xhigh/max（已是合法值的原样小写返回）；off/none/false/0 等 → disabled；
+// very_high/extra_high 等历史写法 → xhigh；maximum → max；无法识别 → ""（调用方按"未指定"处理）。
+//
+// 此前 internal/backend/forwarder/service.go 各存一份完全相同的实现（审计 L2），现统一到 model 包，
+// forwarder 经 modeladapter 别名调用同一份。
+func NormalizeRuntimeThinkingEffort(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "disabled", "low", "medium", "high", "xhigh", "max":
 		return strings.ToLower(strings.TrimSpace(raw))
@@ -659,6 +665,12 @@ func normalizeRuntimeThinkingEffort(raw string) string {
 	default:
 		return ""
 	}
+}
+
+// normalizeRuntimeThinkingEffort 是 NormalizeRuntimeThinkingEffort 的包内别名，
+// 保留以让本包（anthropic.go/openai_messages.go/router.go 内部调用）零改动继续使用。
+func normalizeRuntimeThinkingEffort(raw string) string {
+	return NormalizeRuntimeThinkingEffort(raw)
 }
 
 func openAIReasoningEffortFromRuntime(runtimeThinkingEffort string) string {

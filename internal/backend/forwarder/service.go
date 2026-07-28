@@ -1375,7 +1375,7 @@ func extractRuntimeThinkingEffortFromRequestedModel(model *agentv1.RequestedMode
 		if parameter == nil || !isRuntimeThinkingEffortParameterID(parameter.GetId()) {
 			continue
 		}
-		if effort := normalizeRuntimeThinkingEffort(parameter.GetValue()); effort != "" {
+		if effort := modeladapter.NormalizeRuntimeThinkingEffort(parameter.GetValue()); effort != "" {
 			return effort
 		}
 	}
@@ -1383,7 +1383,7 @@ func extractRuntimeThinkingEffortFromRequestedModel(model *agentv1.RequestedMode
 		if _, effort := splitRuntimeThinkingEffortVariantString(model.GetModelId()); effort != "" {
 			return effort
 		}
-		return normalizeRuntimeThinkingEffort(model.GetModelId())
+		return modeladapter.NormalizeRuntimeThinkingEffort(model.GetModelId())
 	}
 	return ""
 }
@@ -1402,27 +1402,12 @@ func isRuntimeThinkingEffortParameterID(raw string) bool {
 	}
 }
 
-func normalizeRuntimeThinkingEffort(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "disabled", "low", "medium", "high", "xhigh", "max":
-		return strings.ToLower(strings.TrimSpace(raw))
-	case "disable", "off", "none", "false", "no", "0":
-		return "disabled"
-	case "very_high", "very-high", "veryhigh", "x-high", "extra_high", "extra-high", "extrahigh":
-		return "xhigh"
-	case "maximum":
-		return "max"
-	default:
-		return ""
-	}
-}
-
 func splitRuntimeThinkingEffortVariantString(raw string) (string, string) {
 	text := strings.TrimSpace(raw)
 	if text == "" {
 		return "", ""
 	}
-	if effort := normalizeRuntimeThinkingEffort(text); effort != "" {
+	if effort := modeladapter.NormalizeRuntimeThinkingEffort(text); effort != "" {
 		return "", effort
 	}
 	index := strings.LastIndex(text, ":")
@@ -1430,7 +1415,7 @@ func splitRuntimeThinkingEffortVariantString(raw string) (string, string) {
 		return "", ""
 	}
 	modelID := strings.TrimSpace(text[:index])
-	effort := normalizeRuntimeThinkingEffort(text[index+1:])
+	effort := modeladapter.NormalizeRuntimeThinkingEffort(text[index+1:])
 	if modelID == "" || effort == "" {
 		return "", ""
 	}
