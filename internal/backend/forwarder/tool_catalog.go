@@ -164,6 +164,32 @@ var childConversationDisallowedAgentToolNames = map[string]struct{}{
 	"AskQuestion": {},
 }
 
+// readonlySubagentToolNames 是 F-31 引入的"只读子代理"能力集。
+//
+// 此前 subagentTypeName 非空的子代理一律使用完整 agentModeToolNames，仅排除
+// AskQuestion——即使 readonly=true 的 Task（客户端把子代理 Mode 映射为
+// AGENT_MODE_PLAN）也能拿到 Write/PatchEdit/Delete/Shell 等副作用工具，只靠
+// prompt 约束。本集合剔除全部副作用入口（写/删/打补丁/Shell/写 stdin/Task 生成
+// 子代理/GenerateImage），只留读取与无副作用交互（Read/Grep/Glob/Ls/ReadLints/
+// WebSearch/WebFetch/FetchMcpResource 读/CallMcpTool/TodoWrite/SwitchMode）。
+//
+// 注意：CallMcpTool 与 FetchMcpResource 理论上可触发副作用，但子代理场景下它们
+// 主要用于读取工具结果；若需更严格可后续剔除。当前与 planModeToolNames 对齐。
+var readonlySubagentToolNames = map[string]struct{}{
+	"AskQuestion":      {},
+	"CallMcpTool":      {},
+	"FetchMcpResource": {},
+	"Glob":             {},
+	"Grep":             {},
+	"Ls":               {},
+	"Read":             {},
+	"ReadLints":        {},
+	"SwitchMode":       {},
+	"TodoWrite":        {},
+	"WebFetch":         {},
+	"WebSearch":        {},
+}
+
 func supportedToolNamesForMode(mode agentv1.AgentMode) map[string]struct{} {
 	switch normalizeMode(mode) {
 	case agentv1.AgentMode_AGENT_MODE_AGENT:
@@ -187,6 +213,15 @@ func isToolAllowedInMode(mode agentv1.AgentMode, subagentTypeName string, toolNa
 		return false
 	}
 	if isChildConversationSubagentTypeName(subagentTypeName) {
+		// F-31：readonly=true 的 Task，客户端把子代理 Mode 映射为 AGENT_MODE_PLAN。
+		// 此前一律走完整 agentModeToolNames，忽略 readonly——子代理仍可拿 Write/Delete/
+		// Shell 等副作用工具，只靠 prompt 约束。这里对 mode==PLAN 的子代理强制使用
+		// 只读能力集，形成后端 capability（catalog 生成、tool dispatch、child conversation
+		// 三个边界都经过本函数）。
+		if normalizeMode(mode) == agentv1.AgentMode_AGENT_MODE_PLAN {
+			_, ok := readonlySubagentToolNames[trimmedToolName]
+			return ok
+		}
 		if _, disallowed := childConversationDisallowedAgentToolNames[trimmedToolName]; disallowed {
 			return false
 		}
