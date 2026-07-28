@@ -142,9 +142,13 @@ func (parser *anthropicThinkTagParser) Flush() []anthropicContentPart {
 }
 
 // NewAnthropicAdapter 创建一个 Anthropic 兼容适配器。
+//
+// F-22：用 NewHTTPClientNoRedirect 禁止跟随 3xx——Anthropic adapter 同时发送
+// Authorization 与 x-api-key，跨域重定向时 x-api-key 不受 Go 标准库保护会被带去
+// 重定向目标。禁跟随，3xx 原样作为非 2xx 响应交给上层，认证头绝不离开首跳目标。
 func NewAnthropicAdapter() *AnthropicAdapter {
 	return &AnthropicAdapter{
-		client: netproxy.NewHTTPClient(0),
+		client: netproxy.NewHTTPClientNoRedirect(0),
 	}
 }
 

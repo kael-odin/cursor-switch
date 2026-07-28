@@ -172,9 +172,14 @@ func (parser *openAIThinkTagParser) Flush() []openAIContentPart {
 }
 
 // NewOpenAIAdapter 创建一个 OpenAI 兼容适配器。
+//
+// F-22：用 NewHTTPClientNoRedirect 禁止跟随 3xx——provider 推理请求若被恶意/被接管
+// endpoint 跨域重定向，Go 标准库会保护 Authorization/Cookie，但不保护 x-api-key 或
+// 用户自定义 secret header，导致凭证泄漏到重定向目标。禁跟随最安全：3xx 原样作为
+// 非 2xx 响应交给上层错误处理，认证头绝不离开首跳目标。
 func NewOpenAIAdapter() *OpenAIAdapter {
 	return &OpenAIAdapter{
-		client: netproxy.NewHTTPClient(0),
+		client: netproxy.NewHTTPClientNoRedirect(0),
 	}
 }
 

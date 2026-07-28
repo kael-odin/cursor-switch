@@ -81,7 +81,9 @@ func (s *ProxyService) FetchProviderModels(adapter serverconfig.ModelAdapterConf
 		return FetchedModelsPayload{}, fmt.Errorf("无法根据接口地址生成模型列表 URL")
 	}
 
-	client := netproxy.NewHTTPClient(modelFetchTimeout)
+	// F-22：禁止跟随 3xx——模型列表抓取携带 apiKey（Authorization/x-api-key），
+	// 跨域重定向会泄漏到重定向目标。3xx 原样作为非 2xx 错误处理。
+	client := netproxy.NewHTTPClientNoRedirect(modelFetchTimeout)
 	var lastErr error
 	for _, candidate := range candidates {
 		models, fetchErr := fetchModelsFromCandidate(client, candidate, providerType, apiKey, customHeadersEnabled, customHeadersJSON)
