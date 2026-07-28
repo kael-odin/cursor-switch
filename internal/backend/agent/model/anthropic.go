@@ -154,10 +154,13 @@ func NewAnthropicAdapter() *AnthropicAdapter {
 
 func anthropicEndpointURL(baseURL string) string {
 	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if ProviderURLHasEndpoint(base, "/v1/messages", "/messages") {
+	// F-23：短路判定在 path 部分上做，含 query/fragment 的 baseURL 不让 HasSuffix 失效。
+	basePath, baseQuery, baseFragment := splitURLPathQueryFragment(base)
+	if ProviderURLHasEndpoint(basePath, "/v1/messages", "/messages") {
 		return base
 	}
-	return base + "/v1/messages"
+	// F-23：endpoint 只拼到 path，query/fragment 原样保留（Azure 风格 ?api-version=... 不被破坏）。
+	return joinPathQueryFragment(basePath, "/v1/messages", baseQuery, baseFragment)
 }
 
 // ApplyAnthropicCompatibleAuthHeaders 同时兼容 Anthropic 原生 x-api-key 和 Bearer token 代理。
