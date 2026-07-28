@@ -53,6 +53,39 @@ jobs:
       - name: go test
         run: go test ./internal/... ./scripts/...
 
+      - name: go test -race
+        # P0 release gate：S14/F-28 broker 并发、S20/F-35 hijacked conn + 生命周期状态机、
+        # F-02 配置锁、F-13 会话崩溃一致性等大批安全修复都涉及并发，-race 是"证明这批
+        # 大规模安全修改没引入回归"最直接的动态验收。本地无 gcc 跑不了，CI ubuntu 有 gcc。
+        # CGO_ENABLED=1 是 setup-go 在纯 Go job 的默认 0 的显式覆盖（-race 依赖 cgo）。
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./internal/...
+
+  frontend:
+    # P0 release gate：前端此前 CI 只 stub frontend/dist 占位编译，从不验证前端能真正构建。
+    # S17（生产 console 脱敏）等修复改了 clientApi.js，需保证 production build 不破。
+    # 暂不加 ESLint/Vitest——前端无现成 lint/test 基础设施，从零搭建投入大，留后续决策。
+    name: frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - name: Install yarn
+        run: npm install -g yarn
+
+      - name: Install deps
+        working-directory: frontend
+        run: yarn install --frozen-lockfile
+
+      - name: Build
+        working-directory: frontend
+        run: yarn build
+
   versions:
     name: version sync
     runs-on: ubuntu-latest

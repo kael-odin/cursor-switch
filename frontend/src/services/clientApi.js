@@ -111,6 +111,12 @@ export function deleteModelPricing(modelId) {
   );
 }
 
+export function restoreDefaultPricing(modelId) {
+  return withApiLogging("RestoreDefaultPricing", modelId, () =>
+    Call.ByName(`${METRICS_SERVICE_NAME}.RestoreDefaultPricing`, modelId),
+  );
+}
+
 export function setDefaultCostMultiplier(value) {
   return withApiLogging("SetDefaultCostMultiplier", value, () =>
     Call.ByName(`${METRICS_SERVICE_NAME}.SetDefaultCostMultiplier`, value),

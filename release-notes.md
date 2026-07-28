@@ -1,4 +1,19 @@
-# 未发布
+# 2.0.2
+
+## F-09 官方回源 NoRedirect 策略修复
+
+- **`CredentialOriginalCursor` 无条件 NoRedirect**：`buildUpstreamRequest` 此前仅在未注入 HTTP client 时才为官方回源链创建不跟随重定向的 client，但 Host 在 `rebuildLocked` 无条件注入了 `netproxy.NewHTTPClient`（会跟随 3xx），导致 NoRedirect 分支恒不可达——恢复的真实 Cursor 凭证（`x-cursor-checksum` 等非标准头）可能随服务端重定向带到未校验目标。现改为凭证策略优先于依赖注入：`CredentialOriginalCursor` 无条件走 `netproxy.NewHTTPClientNoRedirect`，与注入与否解耦；timeout 对齐 Host 注入值 30s 避免无超时挂起。4 回归测试（注入跟随 client + OriginalCursor → 断言 302 原样返回、第二跳 0 命中），修复前可复现失败。
+
+## F-17 内置 Pricing 删除持久化 + 恢复默认价
+
+- **内置定价删除改逻辑删除（tombstone）**：此前删除内置标准价目记录后，`Save` 内的 `normalizePricingConfig` 把刚删的 modelId 当"缺失"按 seed 补回，删除在同一 Save 调用里就被抹掉——UI 承诺"删除后成本按 0 计算"与实际不符。现引入 `IsBuiltin`/`Disabled` 字段：内置记录"删除"实为置 `Disabled=true`，normalize 跳过已禁用的内置 modelId 不补回，成本计算按零价；自定义记录仍物理删除。
+- **恢复默认价**：新增 `RestoreDefaultPricing` 接口，把内置记录价格重置为 seed 原值并清 `Disabled`。前端 PricingPanel：内置行显示"禁用/恢复默认价"按钮 + "内置/已禁用"标签 + 灰显，自定义行保留"删除"。8 回归测试（删除路径此前 0 测试），覆盖删除持久化、reload 不补回、disabled 零价、恢复默认、旧配置回填 IsBuiltin。
+
+## P0 CI release gate（低成本部分）
+
+- **go test -race**：check.yml 的 go job 加 `-race` 测试 step（CI ubuntu 有 gcc，本地无 gcc 跑不了）。给 S14/F-28 broker 并发、S20/F-35 hijacked conn + 生命周期状态机、F-02 配置锁、F-13 会话崩溃一致性等大批并发相关安全修复上动态验收保险，是"证明这批大规模安全修改没引入回归"最直接手段。
+- **frontend build**：新建 frontend job 跑 `yarn build` production 构建。此前 CI 只 stub `frontend/dist` 占位编译，从不验证前端能真正构建；S17（生产 console 脱敏）等改动改了 clientApi.js，需保证 production build 不破。
+- **暂不加 ESLint/Vitest/E2E/smoke**：前端无现成 lint/test 基础设施，cursor-tab-server 无任何测试，smoke/E2E 需从零写——投入产出比低，留后续决策。
 
 # 2.0.1
 

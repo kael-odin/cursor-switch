@@ -41,6 +41,10 @@ type TokenPricing struct {
 	// InputTokenSemantics 控制 input token 成本回算口径（见 config.InputTokenSemantics）。
 	// 空字符串等价 legacy。前端只读展示，编辑暂不开放（口径由 seed 标注）。
 	InputTokenSemantics string `json:"inputTokenSemantics,omitempty"`
+	// IsBuiltin 标记是否内置 seed 价目（F-17）：前端据此区分"删除"（自定义）与"恢复默认价"（内置）。
+	IsBuiltin bool `json:"isBuiltin,omitempty"`
+	// Disabled 标记内置记录是否被逻辑删除（F-17 tombstone）：前端可灰显，成本计算按零价。
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // PricingSnapshot 是定价配置的完整快照：全局倍率 + 全部模型定价。
@@ -160,12 +164,20 @@ func (service *MetricsService) UpdateModelPricing(pricing TokenPricing) error {
 			if updated.InputTokenSemantics == config.InputSemanticsLegacy && cfg.Pricing.Models[i].InputTokenSemantics != "" {
 				updated.InputTokenSemantics = cfg.Pricing.Models[i].InputTokenSemantics
 			}
+			// F-17：编辑内置记录保留其 IsBuiltin 标记与 Disabled 状态（用户改价不应改变来源或解除逻辑删除）。
+			// 若 payload 显式带 Disabled（前端恢复默认后重编），以 payload 为准。
+			updated.IsBuiltin = cfg.Pricing.Models[i].IsBuiltin
+			updated.Disabled = cfg.Pricing.Models[i].Disabled
+			if pricing.Disabled {
+				updated.Disabled = true
+			}
 			cfg.Pricing.Models[i] = updated
 			found = true
 			break
 		}
 	}
 	if !found {
+		// F-17：用户新增的记录是自定义，IsBuiltin=false、Disabled=false。
 		cfg.Pricing.Models = append(cfg.Pricing.Models, updated)
 	}
 	_, err = service.store.Save(ctx, cfg)
@@ -173,6 +185,10 @@ func (service *MetricsService) UpdateModelPricing(pricing TokenPricing) error {
 }
 
 // DeleteModelPricing 删除单个模型定价记录。
+// F-17：内置记录（IsBuiltin=true）不物理删除，改为置 Disabled=true（tombstone）——
+// 否则 Save 内的 normalizePricingConfig 会把刚删的内置 modelId 当"缺失"按 seed 补回，
+// 让删除在同一个 Save 调用里就被抹掉。自定义记录（IsBuiltin=false）物理删除（保持原语义）。
+// 成本计算侧（findPrice）对 Disabled 记录返回零价，与 UI"删除后按 0 计算"承诺对齐。
 func (service *MetricsService) DeleteModelPricing(modelID string) error {
 	if service.store == nil {
 		return fmt.Errorf("config store unavailable")
@@ -188,11 +204,57 @@ func (service *MetricsService) DeleteModelPricing(modelID string) error {
 	}
 	next := make([]config.ModelPricing, 0, len(cfg.Pricing.Models))
 	for _, m := range cfg.Pricing.Models {
-		if !strings.EqualFold(strings.TrimSpace(m.ModelID), modelID) {
-			next = append(next, m)
+		if strings.EqualFold(strings.TrimSpace(m.ModelID), modelID) {
+			if m.IsBuiltin {
+				// 内置：标记逻辑删除，保留记录让 normalize 不补回、前端可"恢复默认价"。
+				m.Disabled = true
+				next = append(next, m)
+			}
+			// 自定义：直接丢弃（物理删除）。
+			continue
 		}
+		next = append(next, m)
 	}
 	cfg.Pricing.Models = next
+	_, err = service.store.Save(ctx, cfg)
+	return err
+}
+
+// RestoreDefaultPricing 把内置模型定价重置为 seed 原值并清除逻辑删除标记。
+// F-17：与 DeleteModelPricing 配对——内置记录"删除"实为 Disabled=true，
+// 此方法清 Disabled 并把价格/语义重置回 pricingModelSeed 原值。
+// 非内置记录或无 seed 命中时返回错误（自定义记录没有"默认"可恢复）。
+func (service *MetricsService) RestoreDefaultPricing(modelID string) error {
+	if service.store == nil {
+		return fmt.Errorf("config store unavailable")
+	}
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return fmt.Errorf("modelId 不能为空")
+	}
+	seed, ok := config.FindBuiltinSeed(modelID)
+	if !ok {
+		return fmt.Errorf("modelId %q 不是内置模型，无默认价可恢复", modelID)
+	}
+	ctx := context.Background()
+	cfg, err := service.store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	// 用 seed 原值覆盖同 modelId 记录；不存在则追加。
+	found := false
+	for i := range cfg.Pricing.Models {
+		if strings.EqualFold(strings.TrimSpace(cfg.Pricing.Models[i].ModelID), modelID) {
+			seed.IsBuiltin = true
+			cfg.Pricing.Models[i] = seed
+			found = true
+			break
+		}
+	}
+	if !found {
+		seed.IsBuiltin = true
+		cfg.Pricing.Models = append(cfg.Pricing.Models, seed)
+	}
 	_, err = service.store.Save(ctx, cfg)
 	return err
 }
@@ -271,6 +333,8 @@ func toPricingSnapshot(in config.PricingConfig) PricingSnapshot {
 			CacheReadPerMillion:  parseFloatOr(m.CacheReadPerMillion, 0),
 			CacheWritePerMillion: parseFloatOr(m.CacheWritePerMillion, 0),
 			InputTokenSemantics:  string(m.InputTokenSemantics),
+			IsBuiltin:            m.IsBuiltin,
+			Disabled:             m.Disabled,
 		})
 	}
 	return out
@@ -315,6 +379,8 @@ func computeCostByModel(byModel []historymetrics.ModelUsage, pricing PricingSnap
 
 // findPrice 按候选匹配查定价（移植 cc-switch model_pricing_candidates），
 // 能匹配带命名空间/版本/日期/推理努力后缀的变体。未命中返回零价（成本 0）。
+// F-17：命中但 Disabled=true 的内置记录返回零价——用户"删除"该内置模型后成本按 0 计算，
+// 与 UI 承诺对齐。
 func findPrice(models []TokenPricing, modelID string) TokenPricing {
 	cfg := config.PricingConfig{Models: make([]config.ModelPricing, 0, len(models))}
 	for _, m := range models {
@@ -325,9 +391,15 @@ func findPrice(models []TokenPricing, modelID string) TokenPricing {
 			CacheReadPerMillion: strconv.FormatFloat(m.CacheReadPerMillion, 'f', -1, 64),
 			CacheWritePerMillion: strconv.FormatFloat(m.CacheWritePerMillion, 'f', -1, 64),
 			InputTokenSemantics: config.InputTokenSemantics(m.InputTokenSemantics),
+			IsBuiltin:           m.IsBuiltin,
+			Disabled:            m.Disabled,
 		})
 	}
 	if hit := cfg.MatchModelPricing(modelID); hit != nil {
+		if hit.Disabled {
+			// 内置记录被逻辑删除：按零价计，保留 ModelID 供明细展示。
+			return TokenPricing{ModelID: hit.ModelID, IsBuiltin: hit.IsBuiltin, Disabled: true}
+		}
 		return TokenPricing{
 			ModelID:              hit.ModelID,
 			InputPerMillion:      parseFloatOr(hit.InputPerMillion, 0),
@@ -335,6 +407,7 @@ func findPrice(models []TokenPricing, modelID string) TokenPricing {
 			CacheReadPerMillion:  parseFloatOr(hit.CacheReadPerMillion, 0),
 			CacheWritePerMillion: parseFloatOr(hit.CacheWritePerMillion, 0),
 			InputTokenSemantics:  string(hit.InputTokenSemantics),
+			IsBuiltin:            hit.IsBuiltin,
 		}
 	}
 	return TokenPricing{ModelID: modelID}

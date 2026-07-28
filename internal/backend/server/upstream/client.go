@@ -97,14 +97,18 @@ func buildUpstreamRequest(reqCtx *RequestContext, body []byte, options ForwardOp
 		}
 	}
 
-	upstreamClient := reqCtx.Deps.HTTPClient
-	if upstreamClient == nil {
-		// 恢复真实凭证的官方转发使用不跟随重定向的客户端，避免凭证随重定向外泄。
-		if options.Credential == CredentialOriginalCursor {
-			upstreamClient = netproxy.NewHTTPClientNoRedirect(0)
-		} else {
-			upstreamClient = netproxy.NewHTTPClient(0)
-		}
+	// 凭证策略优先于依赖注入：恢复真实 Cursor 凭证的官方转发必须用不跟随重定向的客户端，
+	// 防止服务端 3xx 把 Authorization/Cookie/x-cursor-checksum 带到未校验的目标。
+	// 此前为 `if reqCtx.Deps.HTTPClient == nil` 才走 NoRedirect 分支，但 Host 在 rebuildLocked
+	// 中无条件注入了 netproxy.NewHTTPClient（会跟随重定向），导致该分支恒不可达、策略被覆盖（F-09）。
+	// 现改为：CredentialOriginalCursor 无条件走 NoRedirect，与注入与否解耦；timeout 对齐 Host 注入值。
+	var upstreamClient HTTPClient
+	if options.Credential == CredentialOriginalCursor {
+		upstreamClient = netproxy.NewHTTPClientNoRedirect(upstreamRedirectClientTimeout)
+	} else if reqCtx.Deps.HTTPClient != nil {
+		upstreamClient = reqCtx.Deps.HTTPClient
+	} else {
+		upstreamClient = netproxy.NewHTTPClient(upstreamRedirectClientTimeout)
 	}
 
 	return upstreamRequest, upstreamClient, nil

@@ -48,6 +48,15 @@ type ModelPricing struct {
 	// InputTokenSemantics 控制 input token 成本回算口径（见 InputTokenSemantics 注释）。
 	// 空字符串等价 legacy（向后兼容旧配置）。
 	InputTokenSemantics InputTokenSemantics `json:"inputTokenSemantics,omitempty" yaml:"inputTokenSemantics,omitempty"`
+	// IsBuiltin 标记该记录是否来自内置 seed 价目表（pricingModelSeed）。
+	// normalizePricingConfig 给 seed 补齐的记录打 true；用户自定义/编辑新增的为 false。
+	// F-17：内置记录不物理删除，只设 Disabled=true（tombstone），避免 seed 在下次 normalize 时补回。
+	IsBuiltin bool `json:"isBuiltin,omitempty" yaml:"isBuiltin,omitempty"`
+	// Disabled 是内置记录的"逻辑删除"标记（tombstone）。
+	// F-17：用户在前端"删除"内置模型时实际置 true；normalize 不再补回该 modelId 的 seed；
+	// 成本计算按零价（成本 0）处理，与 UI 承诺"删除后按 0 计算"对齐。仅对内置记录有意义。
+	// "恢复默认价"清除此标记并重置为 seed 值。自定义记录用物理删除，不走此字段。
+	Disabled bool `json:"disabled,omitempty" yaml:"disabled,omitempty"`
 }
 
 // PricingConfig 承载全局倍率与模型定价表。
@@ -202,8 +211,24 @@ var pricingModelSeed = []ModelPricing{
 	{ModelID: "command-r", DisplayName: "Cohere Command R", InputPerMillion: "0.15", OutputPerMillion: "0.60"},
 }
 
+// FindBuiltinSeed 按 modelId（大小写不敏感）查内置 seed 价目记录。
+// 命中返回该 seed 的副本（IsBuiltin=true）+ true；未命中返回零值 + false。
+// F-17：RestoreDefaultPricing 用此把用户编辑过/逻辑删除的内置记录重置回 seed 原值。
+func FindBuiltinSeed(modelID string) (ModelPricing, bool) {
+	normalized := normalizePricingModelID(modelID)
+	for _, seed := range pricingModelSeed {
+		if normalizePricingModelID(seed.ModelID) == normalized {
+			seed.IsBuiltin = true
+			return seed, true
+		}
+	}
+	return ModelPricing{}, false
+}
+
 // normalizePricingConfig 归一化定价配置：补默认倍率、按 seed 增量补齐缺失的内置模型。
 // 用户已存在同 modelId 的记录不覆盖（INSERT OR IGNORE 语义）。
+// F-17：内置模型被用户"删除"后实际置 Disabled=true（tombstone），seed 不再补回该 modelId，
+// 避免"删除→Save→normalize 补回"循环让删除失效。旧配置无 IsBuiltin 字段，命中 seed 的记录补 true。
 func normalizePricingConfig(input PricingConfig) PricingConfig {
 	output := PricingConfig{
 		DefaultCostMultiplier: strings.TrimSpace(input.DefaultCostMultiplier),
@@ -215,14 +240,27 @@ func normalizePricingConfig(input PricingConfig) PricingConfig {
 	if output.Models == nil {
 		output.Models = []ModelPricing{}
 	}
+	seedByID := make(map[string]ModelPricing, len(pricingModelSeed))
+	for _, seed := range pricingModelSeed {
+		seedByID[normalizePricingModelID(seed.ModelID)] = seed
+	}
+	// existing 记录每个 modelId 在用户配置中的出现状态：
+	// - 真正存在（无论 enabled/disabled）→ seed 不补回（避免重复）；
+	// - 内置记录的 IsBuiltin 字段在遍历时按"是否命中 seed"回填，兼容旧配置。
 	existing := make(map[string]struct{}, len(output.Models))
-	for _, m := range output.Models {
-		existing[normalizePricingModelID(m.ModelID)] = struct{}{}
+	for i := range output.Models {
+		m := &output.Models[i]
+		id := normalizePricingModelID(m.ModelID)
+		existing[id] = struct{}{}
+		if _, isSeed := seedByID[id]; isSeed {
+			// 命中 seed 的记录标记为内置（旧配置无此字段时回填；用户编辑过的内置记录也保持内置）。
+			m.IsBuiltin = true
+		}
 	}
 	for _, seed := range pricingModelSeed {
 		if _, ok := existing[normalizePricingModelID(seed.ModelID)]; !ok {
+			seed.IsBuiltin = true
 			output.Models = append(output.Models, seed)
-			existing[normalizePricingModelID(seed.ModelID)] = struct{}{}
 		}
 	}
 	return output

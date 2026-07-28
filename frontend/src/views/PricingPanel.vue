@@ -7,6 +7,7 @@ import { showModal } from "@/composables/useModal";
 import {
   deleteModelPricing,
   getPricingSnapshot,
+  restoreDefaultPricing,
   setDefaultCostMultiplier,
   updateModelPricing,
 } from "@/services/clientApi";
@@ -120,11 +121,17 @@ async function saveModel() {
   }
 }
 
+// F-17：内置模型（isBuiltin）"删除"实为逻辑删除（后端置 Disabled=true tombstone），
+// seed 不再补回、成本按 0 计；可经"恢复默认价"还原。自定义模型才物理删除。
 async function confirmDelete(model) {
+  const isBuiltin = !!model.isBuiltin;
+  const verb = isBuiltin ? "禁用" : "删除";
   const ok = await showModal({
-    title: "删除定价记录",
-    content: `确认删除「${model.modelId}」的定价记录？删除后该模型成本将按 0 计算。`,
-    confirmText: "删除",
+    title: `${verb}定价记录`,
+    content: isBuiltin
+      ? `「${model.modelId}」是内置标准价目。${verb}后该模型成本将按 0 计算，可随时点「恢复默认价」还原。`
+      : `确认${verb}「${model.modelId}」的定价记录？${verb}后该模型成本将按 0 计算。`,
+    confirmText: verb,
     cancelText: "取消",
   });
   if (!ok) return;
@@ -132,7 +139,23 @@ async function confirmDelete(model) {
     await deleteModelPricing(model.modelId);
     await refresh();
   } catch (e) {
-    errorMsg.value = `删除失败: ${e?.message ?? e}`;
+    errorMsg.value = `${verb}失败: ${e?.message ?? e}`;
+  }
+}
+
+async function confirmRestore(model) {
+  const ok = await showModal({
+    title: "恢复默认价",
+    content: `把「${model.modelId}」的价格重置为内置标准价目？`,
+    confirmText: "恢复",
+    cancelText: "取消",
+  });
+  if (!ok) return;
+  try {
+    await restoreDefaultPricing(model.modelId);
+    await refresh();
+  } catch (e) {
+    errorMsg.value = `恢复失败: ${e?.message ?? e}`;
   }
 }
 
@@ -229,9 +252,24 @@ onMounted(refresh);
               <tr
                 v-for="m in sortedModels"
                 :key="m.modelId"
-                class="border-t border-[#2a2a2a] hover:bg-[#1f1f1f]"
+                :class="[
+                  'border-t border-[#2a2a2a] hover:bg-[#1f1f1f]',
+                  m.disabled ? 'opacity-50' : '',
+                ]"
               >
-                <td class="px-3 py-2 font-mono text-[#d4d4d4]">{{ m.modelId }}</td>
+                <td class="px-3 py-2 font-mono text-[#d4d4d4]">
+                  {{ m.modelId }}
+                  <span
+                    v-if="m.isBuiltin"
+                    class="ml-1 rounded bg-[#333] px-1 text-[10px] text-[#a3a3a3]"
+                    >内置</span
+                  >
+                  <span
+                    v-if="m.disabled"
+                    class="ml-1 rounded bg-[#3a2a2a] px-1 text-[10px] text-[#d97777]"
+                    >已禁用</span
+                  >
+                </td>
                 <td class="px-3 py-2">{{ m.displayName }}</td>
                 <td class="px-3 py-2 text-right tabular-nums">{{ formatPrice(m.inputPerMillion) }}</td>
                 <td class="px-3 py-2 text-right tabular-nums">{{ formatPrice(m.outputPerMillion) }}</td>
@@ -239,7 +277,10 @@ onMounted(refresh);
                 <td class="px-3 py-2 text-right tabular-nums">{{ formatPrice(m.cacheWritePerMillion) }}</td>
                 <td class="whitespace-nowrap px-3 py-2 text-center">
                   <Button variant="text" @click="openEdit(m)">编辑</Button>
-                  <Button variant="text" @click="confirmDelete(m)">删除</Button>
+                  <Button v-if="m.disabled" variant="text" @click="confirmRestore(m)">恢复默认价</Button>
+                  <Button v-else variant="text" @click="confirmDelete(m)">{{
+                    m.isBuiltin ? "禁用" : "删除"
+                  }}</Button>
                 </td>
               </tr>
             </tbody>

@@ -14,6 +14,11 @@ import (
 
 const (
 	HeaderRawServerURL = server.HeaderServerUpstreamURL
+
+	// upstreamRedirectClientTimeout 是 CredentialOriginalCursor 转发自建 no-redirect 客户端时
+	// 使用的超时。Host 在 rebuildLocked 注入的普通客户端用 30s，此处对齐，避免官方控制面转发
+	// 因无超时而永久挂起。
+	upstreamRedirectClientTimeout = 30 * time.Second
 )
 
 type SystemSettingService interface {
