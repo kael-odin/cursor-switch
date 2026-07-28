@@ -191,6 +191,26 @@ jobs:
             echo "ℹ️  CI 签名未配置（CURSOR_SIGNING_ENABLED!=true 或 secret 缺失），已丢弃 update.json（release 上无 manifest，客户端静默不更新）"
           fi
 
+      - name: Extract current version release notes
+        # release-notes.md 含全部历史版本段。release body 只应显示当前版本变更，
+        # 否则每次发版 release 页都堆叠所有历史版本信息。
+        # 从 release-notes.md 截取 `# <当前版本>` 段到下一个 `# ` 版本标题之前的内容。
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          awk -v ver="$VERSION" '
+            $0 ~ "^# "ver"$" { found=1; next }
+            found && /^# / { exit }
+            found { print }
+          ' release-notes.md > current-release-notes.md
+          if [ ! -s current-release-notes.md ]; then
+            echo "::warning::no release-notes section for version $VERSION, falling back to full file"
+            cp release-notes.md current-release-notes.md
+          fi
+          echo "=== current-release-notes.md (version $VERSION) ==="
+          cat current-release-notes.md
+
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
@@ -202,6 +222,6 @@ jobs:
             assets/cursor-switch-*
             assets/update.json
           prerelease: ${{ contains(github.event.inputs.version || github.ref_name, 'beta') }}
-          body_path: release-notes.md
+          body_path: current-release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
