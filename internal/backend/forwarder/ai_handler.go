@@ -252,8 +252,12 @@ func (service *Service) lookupThoughtAnnotation(requestID string) (string, bool,
 		// 索引命中但会话里没找到（entry 可能被压缩/截断）：回退全量扫描兜底。
 	}
 
-	// 回退：索引未命中或命中但落空，全量扫描所有会话（正确性兜底，首次冷启动也走这里）。
-	conversationIDs, err := service.store.ListConversationIDs()
+	// 回退：索引未命中或命中但落空，按 recency 扫描会话（N-29）。
+	// 冷启动（反向索引空）时 GetThoughtAnnotation 几乎总针对最近活跃会话，
+	// 按 recency 扫描让目标尽早命中。一个 requestID 恰好属于一个会话：一旦某会话
+	// hitReq=true，其余会话不可能再命中该 requestID，立即短路停扫——把全量 O(C×E)
+	// 兜底降为扫到目标即停。未命中任何会话时仍遍历全部以正确返回 not-found。
+	conversationIDs, err := service.store.ListConversationIDsByRecency()
 	if err != nil {
 		return "", false, err
 	}
@@ -263,7 +267,10 @@ func (service *Service) lookupThoughtAnnotation(requestID string) (string, bool,
 			return "", false, err
 		}
 		if hitReq {
+			// 该会话持有此 requestID。thought 若存在必在此会话里（scanConversation 已
+			// 在上方闭包更新 foundThought/latestThought）；其余会话不会再命中，短路停扫。
 			foundRequest = true
+			break
 		}
 	}
 	if foundThought {

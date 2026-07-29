@@ -130,3 +130,55 @@ func TestLookupThoughtAnnotationFallbackFullScan(t *testing.T) {
 		t.Errorf("lookupThoughtAnnotation(req-x) fallback = %q, want %q", got, "scanned thought")
 	}
 }
+
+// TestLookupThoughtAnnotationFallbackRecencyShortCircuit 覆盖 N-29：
+// 索引 miss 兜底按 recency 扫描，且某会话 hitReq 后短路停扫。
+// 两个会话各持有一个 requestID；清空反向索引后查 req-in-conv-y，
+// 应通过兜底找到（即便 conv-y 字母序在 conv-z 之后）。再查一个不存在的
+// requestID，应扫完全部会话后正确返回 not-found（不误命中）。
+func TestLookupThoughtAnnotationFallbackRecencyShortCircuit(t *testing.T) {
+	dir := t.TempDir()
+	store := NewConversationFileStore(dir)
+	service := newServiceWithDependencies(store, nil, nil, nil, nil)
+
+	// conv-z 写在前（字母序靠前），conv-y 写在后（字母序靠后但 recency 更新）。
+	// 两者各带一个 thought_annotation。
+	if _, _, err := store.AppendEntries("conv-z", []HistoryEntry{
+		newMetadataEntry(1, "req-in-conv-z", "thought_annotation", map[string]any{
+			"kind": "summary_completed", "thought": "thought-z",
+		}),
+	}); err != nil {
+		t.Fatalf("AppendEntries conv-z: %v", err)
+	}
+	if _, _, err := store.AppendEntries("conv-y", []HistoryEntry{
+		newMetadataEntry(1, "req-in-conv-y", "thought_annotation", map[string]any{
+			"kind": "summary_completed", "thought": "thought-y",
+		}),
+	}); err != nil {
+		t.Fatalf("AppendEntries conv-y: %v", err)
+	}
+
+	// 清空反向索引模拟冷启动。
+	store.requestIndex.Range(func(k, v any) bool {
+		store.requestIndex.Delete(k)
+		return true
+	})
+
+	// 查 req-in-conv-y：兜底应找到 thought-y（recency 排序不影响正确性，目标会话终被扫到）。
+	got, ok, err := service.lookupThoughtAnnotation("req-in-conv-y")
+	if err != nil || !ok {
+		t.Fatalf("lookupThoughtAnnotation(req-in-conv-y) = (%q,%v,%v), want (thought-y,true,nil)", got, ok, err)
+	}
+	if got != "thought-y" {
+		t.Errorf("lookupThoughtAnnotation(req-in-conv-y) = %q, want thought-y", got)
+	}
+
+	// 查不存在的 requestID：扫完全部会话后正确返回 not-found。
+	got, ok, err = service.lookupThoughtAnnotation("req-does-not-exist")
+	if err != nil {
+		t.Fatalf("lookupThoughtAnnotation(missing) err = %v", err)
+	}
+	if ok {
+		t.Errorf("lookupThoughtAnnotation(missing) = (%q,true), want not-found", got)
+	}
+}

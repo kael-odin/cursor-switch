@@ -396,6 +396,62 @@ func (store *ConversationFileStore) ListConversationIDs() ([]string, error) {
 	return ids, nil
 }
 
+// ListConversationIDsByRecency 返回会话 ID，按目录最近修改时间降序排列（最近在前）。
+// 用于 lookupThoughtAnnotation 的 H4 索引 miss fallback：冷启动（反向索引空）时
+// GetThoughtAnnotation 几乎总是针对最近活跃的会话，按 recency 扫描让目标会话
+// 尽早命中，配合短路把全量 O(C×E) 兜底降为只扫到目标即停（N-29）。
+// ReadDir 的 entry.ModTime() 在目录被写入时更新（appendConversationEntries 落盘
+// 后目录 mtime 推进），故 recency 近似于最近活跃度。
+func (store *ConversationFileStore) ListConversationIDsByRecency() ([]string, error) {
+	if store == nil {
+		return nil, fmt.Errorf("conversation file store is nil")
+	}
+	entries, err := os.ReadDir(store.root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("scan history directory: %w", err)
+	}
+	type recencyEntry struct {
+		id  string
+		mt  time.Time
+	}
+	latest := make([]recencyEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		conversationID := strings.TrimSpace(entry.Name())
+		if conversationID == "" {
+			continue
+		}
+		if ok, err := fileExists(store.statePath(conversationID)); err != nil {
+			return nil, err
+		} else if !ok {
+			continue
+		}
+		info, err := entry.Info()
+		mt := time.Time{}
+		if err == nil {
+			mt = info.ModTime()
+		}
+		latest = append(latest, recencyEntry{id: conversationID, mt: mt})
+	}
+	sort.Slice(latest, func(i, j int) bool {
+		// 同 mtime 时按 id 降序兜底，保证稳定可比。
+		if latest[i].mt.Equal(latest[j].mt) {
+			return latest[i].id > latest[j].id
+		}
+		return latest[i].mt.After(latest[j].mt)
+	})
+	ids := make([]string, 0, len(latest))
+	for _, item := range latest {
+		ids = append(ids, item.id)
+	}
+	return ids, nil
+}
+
 func (store *ConversationFileStore) mutateConversation(conversationID string, createIfMissing bool, update func(*ConversationFile) error) (*ConversationFile, error) {
 	normalizedConversationID, err := validateConversationID(conversationID)
 	if err != nil {
