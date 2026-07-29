@@ -15,6 +15,13 @@ import (
 // appdata.RootDir 都落在测试隔离目录。Windows 上 os.UserHomeDir 读 USERPROFILE，
 // unix 读 HOME——两者都设。
 //
+// Linux 关键坑：resolveCursorSettingsPath 在 linux 优先读 XDG_CONFIG_HOME，仅当其
+// 为空才回退 $HOME/.config。CI ubuntu runner 部分镜像 export 了 XDG_CONFIG_HOME
+// 指向 /home/runner/.config，若不 unset，测试设的 HOME 会被 XDG 优先级绕过——
+// 生产代码写到 /home/runner/.config/Cursor/... 而非 t.TempDir，测试全红且污染 runner
+// 家目录。故 linux 下显式 unset XDG_CONFIG_HOME，强制回退到 HOME/.config（与
+// testCursorSettingsPath 的 linux 分支一致）。
+//
 // 关键坑（见 logger.CloseLogFile 文档）：cursor 包写 settings 时会调 logger.Info，
 // logger 单例首次写会在当前 HOME 下打开 app.log 并长期持有句柄，导致 t.TempDir 的
 // RemoveAll 清理报 "being used by another process"。故 cleanup 调 CloseLogFile 释放。
@@ -26,6 +33,10 @@ func setTestHome(t *testing.T, home string) {
 		t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
 	} else if runtime.GOOS == "darwin" {
 		t.Setenv("HOME", home) // darwin 也读 HOME
+	} else {
+		// linux: 强制 XDG_CONFIG_HOME 指向测试隔离目录，覆盖 runner 可能预设的值，
+		// 使 resolveCursorSettingsPath 与 testCursorSettingsPath 同源。
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	}
 	t.Cleanup(func() {
 		logger.CloseLogFile()
