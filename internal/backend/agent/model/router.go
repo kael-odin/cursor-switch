@@ -82,11 +82,23 @@ func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(M
 		permit := cb.AllowRequest()
 		if !permit.Allowed {
 			// 熔断中：跳过本候选，保留兜底（末尾候选熔断时仍会被跳过，最终走 lastErr）。
-			logRouteDiagnostic(req, "channel_skipped_circuit_open",
+			// N-39：把"因何而熔断"的真实原因带进诊断日志与 lastErr——否则全候选
+			// 皆熔断时最终错误只剩 "circuit open"，排障时看不到真实上游失败。
+			reason := cb.LastFailureReason()
+			logFields := []string{
 				"channel", channelLogID(channel),
-				"index", strconv.Itoa(index))
+				"index", strconv.Itoa(index),
+			}
+			if reason != "" {
+				logFields = append(logFields, "last_failure", reason)
+			}
+			logRouteDiagnostic(req, "channel_skipped_circuit_open", logFields...)
 			if lastErr == nil {
-				lastErr = fmt.Errorf("channel %q circuit open", channel.ID)
+				if reason != "" {
+					lastErr = fmt.Errorf("channel %q circuit open (last failure: %s)", channel.ID, reason)
+				} else {
+					lastErr = fmt.Errorf("channel %q circuit open", channel.ID)
+				}
 			}
 			continue
 		}
@@ -117,6 +129,7 @@ func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(M
 			if permit.UsedHalfOpenPermit {
 				cb.RecordFailure(permit.UsedHalfOpenPermit)
 			}
+			cb.NoteFailureReason(aerr.Error())
 			lastErr = aerr
 			if sinkStarted {
 				return lastErr
@@ -143,6 +156,8 @@ func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(M
 		}
 		if !isClientSideCancellation(ctx, effErr) && sinkErr == nil {
 			cb.RecordFailure(permit.UsedHalfOpenPermit)
+			// N-39：记录真实失败原因，供后续请求跳过本候选时还原熔断成因。
+			cb.NoteFailureReason(effErr.Error())
 		}
 		lastErr = effErr
 
@@ -262,6 +277,8 @@ type channelBreaker interface {
 	AllowRequest() AllowResult
 	RecordSuccess(usedHalfOpenPermit bool)
 	RecordFailure(usedHalfOpenPermit bool)
+	NoteFailureReason(reason string)
+	LastFailureReason() string
 }
 
 func (router *Router) adapterFor(provider string) (ModelAdapter, error) {
@@ -471,6 +488,8 @@ func (n *noopCircuitBreaker) IsAvailable() bool         { return true }
 func (n *noopCircuitBreaker) AllowRequest() AllowResult { return AllowResult{Allowed: true} }
 func (n *noopCircuitBreaker) RecordSuccess(bool)        {}
 func (n *noopCircuitBreaker) RecordFailure(bool)        {}
+func (n *noopCircuitBreaker) NoteFailureReason(string)  {}
+func (n *noopCircuitBreaker) LastFailureReason() string { return "" }
 
 
 // sanitizeProviderMessages removes replay-only placeholders and trims trailing

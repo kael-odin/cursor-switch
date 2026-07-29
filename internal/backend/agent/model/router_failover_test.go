@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -547,5 +548,35 @@ func TestRouterCountsFailureOn5xx(t *testing.T) {
 	stats := cb.Stats()
 	if stats.FailedRequests != 1 {
 		t.Errorf("503 should count as failure, got failed=%d", stats.FailedRequests)
+	}
+}
+
+// TestRouterCircuitOpenSurfacesLastFailureReason 覆盖 N-39：唯一候选熔断打开时，
+// 返回错误须带上"因何熔断"的真实原因，而非仅 "circuit open"。
+func TestRouterCircuitOpenSurfacesLastFailureReason(t *testing.T) {
+	breakers := NewCircuitBreakerRegistry(DefaultCircuitBreakerConfig())
+	cb := breakers.Get("primary")
+	// 记录真实失败原因并打开熔断。
+	cb.NoteFailureReason("upstream 503 service unavailable")
+	for i := 0; i < int(DefaultCircuitBreakerConfig().FailureThreshold)+1; i++ {
+		cb.RecordFailure(false)
+	}
+
+	primary := &fakeAdapter{err: nil} // 不应被调用（熔断）
+	resolver := &fakeResolver{
+		channels: []*legacyruntime.ResolvedChannel{makeChannel("primary", "openai")},
+	}
+	router := makeRouterWithFakes(resolver, breakers, openaiBackupAdapter(primary), &fakeAdapter{})
+
+	req := StreamRequest{ModelID: "gpt-5"}
+	err := router.Stream(context.Background(), req, func(ModelEvent) error { return nil })
+	if err == nil {
+		t.Fatalf("expected error when sole candidate circuit-open, got nil")
+	}
+	if !strings.Contains(err.Error(), "upstream 503 service unavailable") {
+		t.Errorf("error %q should surface real failure reason (N-39)", err.Error())
+	}
+	if got := primary.callOrder(); len(got) != 0 {
+		t.Errorf("circuit-open candidate must not be called, got %v", got)
 	}
 }

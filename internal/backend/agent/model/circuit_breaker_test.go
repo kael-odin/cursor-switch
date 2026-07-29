@@ -223,3 +223,64 @@ func TestCircuitBreakerRegistryUpdateConfig(t *testing.T) {
 		t.Errorf("after UpdateConfig FailureThreshold=99, 10 failures should stay Closed, state=%s", cb.State())
 	}
 }
+
+// TestCircuitBreakerLastFailureReason 覆盖 N-39：RecordFailure 前经 NoteFailureReason
+// 记录真实原因，熔断打开后可读回；成功后清除。
+func TestCircuitBreakerLastFailureReason(t *testing.T) {
+	cb := NewCircuitBreaker(testConfig())
+	if got := cb.LastFailureReason(); got != "" {
+		t.Fatalf("fresh breaker LastFailureReason=%q want empty", got)
+	}
+	cb.NoteFailureReason("  provider stream idle timeout after 30s  ")
+	cb.RecordFailure(false)
+	if got := cb.LastFailureReason(); got != "provider stream idle timeout after 30s" {
+		t.Errorf("LastFailureReason=%q want trimmed idle-timeout reason", got)
+	}
+	// 空原因不覆盖既有。
+	cb.NoteFailureReason("   ")
+	if got := cb.LastFailureReason(); got != "provider stream idle timeout after 30s" {
+		t.Errorf("empty NoteFailureReason overwrote reason: %q", got)
+	}
+	// 成功清除。
+	cb.RecordSuccess(false)
+	if got := cb.LastFailureReason(); got != "" {
+		t.Errorf("after RecordSuccess LastFailureReason=%q want empty", got)
+	}
+}
+
+// TestCircuitBreakerIsAvailableIsSideEffectFree 覆盖 N-40：Open 且已过恢复超时点时，
+// IsAvailable 返回 true 但**不得**把状态从 Open 转成 HalfOpen，也不得消耗探测名额。
+// 只有 AllowRequest 才做转换与限流。
+func TestCircuitBreakerIsAvailableIsSideEffectFree(t *testing.T) {
+	cfg := testConfig()
+	cfg.TimeoutSeconds = 0 // 打开即视为已过恢复点，shouldRecover 恒真，便于确定性测试
+	cb := NewCircuitBreaker(cfg)
+	for i := 0; i < int(cfg.FailureThreshold); i++ {
+		cb.RecordFailure(false)
+	}
+	if cb.State() != CircuitOpen {
+		t.Fatalf("breaker should be Open after threshold failures, got %s", cb.State())
+	}
+	// 多次 IsAvailable：应恒 true（已过超时点）且状态保持 Open（无副作用转换）。
+	for i := 0; i < 5; i++ {
+		if !cb.IsAvailable() {
+			t.Fatalf("IsAvailable call %d = false, want true (past recovery timeout)", i)
+		}
+		if cb.State() != CircuitOpen {
+			t.Fatalf("IsAvailable call %d mutated state to %s, want Open (must be side-effect-free)", i, cb.State())
+		}
+	}
+	// 第一次 AllowRequest 才做 Open→HalfOpen 转换并发放唯一探测名额。
+	first := cb.AllowRequest()
+	if !first.Allowed || !first.UsedHalfOpenPermit {
+		t.Fatalf("first AllowRequest after timeout = %+v, want Allowed+UsedHalfOpenPermit", first)
+	}
+	if cb.State() != CircuitHalfOpen {
+		t.Fatalf("after AllowRequest state=%s want HalfOpen", cb.State())
+	}
+	// 第二次 AllowRequest：探测名额已被占，拒绝（单探测限流未被 IsAvailable 破坏）。
+	second := cb.AllowRequest()
+	if second.Allowed {
+		t.Errorf("second AllowRequest = %+v, want denied (half-open single-probe limit)", second)
+	}
+}

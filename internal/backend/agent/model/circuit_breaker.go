@@ -13,6 +13,7 @@
 package modeladapter
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -93,6 +94,11 @@ type CircuitBreaker struct {
 	// halfOpenInFlight 当前 HalfOpen 状态已放行的探测请求数（限流，上限 1）。
 	halfOpenInFlight uint32
 
+	// lastFailureReason 最近一次 RecordFailure 记录的真实失败原因（N-39）。
+	// 熔断打开后，路由层跳过该候选时用它还原"因何而熔断"，避免最终错误只剩
+	// "circuit open" 而丢失真实上游失败（连接超时/5xx/鉴权失败等），便于排障。
+	lastFailureReason string
+
 	config CircuitBreakerConfig
 }
 
@@ -108,24 +114,28 @@ func (cb *CircuitBreaker) UpdateConfig(config CircuitBreakerConfig) {
 	cb.config = config
 }
 
-// IsAvailable 判断 provider 是否「可被纳入候选链路」，不占用 HalfOpen 探测名额。
-// 仅用于路由选择阶段的可用性判断；真正发起请求前仍需 AllowRequest 获取探测名额。
+// IsAvailable 判断 provider 是否「可被纳入候选链路」。**只读，无副作用**（N-40）：
+// 不占用 HalfOpen 探测名额，也不触发 Open→HalfOpen 状态转换。仅用于路由选择阶段
+// 的可用性排序；真正发起请求前仍需 AllowRequest 获取探测名额并完成状态转换。
+//
+// N-40：旧实现会在此处对 Open 且已超时的熔断器调 transitionToHalfOpenLocked，
+// 把状态转换的副作用泄漏进"排序"这一读路径——多个候选排序或并发请求排序时会
+// 提前/重复触发转换（transitionToHalfOpen 会把 halfOpenInFlight 清零），破坏
+// HalfOpen 单探测限流。现在转换只发生在 AllowRequest（唯一发起点），排序纯读。
 func (cb *CircuitBreaker) IsAvailable() bool {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
-	return cb.isAvailableLocked()
+	return cb.isRecoverableLocked()
 }
 
-func (cb *CircuitBreaker) isAvailableLocked() bool {
+// isRecoverableLocked 只读判断熔断器是否会放行流量：Closed/HalfOpen 恒可；
+// Open 仅当已过恢复超时点视为"可探测"。**不改任何状态**。调用方持锁。
+func (cb *CircuitBreaker) isRecoverableLocked() bool {
 	switch cb.state {
 	case CircuitClosed, CircuitHalfOpen:
 		return true
 	case CircuitOpen:
-		if cb.shouldRecoverLocked() {
-			cb.transitionToHalfOpenLocked()
-			return true
-		}
-		return false
+		return cb.shouldRecoverLocked()
 	}
 	return false
 }
@@ -189,6 +199,8 @@ func (cb *CircuitBreaker) RecordSuccess(usedHalfOpenPermit bool) {
 	}
 	cb.consecutiveFailures = 0
 	cb.totalRequests++
+	// N-39：成功即清除陈旧失败原因，避免后续偶发跳过时展示过期成因。
+	cb.lastFailureReason = ""
 
 	if cb.state == CircuitHalfOpen {
 		cb.consecutiveSuccesses++
@@ -225,6 +237,26 @@ func (cb *CircuitBreaker) RecordFailure(usedHalfOpenPermit bool) {
 			}
 		}
 	}
+}
+
+// NoteFailureReason 记录最近一次失败的真实原因（N-39）。与 RecordFailure 分开，
+// 避免改动 channelBreaker 接口既有签名；由路由层在 RecordFailure 前后调用，
+// 供后续请求跳过已熔断候选时还原真实失败原因。空字符串不覆盖既有原因。
+func (cb *CircuitBreaker) NoteFailureReason(reason string) {
+	trimmed := strings.TrimSpace(reason)
+	if trimmed == "" {
+		return
+	}
+	cb.mu.Lock()
+	cb.lastFailureReason = trimmed
+	cb.mu.Unlock()
+}
+
+// LastFailureReason 返回最近一次记录的失败原因（N-39），无则空串。
+func (cb *CircuitBreaker) LastFailureReason() string {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	return cb.lastFailureReason
 }
 
 // releaseHalfOpenPermitLocked 释放 HalfOpen 探测名额，不影响健康统计。调用方持锁。
