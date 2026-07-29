@@ -1,3 +1,20 @@
+# 未单独发版的补充修复（并入 2.0.5 工作区，未升 patch 版本）
+
+> 以下两件事在 2.0.5 之后完成、随 main 提交，但未单独升 patch 版本号发版（沿用 2.0.5）。已升级到 2.0.5+ 的用户下次拉取 main 构建即可获得。
+
+## 小米 MiMo 上下文窗口数据修复（消除 25K/128K 分母错误）
+
+- **问题**：用户反馈小米 MiMo（如 `mimo-v2.5-pro`）在 Cursor 右下角显示 "25K/128K"，但小米官方上下文窗口实际是 1M。根因：内置 `contextWindowByModelID` 表把小米 v2.5 系列全标 `128_000`——小米 `/v1/models` 端点不返回 context window 字段（大多数 OpenAI 兼容 provider 的通病），在线回退源 models.dev 又没收录小米，错误值无法被纠正，fetch-models 把错的 128K 回填给 Cursor。
+- **实测确认**：直连 `api.xiaomimimo.com` 问模型本身，`mimo-v2.5` / `mimo-v2.5-pro` / `mimo-v2.5-pro-ultraspeed` 均自报 `1,000,000`。`mimo-v2-pro` / `mimo-v2-flash` 已下线（"Unsupported model"），但保留并改 1M 与 v2.5 系列同口径，老配置渠道命中也合理。
+- **修复**：`internal/client/model_context_window.go` 小米块 4 条 `128_000` → `1_000_000`，新增 `mimo-v2.5-pro-ultraspeed`。用户重新「获取模型列表」或重启后，分母显示为 1M（"25K/1M"），比例恢复正常。
+- **关于 25K 分子**：一句话对话就 25K 不是 bug——这是 Cursor 客户端**本地估算**的当前会话上下文占用（含 Cursor 自己注入的系统 prompt + 工具定义，本身就 10-20K token），与 cursor-switch 无关。分母 128K 才是 bug，已修。
+- **测试**：`model_context_window_test.go` 3 场景——MiMo 系列返回 1M / 带后缀变体候选匹配仍命中 1M / 硬断言不得回退 128K 错误值。
+
+## 额外参数 / 自定义请求头教学文档
+
+- **问题**：模型编辑器的「额外参数 JSON」「自定义请求头 JSON」字段大部分用户不会配也不理解，配错要么被静默丢弃（F-19 denylist）要么导致请求失败，此前没有任何教学。
+- **修复**：新增 [docs/额外参数与自定义请求头配置.md](./docs/额外参数与自定义请求头配置.md)，README + README_EN 顶部文档条 + 主要功能「模型配置」段链接过去。内容含：字段语义、F-19 黑名单（`stream`/`model`/`messages`/`input`/`tools`/`tool_choice`/`system`/`instructions`/`metadata` 不可覆盖；`Authorization`/`x-api-key`/`Host`/`Cookie` 不可设）、验证过的常用配置（OpenAI `service_tier` / 采样参数 / 中转自定义识别头 / Cloudflare 头 / API 版本头）、值必须是字符串的坑、与「获取模型列表」的关系、常见误区。所有示例均对齐实际校验规则（`validateHeadersJSON` 值必须字符串、`blockedCustomHeaders`/`blockedExtraParamKeys` 大小写不敏感）。
+
 # 2.0.5
 
 ## F-01 多 Provider Failover 在正常 UI 选模链可达

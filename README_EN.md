@@ -7,7 +7,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/kael-odin/cursor-switch/check.yml?branch=main&label=CI)](https://github.com/kael-odin/cursor-switch/actions)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#-installation--usage)
 
-📚 English · [中文](./README.md) · [API & architecture reference](./docs/接口与架构速查.md) · [Refactor notes](./docs/架构重构记录.md) · [Release & signing](./docs/RELEASE_SIGNING.md)
+📚 English · [中文](./README.md) · [API & architecture reference](./docs/接口与架构速查.md) · [Refactor notes](./docs/架构重构记录.md) · [Release & signing](./docs/RELEASE_SIGNING.md) · [Extra params/headers config](./docs/额外参数与自定义请求头配置.md)
 
 </div>
 

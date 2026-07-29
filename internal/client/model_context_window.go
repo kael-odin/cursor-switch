@@ -123,11 +123,16 @@ var contextWindowByModelID = map[string]int64{
 	"minimax-m2":   1_000_000,
 	"minimax-m2.5": 1_000_000,
 	"minimax-m3":   1_000_000,
-	// Xiaomi MiMo
-	"mimo-v2-flash":    128_000,
-	"mimo-v2-pro":      128_000,
-	"mimo-v2.5":        128_000,
-	"mimo-v2.5-pro":    128_000,
+	// Xiaomi MiMo —— 实测确认（2026-07-29 直连 api.xiaomimimo.com 问模型自报）：
+	// v2.5 系列上下文窗口均为 1,000,000。此前内置表写 128_000 是错的（小米 /v1/models
+	// 不返回 context window，models.dev 未收录小米，错误值无法被在线回退纠正，导致
+	// Cursor UI 显示 25K/128K 的分母错误）。v2-pro/v2-flash 已下线（"Unsupported model"），
+	// 但保留并改 1M 与 v2.5 系列同口径，老配置渠道命中也合理。
+	"mimo-v2-flash":             1_000_000,
+	"mimo-v2-pro":               1_000_000,
+	"mimo-v2.5":                 1_000_000,
+	"mimo-v2.5-pro":             1_000_000,
+	"mimo-v2.5-pro-ultraspeed":  1_000_000,
 	// Step / Hunyuan / Mistral / Cohere
 	"step-3.7-flash":   256_000,
 	"step-3.5-flash":   256_000,

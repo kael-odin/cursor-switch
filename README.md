@@ -7,7 +7,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/kael-odin/cursor-switch/check.yml?branch=main&label=CI)](https://github.com/kael-odin/cursor-switch/actions)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#-安装与使用)
 
-📚 [English](./README_EN.md) · 中文 · [接口与架构速查](./docs/接口与架构速查.md) · [架构重构记录](./docs/架构重构记录.md) · [发版与签名](./docs/RELEASE_SIGNING.md)
+📚 [English](./README_EN.md) · 中文 · [接口与架构速查](./docs/接口与架构速查.md) · [架构重构记录](./docs/架构重构记录.md) · [发版与签名](./docs/RELEASE_SIGNING.md) · [额外参数/请求头配置](./docs/额外参数与自定义请求头配置.md)
 
 </div>
 
@@ -142,6 +142,7 @@ Tab 代码补全 / Git Commit / 分支名生成（`StreamCpp` / `CppConfig` / `W
 - **多选批量添加**：勾选多个模型一次性追加，继承当前表单的接口地址/密钥/端点/自定义参数
 - **上下文窗口自动回填**：内置 models.dev 缓存表 + 候选匹配，拉到的模型自动反查上下文窗口（1M / 400K / 256K / 200K 等），免去手填
 - **模型适配器管理**：GUI 增删改查、单测 / 批量并发测试（并发 10）
+- **额外参数 / 自定义请求头**：高级字段按需开启，覆盖请求体或请求头。配法和禁用字段见 [docs/额外参数与自定义请求头配置.md](./docs/额外参数与自定义请求头配置.md)
 
 ### 成本与用量统计
 - **使用统计仪表盘**：ECharts 按日趋势图（四类 token 堆叠面积 + 成本折线双轴）、模型统计表、Provider 统计表、请求日志（最近 500 条）
