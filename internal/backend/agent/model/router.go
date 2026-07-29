@@ -387,7 +387,8 @@ func isClientSideCancellation(ctx context.Context, err error) bool {
 //   - body 读取失败：buildHTTPStatusError 的 "body_read_error=" 形态（响应体中途断流）。
 //
 // 不可重试（换 provider 也会同样失败）：
-//   - HTTP 4xx 除 429：请求本身有问题（鉴权/参数/模型不存在）。
+//   - HTTP 4xx 除 429/401/403/404：请求本身有问题（参数错误等）。401/403/404
+//     在 BYOK per-channel key 场景下放宽（见下）。
 //   - 其它未知错误：保守不重试，透传给客户端可见真实原因。
 //
 // 错误形态由 buildHTTPStatusError（http_error.go）与 providerStreamIdleTimeoutError（stream_idle.go）
@@ -422,8 +423,16 @@ func isRetryableChannelError(err error) bool {
 	if status == 429 || status >= 500 {
 		return true
 	}
-	// 4xx（除 429）不可重试。body_read_error= 形态也带 status=，归到这里：5xx 才重试，
-	// 4xx 的 body_read_error 仍属请求侧问题。
+	// 审计 N-02 / F-07：401/403/404 放宽 failover。BYOK 场景下每个渠道有独立
+	// API key / 模型名：401（鉴权失败，换渠道用不同 key 大概率成功）、
+	// 403（禁止，可能是 per-channel 权限）、404（模型名拼错，换渠道模型名不同
+	// 可能命中）都是 per-channel 问题而非请求体本身的问题。仅 400 等请求侧
+	// 错误保守不重试（换渠道也会同样失败）。body_read_error= 形态带 status=，
+	// 同样按状态码归类。
+	if status == 401 || status == 403 || status == 404 {
+		return true
+	}
+	// 其余 4xx（含 400）不可重试。4xx 的 body_read_error 仍属请求侧问题。
 	return false
 }
 

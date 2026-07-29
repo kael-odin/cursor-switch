@@ -78,8 +78,9 @@ func TestRouterDiagnosticLogsFailoverSuccess(t *testing.T) {
 }
 
 func TestRouterDiagnosticLogsNonRetryableFailure(t *testing.T) {
-	// 主候选 401（不可重试）→ 直接透传，不 failover。
-	primary := &fakeAdapter{err: fmt.Errorf("openai adapter status=401 body=unauthorized")}
+	// 审计 N-02/F-07：400（请求体本身有问题，换渠道也失败）仍不可重试 → 直接透传，
+	// 不 failover。401/403/404 已放宽为可重试（见 TestRouterFailoverOn401/404）。
+	primary := &fakeAdapter{err: fmt.Errorf("openai adapter status=400 body=bad request")}
 	backup := &fakeAdapter{err: nil}
 	resolver := &fakeResolver{
 		channels: []*legacyruntime.ResolvedChannel{
@@ -94,14 +95,14 @@ func TestRouterDiagnosticLogsNonRetryableFailure(t *testing.T) {
 	defer restore()
 	err := router.Stream(context.Background(), req, func(ModelEvent) error { return nil })
 	if err == nil {
-		t.Fatalf("expected 401 error to propagate, got nil")
+		t.Fatalf("expected 400 error to propagate, got nil")
 	}
 	if !containsLine(buf, "channel_failed_non_retryable") {
 		t.Errorf("缺少 channel_failed_non_retryable 诊断行\n%s", buf.String())
 	}
 	// 不可重试不应 failover，故不应出现 channel_failed_failover。
 	if containsLine(buf, "channel_failed_failover") {
-		t.Errorf("4xx 不可重试不应 failover，却出现 channel_failed_failover\n%s", buf.String())
+		t.Errorf("400 不可重试不应 failover，却出现 channel_failed_failover\n%s", buf.String())
 	}
 }
 

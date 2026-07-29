@@ -118,20 +118,12 @@ func TestRouterFailoverOn5xx(t *testing.T) {
 func openaiBackupAdapter(f *fakeAdapter) ModelAdapter  { return f }
 func anthropicPrimaryAdapter(f *fakeAdapter) ModelAdapter { return f }
 
-func TestRouterNoFailoverOn4xx(t *testing.T) {
-	// 主候选 401（不可重试）→ 直接透传，不尝试备候选。
-	primary := &fakeAdapter{err: fmt.Errorf("openai adapter status=401 body=unauthorized")}
+func TestRouterNoFailoverOn400(t *testing.T) {
+	// 审计 N-02/F-07：400（请求体本身有问题，换渠道也会同样失败）仍不可重试，
+	// 直接透传，不尝试备候选。（401/403/404 已放宽为可重试，见 TestRouterFailoverOn401。）
+	primary := &fakeAdapter{err: fmt.Errorf("openai adapter status=400 body=bad request")}
 	backup := &fakeAdapter{err: nil}
 	resolver := &fakeResolver{
-		channels: []*legacyruntime.ResolvedChannel{
-			makeChannel("primary", "openai"),
-			makeChannel("backup", "openai"),
-		},
-	}
-	// 两候选都是 openai，但 Router 只有一个 openai 适配器字段——所以主备共享同一 fake。
-	// 这会破坏断言。改用 provider 区分：主 openai 401，备 anthropic 成功。
-	primary = &fakeAdapter{err: fmt.Errorf("openai adapter status=401 body=unauthorized")}
-	resolver = &fakeResolver{
 		channels: []*legacyruntime.ResolvedChannel{
 			makeChannel("primary", "openai"),
 			makeChannel("backup", "anthropic"),
@@ -142,10 +134,59 @@ func TestRouterNoFailoverOn4xx(t *testing.T) {
 	req := StreamRequest{ModelID: "gpt-5"}
 	err := router.Stream(context.Background(), req, func(ModelEvent) error { return nil })
 	if err == nil {
-		t.Fatalf("expected 401 error to propagate, got nil")
+		t.Fatalf("expected 400 error to propagate, got nil")
 	}
 	if got := backup.callOrder(); len(got) != 0 {
-		t.Errorf("backup should NOT be tried on 4xx, got calls=%v", got)
+		t.Errorf("backup should NOT be tried on 400, got calls=%v", got)
+	}
+}
+
+func TestRouterFailoverOn401(t *testing.T) {
+	// 审计 N-02/F-07：401（鉴权失败）在 BYOK per-channel key 场景下放宽为可重试——
+	// 主渠道 API key 失效时换副渠道（不同 key）大概率成功。
+	primary := &fakeAdapter{err: fmt.Errorf("openai adapter status=401 body=unauthorized")}
+	backup := &fakeAdapter{err: nil}
+	resolver := &fakeResolver{
+		channels: []*legacyruntime.ResolvedChannel{
+			makeChannel("primary", "openai"),
+			makeChannel("backup", "anthropic"),
+		},
+	}
+	router := makeRouterWithFakes(resolver, NewCircuitBreakerRegistry(DefaultCircuitBreakerConfig()), openaiBackupAdapter(primary), anthropicPrimaryAdapter(backup))
+
+	req := StreamRequest{ModelID: "gpt-5"}
+	err := router.Stream(context.Background(), req, func(ModelEvent) error { return nil })
+	if err != nil {
+		t.Fatalf("expected nil error after failover from 401, got %v", err)
+	}
+	if got := primary.callOrder(); len(got) != 1 || got[0] != "primary" {
+		t.Errorf("primary call order = %v, want [primary]", got)
+	}
+	if got := backup.callOrder(); len(got) != 1 || got[0] != "backup" {
+		t.Errorf("backup call order = %v, want [backup] (401 should failover)", got)
+	}
+}
+
+func TestRouterFailoverOn404(t *testing.T) {
+	// 审计 N-02/F-07：404（模型不存在）放宽为可重试——主渠道模型名拼错时
+	// 换副渠道（不同模型名映射）可能命中。
+	primary := &fakeAdapter{err: fmt.Errorf("openai adapter status=404 body=model not found")}
+	backup := &fakeAdapter{err: nil}
+	resolver := &fakeResolver{
+		channels: []*legacyruntime.ResolvedChannel{
+			makeChannel("primary", "openai"),
+			makeChannel("backup", "anthropic"),
+		},
+	}
+	router := makeRouterWithFakes(resolver, NewCircuitBreakerRegistry(DefaultCircuitBreakerConfig()), openaiBackupAdapter(primary), anthropicPrimaryAdapter(backup))
+
+	req := StreamRequest{ModelID: "gpt-5"}
+	err := router.Stream(context.Background(), req, func(ModelEvent) error { return nil })
+	if err != nil {
+		t.Fatalf("expected nil error after failover from 404, got %v", err)
+	}
+	if got := backup.callOrder(); len(got) != 1 || got[0] != "backup" {
+		t.Errorf("backup call order = %v, want [backup] (404 should failover)", got)
 	}
 }
 
@@ -341,8 +382,9 @@ func TestIsRetryableChannelError(t *testing.T) {
 		{"503", fmt.Errorf("openai adapter status=503 body=down"), true},
 		{"500", fmt.Errorf("anthropic adapter status=500 body=err"), true},
 		{"429", fmt.Errorf("openai adapter status=429 body=rate limited"), true},
-		{"401", fmt.Errorf("openai adapter status=401 body=unauthorized"), false},
-		{"404", fmt.Errorf("anthropic adapter status=404 body=not found"), false},
+		{"401", fmt.Errorf("openai adapter status=401 body=unauthorized"), true},  // N-02/F-07: BYOK per-channel key 场景放宽
+		{"403", fmt.Errorf("openai adapter status=403 body=forbidden"), true},     // N-02/F-07
+		{"404", fmt.Errorf("anthropic adapter status=404 body=not found"), true},  // N-02/F-07: 模型名拼错换渠道可能命中
 		{"400", fmt.Errorf("openai adapter status=400 body=bad request"), false},
 		{"idle_timeout_seconds", fmt.Errorf("provider stream idle timeout after 240s without effective content"), true},
 		{"idle_timeout_duration", fmt.Errorf("provider stream idle timeout after 4m0s without effective content"), true},
