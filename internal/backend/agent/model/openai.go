@@ -301,7 +301,21 @@ func openAITextLooksLikeImageGenerationRequest(text string) bool {
 
 
 // Stream 发送 OpenAI 兼容流式请求，并解析统一模型事件。
+// Stream 按 OpenAI 兼容协议发送流式请求（chatcompletions 或 responses），并解析统一模型事件。
+//
+// A3：本方法不直接发流，而是经由 streamWithThinkingRectifier 包装——首试若命中 thinking
+// signature 类错误（且未首字节、未整流过），自动剥离会话历史里的推理内容与签名后重试一次。
+// OpenAI 原生协议不含 Anthropic thinking signature 概念，但走 Anthropic 兼容路由的第三方中转
+// 会把签名错误透传进来；shouldRectifyThinkingSignature 只在错误形态匹配时触发，故对纯 OpenAI
+// 路径零副作用。实际分派逻辑在 streamOnce。
 func (adapter *OpenAIAdapter) Stream(ctx context.Context, req StreamRequest, sink func(ModelEvent) error) error {
+	return streamWithThinkingRectifier(ctx, req, sink, func(r StreamRequest, s func(ModelEvent) error) error {
+		return adapter.streamOnce(ctx, r, s)
+	})
+}
+
+// streamOnce 按 OpenAI 兼容协议分派到 chatcompletions 或 responses（A3：实际逻辑，由 Stream 包装整流重试）。
+func (adapter *OpenAIAdapter) streamOnce(ctx context.Context, req StreamRequest, sink func(ModelEvent) error) error {
 	baseURL := strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
 	if baseURL == "" {
 		return fmt.Errorf("openai base url is empty")

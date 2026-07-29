@@ -199,7 +199,18 @@ func anthropicProviderSystemBlocks(systemParts []string) []map[string]any {
 }
 
 // Stream 发送 Messages 流式请求，并解析统一模型事件。
+//
+// A3：本方法不直接发流，而是经由 streamWithThinkingRectifier 包装——首试若命中 thinking
+// signature 类错误（且未首字节、未整流过），自动剥离会话历史里的推理内容与签名后重试一次，
+// 而不是把签名错误透传给用户。实际流逻辑在 streamOnce。
 func (adapter *AnthropicAdapter) Stream(ctx context.Context, req StreamRequest, sink func(ModelEvent) error) error {
+	return streamWithThinkingRectifier(ctx, req, sink, func(r StreamRequest, s func(ModelEvent) error) error {
+		return adapter.streamOnce(ctx, r, s)
+	})
+}
+
+// streamOnce 发送 Messages 流式请求，并解析统一模型事件（A3：实际流逻辑，由 Stream 包装整流重试）。
+func (adapter *AnthropicAdapter) streamOnce(ctx context.Context, req StreamRequest, sink func(ModelEvent) error) error {
 	baseURL := strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
 	if baseURL == "" {
 		return fmt.Errorf("anthropic base url is empty")

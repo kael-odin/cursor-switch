@@ -1,3 +1,14 @@
+# 2.0.5
+
+## A3 Thinking Signature 整流器（自愈式重试）
+
+- **问题**：走 Anthropic 兼容路由的第三方中转（DeepSeek/Kimi/Qwen/GLM/… 回签 Anthropic 风格响应的）实现 thinking signature 参差，常回签无效签名。cursor-switch 把会话历史里的 assistant 推理内容与签名原样回带上行，provider 校验签名失败直接返回 HTTP 400——而 400 属不可重试错误，Router 不会 failover，签名错误原样透传给用户，对话中断。
+- **修复**：adapter 层加 thinking signature 整流器（`internal/backend/agent/model/thinking_rectifier.go`，对齐 cc-switch `thinking_rectifier.rs`）。首试若命中签名类错误（且流尚未首字节、本请求未整流过），自动剥离会话历史里 assistant 消息携带的推理内容与签名（`ReasoningContent`/`ReasoningSignature`/`ReasoningSignatureSource` 与 OpenAI Responses 推理字段），让 provider 视作"无 thinking 历史的新请求"重试一次，绕开签名校验。
+- **为何在 adapter 内而非 Router failover**：签名错误是 HTTP 400，`isRetryableChannelError` 视为不可重试，Router 直接透传；根因是会话历史里的无效签名，换候选治标不治本——同一份历史发到下一个候选大概率还是 400。必须整流消息本身。整流重试发生在 sink 首字节之前（provider 在流开始前就拒绝请求），与 Router 的 `sinkStarted` failover 闸门正交不冲突。
+- **安全闸门**：① `shouldRectifyThinkingSignature` 只匹配 cc-switch 对齐的 7 个签名错误场景（thinking block 签名无效 / Thought signature not valid / must start with a thinking block / expected thinking found tool_use / signature field required / signature extra inputs not permitted / thinking blocks cannot be modified / 非法请求兜底），普通 400 不触发；② 本地 `sinkStarted` 闸门——首字节已发绝不重试（避免双发）；③ `rectifiedOnce` 闸门（`RequestKnobs["thinking_rectified"]`）——只整流一次，二次失败透传给上层由 Router 决定，避免与真正坏掉的 provider 死循环；④ 客户端已取消不重试。
+- **接入**：`AnthropicAdapter.Stream` / `OpenAIAdapter.Stream` 经 `streamWithThinkingRectifier` 包装，原流逻辑下沉为 `streamOnce`（方法体一字未改）。OpenAI 原生协议不含 thinking signature 概念，但走 Anthropic 兼容路由的中转会把签名错误透传进来；判定只在错误形态匹配时触发，对纯 OpenAI 路径零副作用。
+- **测试**：`thinking_rectifier_test.go`——`shouldRectifyThinkingSignature` 14 场景（7 触发 + 反例）、`rectifyMessagesForThinkingSignature`（assistant 推理清空 / user·tool 不动 / 深拷贝不改入参 / 无改动返回 nil,false）、`streamWithThinkingRectifier` 7 端到端（签名错误重试成功 / 非签名不重试 / sinkStarted 不重试 / 已整流不重试 / 无可剥离不重试 / 二次失败透传 / 取消不重试）。
+
 # 2.0.4
 
 ## Token 口径异常修复（消除 487 条误报 + 成本低估）
