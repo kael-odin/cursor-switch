@@ -12,6 +12,7 @@ import (
 
 type PromptCompiler interface {
 	Compile(conversation *ConversationFile, mode agentv1.AgentMode, latestUserText string, modelName string) (CompiledConversation, error)
+	CompileWithReplay(conversation *ConversationFile, mode agentv1.AgentMode, latestUserText string, modelName string, replayMessages []modeladapter.Message) (CompiledConversation, error)
 	DerivePromptContexts(conversation *ConversationFile, mode agentv1.AgentMode, latestUserText string) ([]PromptContextMessage, error)
 }
 
@@ -37,6 +38,19 @@ func (compiler *DefaultPromptCompiler) Compile(conversation *ConversationFile, m
 	if compiler == nil || compiler.projector == nil || compiler.catalog == nil {
 		return CompiledConversation{}, fmt.Errorf("prompt compiler dependencies are not initialized")
 	}
+	replayMessages, err := compiler.projector.ProjectPromptReplay(conversation)
+	if err != nil {
+		return CompiledConversation{}, err
+	}
+	return compiler.CompileWithReplay(conversation, mode, latestUserText, modelName, replayMessages)
+}
+
+// CompileWithReplay 接收调用方已算好的 replay 消息，避免与 ProjectLegacyCheckpoint
+// 在同一 publishCheckpoint 里重复跑 ProjectPromptReplay（N-06）。
+func (compiler *DefaultPromptCompiler) CompileWithReplay(conversation *ConversationFile, mode agentv1.AgentMode, latestUserText string, modelName string, replayMessages []modeladapter.Message) (CompiledConversation, error) {
+	if compiler == nil || compiler.projector == nil || compiler.catalog == nil {
+		return CompiledConversation{}, fmt.Errorf("prompt compiler dependencies are not initialized")
+	}
 	normalizedMode, err := validateSupportedActiveMode(mode)
 	if err != nil {
 		return CompiledConversation{}, err
@@ -54,10 +68,6 @@ func (compiler *DefaultPromptCompiler) Compile(conversation *ConversationFile, m
 		return CompiledConversation{}, err
 	}
 	tools, _, err := compiler.catalog.Load(normalizedMode, subagentTypeName)
-	if err != nil {
-		return CompiledConversation{}, err
-	}
-	replayMessages, err := compiler.projector.ProjectPromptReplay(conversation)
 	if err != nil {
 		return CompiledConversation{}, err
 	}

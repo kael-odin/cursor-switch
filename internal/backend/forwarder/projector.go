@@ -477,6 +477,16 @@ func isHistoricalReplayToolResult(conversation *ConversationFile, entry HistoryE
 
 // ProjectLegacyCheckpoint 按需从 JSON history 投影出兼容旧客户端的 checkpoint 结构。
 func (projector *HistoryProjector) ProjectLegacyCheckpoint(conversation *ConversationFile) (*agentv1.ConversationStateStructure, error) {
+	replayMessages, err := projector.ProjectPromptReplay(conversation)
+	if err != nil {
+		return nil, err
+	}
+	return projector.ProjectLegacyCheckpointWithReplay(conversation, replayMessages)
+}
+
+// ProjectLegacyCheckpointWithReplay 接收调用方已算好的 replay 消息，避免 publishCheckpoint
+// 路径里 ProjectLegacyCheckpoint 与 compiler.Compile 各自重跑一次 ProjectPromptReplay（N-06）。
+func (projector *HistoryProjector) ProjectLegacyCheckpointWithReplay(conversation *ConversationFile, replayMessages []modeladapter.Message) (*agentv1.ConversationStateStructure, error) {
 	state := &agentv1.ConversationStateStructure{
 		TokenDetails: &agentv1.ConversationTokenDetails{
 			UsedTokens: conversationTokenDetailsUsedTokens(conversation),
@@ -659,10 +669,6 @@ func (projector *HistoryProjector) ProjectLegacyCheckpoint(conversation *Convers
 			return nil, err
 		}
 		state.Turns = append(state.Turns, turnPayload)
-	}
-	replayMessages, err := projector.ProjectPromptReplay(conversation)
-	if err != nil {
-		return nil, err
 	}
 	promptReplay := make([]promptengine.Message, 0, len(replayMessages))
 	for _, message := range replayMessages {

@@ -11,6 +11,7 @@ import (
 
 	"cursor/gen/agentv1"
 	runtimecore "cursor/internal/backend/agent/core"
+	modeladapter "cursor/internal/backend/agent/model"
 )
 
 // closeStreamWithProviderError 在真实 LLM/provider 出错时通过 RunSSE 传回错误，并正常结束流。
@@ -185,18 +186,28 @@ func (service *Service) publishCheckpoint(requestID string, _ string) error {
 	if err != nil {
 		return err
 	}
-	state, err := service.projector.ProjectLegacyCheckpoint(conversation)
+	// N-06：原 publishCheckpoint 路径里 ProjectLegacyCheckpoint 与 compiler.Compile 各自
+	// 跑一次 ProjectPromptReplay（全量 O(n) 扫 entries + 逐 entry unmarshal），是同一 publish
+	// 的重复投影。改为算一次 replay，分别传给 ProjectLegacyCheckpointWithReplay 与
+	// CompileWithReplay，把两次全量投影合并为一次。publishCheckpoint 在 29+ 调用点触发，
+	// 长会话下收益随会话长度线性放大。
+	replayMessages := service.checkpointReplayMessages(stream, conversation)
+	state, err := service.projector.ProjectLegacyCheckpointWithReplay(conversation, replayMessages)
 	if err != nil {
-		return err
+		// replay 计算失败时回退到独立投影（保持原容错语义）。
+		state, err = service.projector.ProjectLegacyCheckpoint(conversation)
+		if err != nil {
+			return err
+		}
 	}
 	state.PendingToolCalls = buildPendingToolCalls(pendingExecs, pendingInteractions)
-	service.rewriteCheckpointTokenDetailsForClient(stream, conversation, state)
+	service.rewriteCheckpointTokenDetailsForClient(stream, conversation, state, replayMessages)
 	return service.broker.Publish(requestID, StreamEvent{
 		Message: buildCheckpointMessage(state),
 	})
 }
 
-func (service *Service) rewriteCheckpointTokenDetailsForClient(stream *ActiveStream, conversation *ConversationFile, state *agentv1.ConversationStateStructure) {
+func (service *Service) rewriteCheckpointTokenDetailsForClient(stream *ActiveStream, conversation *ConversationFile, state *agentv1.ConversationStateStructure, replayMessages []modeladapter.Message) {
 	if state == nil {
 		return
 	}
@@ -204,22 +215,49 @@ func (service *Service) rewriteCheckpointTokenDetailsForClient(stream *ActiveStr
 		state.TokenDetails = &agentv1.ConversationTokenDetails{}
 	}
 	state.TokenDetails.MaxTokens = clampInt64ToUint32(service.checkpointDisplayMaxTokens(stream, conversation))
-	compiled, hasCompiled := service.checkpointCompiledConversation(stream, conversation)
+	compiled, hasCompiled := service.checkpointCompiledConversationWithReplay(stream, conversation, replayMessages)
 	state.TokenDetails.UsedTokens = clampInt64ToUint32(service.checkpointDisplayUsedTokens(conversation, state, compiled, hasCompiled))
 	state.TokenDetails.Breakdown = estimateCheckpointPromptTokenBreakdown(compiled, hasCompiled, state.TokenDetails.UsedTokens, state.TokenDetails.MaxTokens)
 }
 
 func (service *Service) checkpointCompiledConversation(stream *ActiveStream, conversation *ConversationFile) (CompiledConversation, bool) {
+	return service.checkpointCompiledConversationWithReplay(stream, conversation, nil)
+}
+
+// checkpointCompiledConversationWithReplay 复用调用方已算好的 replay，避免与
+// ProjectLegacyCheckpointWithReplay 重复跑 ProjectPromptReplay（N-06）。
+// replayMessages 为 nil 时回退到独立 Compile（保持原语义）。
+func (service *Service) checkpointCompiledConversationWithReplay(stream *ActiveStream, conversation *ConversationFile, replayMessages []modeladapter.Message) (CompiledConversation, bool) {
 	if service == nil || service.compiler == nil || conversation == nil {
 		return CompiledConversation{}, false
 	}
 	_, modelName, latestUserText, mode := checkpointPromptContext(stream)
-	compiled, err := service.compiler.Compile(conversation, mode, latestUserText, modelName)
+	var compiled CompiledConversation
+	var err error
+	if replayMessages != nil {
+		compiled, err = service.compiler.CompileWithReplay(conversation, mode, latestUserText, modelName, replayMessages)
+	} else {
+		compiled, err = service.compiler.Compile(conversation, mode, latestUserText, modelName)
+	}
 	if err != nil {
 		log.Printf("forwarder checkpoint token estimate failed request_id=%s conversation_id=%s err=%v", strings.TrimSpace(activeStreamRequestID(stream)), strings.TrimSpace(conversation.ConversationID), err)
 		return CompiledConversation{}, false
 	}
 	return guardCompiledConversationForProvider(compiled), true
+}
+
+// checkpointReplayMessages 算一次 ProjectPromptReplay 供 publishCheckpoint 路径内
+// ProjectLegacyCheckpointWithReplay 与 CompileWithReplay 复用（N-06）。
+// projector 或 conversation 缺省时返回 nil，由调用方回退到独立投影。
+func (service *Service) checkpointReplayMessages(stream *ActiveStream, conversation *ConversationFile) []modeladapter.Message {
+	if service == nil || service.projector == nil || conversation == nil {
+		return nil
+	}
+	replayMessages, err := service.projector.ProjectPromptReplay(conversation)
+	if err != nil {
+		return nil
+	}
+	return replayMessages
 }
 
 func (service *Service) checkpointDisplayMaxTokens(stream *ActiveStream, conversation *ConversationFile) int64 {
