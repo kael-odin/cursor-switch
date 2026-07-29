@@ -143,8 +143,8 @@ type ActiveStream struct {
 	CurrentProviderToken                        uint64
 	CurrentCompactionToken                      uint64
 	TimerTokens                                 map[string]uint64
-	ProviderAccumulatedText                     string
-	ProviderAccumulatedReasoning                string
+	ProviderAccumulatedText                     strings.Builder
+	ProviderAccumulatedReasoning                strings.Builder
 	ProviderAccumulatedReasoningSignature       string
 	ProviderAccumulatedReasoningSignatureSource string
 	ProviderAccumulatedReasoningItemID          string

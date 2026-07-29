@@ -562,8 +562,8 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 	stream.TimerTokens = make(map[string]uint64)
 	stream.CurrentProviderToken = 0
 	stream.CurrentCompactionToken = 0
-	stream.ProviderAccumulatedText = ""
-	stream.ProviderAccumulatedReasoning = ""
+	stream.ProviderAccumulatedText.Reset()
+	stream.ProviderAccumulatedReasoning.Reset()
 	stream.ProviderAccumulatedReasoningSignature = ""
 	stream.ProviderAccumulatedReasoningSignatureSource = ""
 	stream.ProviderAccumulatedReasoningItemID = ""
@@ -772,8 +772,8 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 	stream.CurrentModelCallID = uuid.NewString()
 	stream.CurrentProviderToken++
 	currentToken := stream.CurrentProviderToken
-	stream.ProviderAccumulatedText = ""
-	stream.ProviderAccumulatedReasoning = ""
+	stream.ProviderAccumulatedText.Reset()
+	stream.ProviderAccumulatedReasoning.Reset()
 	stream.ProviderAccumulatedReasoningSignature = ""
 	stream.ProviderAccumulatedReasoningSignatureSource = ""
 	stream.ProviderAccumulatedReasoningItemID = ""

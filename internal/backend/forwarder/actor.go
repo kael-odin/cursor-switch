@@ -468,8 +468,8 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 	conversationID := stream.ConversationID
 	turnSeq := stream.TurnSeq
 	modelCallID := stream.CurrentModelCallID
-	accumulatedText := stream.ProviderAccumulatedText
-	accumulatedReasoning := stream.ProviderAccumulatedReasoning
+	accumulatedText := stream.ProviderAccumulatedText.String()
+	accumulatedReasoning := stream.ProviderAccumulatedReasoning.String()
 	accumulatedReasoningSignature := stream.ProviderAccumulatedReasoningSignature
 	accumulatedReasoningSignatureSource := stream.ProviderAccumulatedReasoningSignatureSource
 	accumulatedReasoningItemID := stream.ProviderAccumulatedReasoningItemID
@@ -480,13 +480,13 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 	switch event.Kind {
 	case modeladapter.ModelEventKindTextDelta:
 		stream.mu.Lock()
-		stream.ProviderAccumulatedText += event.Text
+		stream.ProviderAccumulatedText.WriteString(event.Text)
 		stream.UpdatedAt = time.Now().UTC()
 		stream.mu.Unlock()
 		return service.broker.Publish(requestID, StreamEvent{Message: buildTextDeltaMessage(event.Text)})
 	case modeladapter.ModelEventKindThinkingDelta:
 		stream.mu.Lock()
-		stream.ProviderAccumulatedReasoning += event.Text
+		stream.ProviderAccumulatedReasoning.WriteString(event.Text)
 		stream.UpdatedAt = time.Now().UTC()
 		stream.mu.Unlock()
 		return service.broker.Publish(requestID, StreamEvent{Message: buildThinkingDeltaMessage(event.Text, event.ThinkingStyle)})
@@ -501,7 +501,7 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 			stream.ProviderAccumulatedReasoningItemID = strings.TrimSpace(event.ProviderItemID)
 			stream.ProviderAccumulatedReasoningStatus = strings.TrimSpace(event.ProviderStatus)
 			stream.ProviderAccumulatedReasoningSummary = append([]byte(nil), event.ProviderSummary...)
-			shouldEmitSyntheticThinking = strings.TrimSpace(stream.ProviderAccumulatedReasoning) == "" &&
+			shouldEmitSyntheticThinking = strings.TrimSpace(stream.ProviderAccumulatedReasoning.String()) == "" &&
 				strings.TrimSpace(event.ThinkingSignatureSource) == modeladapter.ReasoningSignatureSourceOpenAIResponses
 			if shouldEmitSyntheticThinking {
 				if stream.ProviderSyntheticThinkingStartedAt.IsZero() {
@@ -584,7 +584,7 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 		invocation.ReasoningProviderSummary = reasoningSummaryForTool
 		invocation.ModelCallID = modelCallID
 		stream.mu.Lock()
-		stream.ProviderAccumulatedText = ""
+		stream.ProviderAccumulatedText.Reset()
 		stream.UpdatedAt = time.Now().UTC()
 		stream.mu.Unlock()
 		return service.handleToolInvocation(stream, invocation)
@@ -686,8 +686,8 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 	conversationID := stream.ConversationID
 	turnSeq := stream.TurnSeq
 	modelCallID := stream.CurrentModelCallID
-	accumulatedText := stream.ProviderAccumulatedText
-	accumulatedReasoning := stream.ProviderAccumulatedReasoning
+	accumulatedText := stream.ProviderAccumulatedText.String()
+	accumulatedReasoning := stream.ProviderAccumulatedReasoning.String()
 	accumulatedReasoningSignature := stream.ProviderAccumulatedReasoningSignature
 	accumulatedReasoningSignatureSource := stream.ProviderAccumulatedReasoningSignatureSource
 	accumulatedReasoningItemID := stream.ProviderAccumulatedReasoningItemID
@@ -701,8 +701,8 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 	stream.ProviderActive = false
 	stream.ProviderCancel = nil
 	stream.PendingProviderAction = providerActionNone
-	stream.ProviderAccumulatedText = ""
-	stream.ProviderAccumulatedReasoning = ""
+	stream.ProviderAccumulatedText.Reset()
+	stream.ProviderAccumulatedReasoning.Reset()
 	stream.ProviderAccumulatedReasoningSignature = ""
 	stream.ProviderAccumulatedReasoningSignatureSource = ""
 	stream.ProviderAccumulatedReasoningItemID = ""
