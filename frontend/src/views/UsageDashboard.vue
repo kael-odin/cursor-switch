@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import Button from "@/components/ui/Button.vue";
 import EChart from "@/components/charts/EChart.vue";
@@ -38,6 +38,12 @@ async function refresh() {
 onMounted(async () => {
   await refresh();
   startTimer();
+});
+
+// N-37: 路由切走时清理 setInterval，避免向已卸载组件赋值与不可见轮询。
+// 参照 ModelConfig.vue 的 onBeforeUnmount(stopBatchTesting) 模式。
+onBeforeUnmount(() => {
+  stopTimer();
 });
 
 function startTimer() {
