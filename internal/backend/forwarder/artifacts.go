@@ -18,7 +18,7 @@ type artifactRecorder struct {
 	broker *StreamBroker
 	debug  *debugRecorder
 
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	sessions map[string]artifactSession
 }
 
@@ -74,6 +74,12 @@ func (recorder *artifactRecorder) RecordLLMRequest(requestID string, _ string, m
 }
 
 func (recorder *artifactRecorder) AppendLLMResponseChunk(requestID string, runID string, modelCallID string, chunk string) (string, error) {
+	// N-09：每个 SSE 行都走此路径。debug 关闭时 LogProviderArtifact 是 no-op，
+	// 整段短路——不调 ensureSession、不持锁、不构造 payload map，与 LogProviderArtifact
+	// 内部 enabled 短路对齐。debug 开启才付 ensureSession + 日志开销。
+	if recorder == nil || recorder.debug == nil || !recorder.debug.enabled(context.Background()) {
+		return "", nil
+	}
 	session, err := recorder.ensureSession(requestID, modelCallID)
 	if err != nil {
 		return "", err
@@ -168,8 +174,17 @@ func (recorder *artifactRecorder) ensureSession(requestID string, modelCallID st
 		return artifactSession{}, fmt.Errorf("artifact recorder is nil")
 	}
 	key := artifactSessionKey(requestID, modelCallID)
+	// N-09：命中（热路径，每个 SSE 行都查）走 RLock 读路径免锁竞争；
+	// 未命中才升级写锁，double-check 后创建，避免并发创建重复 session。
+	recorder.mu.RLock()
+	if session, ok := recorder.sessions[key]; ok {
+		recorder.mu.RUnlock()
+		return session, nil
+	}
+	recorder.mu.RUnlock()
 	recorder.mu.Lock()
 	defer recorder.mu.Unlock()
+	// double-check：持写锁后再查一次，可能已被并发创建者写入。
 	if session, ok := recorder.sessions[key]; ok {
 		return session, nil
 	}
