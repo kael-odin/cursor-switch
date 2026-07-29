@@ -1,6 +1,17 @@
-# 未单独发版的补充修复（并入 2.0.5 工作区，未升 patch 版本）
+# 2.0.6
 
-> 以下两件事在 2.0.5 之后完成、随 main 提交，但未单独升 patch 版本号发版（沿用 2.0.5）。已升级到 2.0.5+ 的用户下次拉取 main 构建即可获得。
+## 第三轮全量审计 P0–P3 全部闭合（N-01 ~ N-40）
+
+2.0.6 收口 2026-07-29 第三轮全量静态审计（详见 [docs/AUDIT_2026-07-29_全量.md](./docs/AUDIT_2026-07-29_全量.md)）的全部可修项——P0/P1/P2/P3 逐条修复，每项独立 commit、全量 `go test ./...` 绿、审计文档内逐条 ✅ 标注 commit 号。按修复面归纳：
+
+- **正确性 / 计费**：half-open 探测名额泄漏致渠道永久卡死（N-01）、turn_finalized 事件携带 ModelID/Provider 修复 dashboard 误标 CalibrationAnomaly（N-12）、anthropic 无参工具 `input_schema` 归一化（N-03/N-23）、AwaitShell 实现真正阻塞等待而非一次性快照（N-04）、@docs 上传抓取页面正文入库（N-21，复用 safehttp SSRF 防护）、EventID 分隔符 `::`→`\x1f` 消除 requestID 含 `::` 时的跨 ID 计费串账（N-38）。
+- **路由 / 排障**：放宽 401/403/404 failover 让 BYOK per-channel key 失效可切备用（N-02/F-07）、全候选熔断时保留并透传真实失败原因而非只剩 "circuit open"（N-39）、`IsAvailable` 改纯只读消除排序期提前触发 Open→HalfOpen 的副作用与并发双探测隐患（N-40）。
+- **崩溃一致性**：A6 Cursor settings.json 接管/还原/崩溃恢复一致性加固（N-10/N-11/N-25/N-26/N-57）。
+- **性能热路径**：工具 args 字段搜索增量偏移消除每 delta 全扫 O(n²)（N-07）、文本/思考 delta 累加改 `strings.Builder`（N-27）、artifacts 热路径 RWMutex 读锁 + debug 关闭短路（N-09）、消除 appendConversationEntries 双重克隆（N-05）、publishCheckpoint 合并重复 ProjectPromptReplay 投影（N-06）、usage_store 合并 Lookup+Upsert 为单次读改写（N-28）、GetThoughtAnnotation miss 回退按 recency 扫描并命中即短路（N-29）。
+- **云端一体化透传（默认关）**：codebase/docs 面新增 `CredentialOriginalCursor` 透传选项（N-33/N-35），默认仍全本地，仅当用户在「按路由面覆盖」显式设为直连才生效。
+- **可观测性**：OpenAI Responses 加密 thinking 占位文案诚实化——本地无法解密的加密推理显式标注而非伪造明文（N-34）；UsageDashboard 路由切走清理 setInterval 泄漏（N-37）。
+
+> 未修项（架构决策 / 非纯代码）在审计文档中标注为待办，不阻断本次发版。
 
 ## 小米 MiMo 上下文窗口数据修复（消除 25K/128K 分母错误）
 
