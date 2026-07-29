@@ -607,7 +607,8 @@ function loadCachedState() {
   }
 }
 
-function normalizeConfig(source) {
+// 导出供 normalizer 单测（审计 L3）：纯函数，导出无副作用，让 config 层契约可被回归测试锁定。
+export function normalizeConfig(source) {
   const raw = source && typeof source === "object" ? source : {};
   const routing = raw.routing && typeof raw.routing === "object" ? raw.routing : {};
   const homeMetrics = raw.homeMetrics && typeof raw.homeMetrics === "object" ? raw.homeMetrics : {};
