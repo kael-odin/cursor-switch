@@ -325,10 +325,14 @@ func (s *ProxyService) emitState() {
 
 // ShutdownForQuit 用于处理与 ShutdownForQuit 相关的逻辑。
 func (s *ProxyService) ShutdownForQuit() {
-	// F-35：退出路径非阻塞取锁——拿不到说明正在 Start/Stop，放弃等待直接走清理，
-	// 避免应用退出时卡死。各子组件 Stop 自带超时上下文，不会无限阻塞。
-	if !s.lifecycleMu.TryLock() {
-		logger.Infof("shutdown_for_quit: lifecycle busy, proceeding with best-effort cleanup")
+	// F-35：退出路径非阻塞取锁——拿不到说明正在 Start/Stop/Save。
+	// N-26：TryLock 失败时跳过 ClearCursorSettings（不再并发写 Cursor settings.json），
+	// 让崩溃恢复在下次启动时处理。审计指出：拿不到锁仍继续写 settings.json 是真实竞态入口
+	// （与正在 Save 的并发 read-modify-write 互踩，可能丢用户配置）。其它子组件 Stop 自带
+	// 超时上下文，不会无限阻塞，仍可安全执行。
+	lockHeld := s.lifecycleMu.TryLock()
+	if !lockHeld {
+		logger.Infof("shutdown_for_quit: lifecycle busy, skipping cursor settings clear (will recover on next launch)")
 	} else {
 		defer s.lifecycleMu.Unlock()
 	}
@@ -341,8 +345,12 @@ func (s *ProxyService) ShutdownForQuit() {
 			finalErr = err
 		}
 	}
-	if err := s.ClearCursorSettings(); err != nil {
-		finalErr = errors.Join(finalErr, err)
+	if lockHeld {
+		// 仅在持有 lifecycleMu 时清理 Cursor settings——避免与正在进行的 Start/Stop/Save
+		// 并发写 settings.json。拿不到锁时跳过，下次启动由 RestoreCursorSettingsFromCrash 自愈。
+		if err := s.ClearCursorSettings(); err != nil {
+			finalErr = errors.Join(finalErr, err)
+		}
 	}
 	if s.backendHost != nil {
 		if err := s.backendHost.Stop(ctx); err != nil && !errors.Is(err, context.Canceled) {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"cursor/internal/appdata"
@@ -215,14 +216,14 @@ func TestRestoreCursorSettingsFromCrash_NoBackupClearsLeftover(t *testing.T) {
 }
 
 // TestRestoreCursorSettingsFromCrash_NoLeftoverNoop 无残留注入键 → no-op。
+// N-57：用户只自设 http.proxy（不含 cursor-switch 专有键 disableHttp2 /
+// systemCertificatesV2）时，settingsHasInjectedKeys 应返回 false → no-op，
+// 不误清用户自设代理。此前用规避方式绕过（改纯用户键），N-57 修复判定逻辑后
+// 用真实场景正面验证。
 func TestRestoreCursorSettingsFromCrash_NoLeftoverNoop(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
 	writeCursorSettingsFile(t, home, `{"editor.fontSize": 14, "http.proxy": "http://user-own:9000"}`)
-	// 注意：http.proxy 是用户自己的，但因为不含 cursor-switch 专有的注入键集合
-	// （如 cursor.general.disableHttp2），settingsHasInjectedKeys 应返回 false → no-op。
-	// 实际上 http.proxy 本就在 injectedCursorSettingsKeys 里，故会触发——改用纯用户键。
-	writeCursorSettingsFile(t, home, `{"editor.fontSize": 14, "git.enableSmartCommit": true}`)
 
 	before, _ := os.ReadFile(testCursorSettingsPath(t, home))
 	if err := RestoreCursorSettingsFromCrash(); err != nil {
@@ -337,5 +338,119 @@ func TestClearUserProxySettings_NoBackupFallsBackToDelete(t *testing.T) {
 	}
 	if got := after["editor.fontSize"]; got != float64(14) {
 		t.Errorf("unrelated key lost: %v", got)
+	}
+}
+
+// TestSettingsHasInjectedKeys_OnlyUserProxyNotMisjudged 覆盖 N-57：
+// 用户只自设 http.proxy（无 cursor-switch 专有键）→ settingsHasInjectedKeys 返回 false，
+// 不被误判为注入残留。只有 disableHttp2 / systemCertificatesV2 这类专有键存在才返回 true。
+func TestSettingsHasInjectedKeys_OnlyUserProxyNotMisjudged(t *testing.T) {
+	// 用户自设代理，无任何 cursor-switch 专有键 → false。
+	userOnly := map[string]any{
+		"http.proxy":      "http://user-own:9000",
+		"http.proxySupport": "on",
+		"editor.fontSize": 14,
+	}
+	if settingsHasInjectedKeys(userOnly) {
+		t.Errorf("user-only http.proxy should not be misjudged as injected leftover")
+	}
+
+	// 含 cursor-switch 专有键 → true（确为注入残留）。
+	withExclusive := map[string]any{
+		"http.proxy":                    "http://127.0.0.1:8080",
+		"cursor.general.disableHttp2":   true,
+	}
+	if !settingsHasInjectedKeys(withExclusive) {
+		t.Errorf("settings with disableHttp2 should be detected as injected leftover")
+	}
+
+	// 另一个专有键 systemCertificatesV2 → true。
+	withCertV2 := map[string]any{
+		"http.experimental.systemCertificatesV2": true,
+	}
+	if !settingsHasInjectedKeys(withCertV2) {
+		t.Errorf("settings with systemCertificatesV2 should be detected as injected leftover")
+	}
+}
+
+// TestWriteUserProxySettings_CorruptSettingsFailsNotOverwrites 覆盖 N-25：
+// settings.json 损坏时——(1) 不继续在空 settings 上注入（返回 error）；
+// (2) 损坏现场备份到带时间戳的 .corrupt.YYYYMMDD-HHMMSS.bak 而非固定 .corrupt.bak。
+func TestWriteUserProxySettings_CorruptSettingsFailsNotOverwrites(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+	settingsPath := testCursorSettingsPath(t, home)
+	writeCursorSettingsFile(t, home, `{not valid json`)
+
+	err := WriteUserProxySettings("http://127.0.0.1:8080")
+	if err == nil {
+		t.Fatalf("expected error on corrupt settings.json, got nil")
+	}
+
+	// 损坏现场应被 rename 到带时间戳的备份（而非固定 .corrupt.bak，避免覆盖既有备份）。
+	entries, err := os.ReadDir(filepath.Dir(settingsPath))
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	foundCorruptBackup := false
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, "settings.json.corrupt.") && strings.HasSuffix(name, ".bak") {
+			foundCorruptBackup = true
+			// 固定名 .corrupt.bak 不应再出现。
+			if name == "settings.json.corrupt.bak" {
+				t.Errorf("corrupt backup should use timestamped name, got fixed .corrupt.bak")
+			}
+			break
+		}
+	}
+	if !foundCorruptBackup {
+		t.Errorf("corrupt settings.json should be backed up to timestamped .corrupt.*.bak, dir=%v", entries)
+	}
+
+	// 原 settings.json 不应被注入（注入会清空用户全部配置只留注入键）。
+	// 损坏现场被 rename 走，原路径要么不存在、要么不应含注入键。
+	if _, statErr := os.Stat(settingsPath); statErr == nil {
+		data, readErr := os.ReadFile(settingsPath)
+		if readErr == nil {
+			parsed, parseErr := decodeCursorSettingsJSONC(data)
+			if parseErr == nil {
+				if _, exists := parsed["cursor.general.disableHttp2"]; exists {
+					t.Errorf("corrupt settings should not be overwritten with injected keys")
+				}
+			}
+		}
+	}
+}
+
+// TestWriteCursorSettingsBackup_ExclusiveCreateNoOverwrite 覆盖 N-11：
+// 备份用 O_EXCL 独占创建——已有备份时不覆盖（TOCTOU 收敛为单次原子创建）。
+// 并发两次 writeCursorSettingsBackup（不同 settings）应只有第一次写入生效。
+func TestWriteCursorSettingsBackup_ExclusiveCreateNoOverwrite(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+
+	// 第一次：备份原始值。
+	original := map[string]any{"http.proxy": "http://original:1"}
+	if err := writeCursorSettingsBackup(original); err != nil {
+		t.Fatalf("first writeCursorSettingsBackup: %v", err)
+	}
+
+	// 第二次：当前已是注入值，不应覆盖。
+	injected := map[string]any{"http.proxy": "http://127.0.0.1:8080"}
+	if err := writeCursorSettingsBackup(injected); err != nil {
+		t.Fatalf("second writeCursorSettingsBackup: %v", err)
+	}
+
+	data, err := os.ReadFile(appdata.CursorSettingsBackupPath())
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	var got cursorSettingsBackupRecord
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal backup: %v", err)
+	}
+	if v := got.Keys["http.proxy"]; v != "http://original:1" {
+		t.Errorf("exclusive create should prevent overwrite: got %v, want original", v)
 	}
 }

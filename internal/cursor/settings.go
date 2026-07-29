@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"cursor/internal/appdata"
 	"cursor/internal/logger"
@@ -129,14 +130,11 @@ type cursorSettingsBackupRecord struct {
 // writeCursorSettingsBackup 把当前 settings 里被注入键的原始值快照写入备份文件。
 // 仅当备份文件不存在时写——防止"接管→崩溃→重启→又备份当前(已注入)值"覆盖掉真实原始值。
 // 调用方需保证传入的 settings 是注入前的原始内容。
+//
+// N-11：Stat-then-Write 的 TOCTOU 收敛为单次 O_CREATE|O_EXCL 独占创建——创建失败
+// 即说明已有备份或并发写者，保留不动（不再依赖 Stat 判定）。errExist 被视为"已有备份，跳过"。
 func writeCursorSettingsBackup(settings map[string]any) error {
 	backupPath := appdata.CursorSettingsBackupPath()
-	if _, err := os.Stat(backupPath); err == nil {
-		// 已有备份：保留原始快照，不覆盖。
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("检查 Cursor 配置备份状态失败: %w", err)
-	}
 	record := cursorSettingsBackupRecord{
 		Keys:   make(map[string]any, len(injectedCursorSettingsKeys)),
 		Exists: make(map[string]bool, len(injectedCursorSettingsKeys)),
@@ -151,10 +149,12 @@ func writeCursorSettingsBackup(settings map[string]any) error {
 		return fmt.Errorf("序列化 Cursor 配置备份失败: %w", err)
 	}
 	encoded = append(encoded, '\n')
-	if err := os.MkdirAll(filepath.Dir(backupPath), 0o700); err != nil {
-		return fmt.Errorf("创建 Cursor 配置备份目录失败: %w", err)
-	}
-	if err := securefile.WriteFile(backupPath, encoded); err != nil {
+	// TryCreateExclusive：O_EXCL 独占创建，已存在返回 os.ErrExist（视为已有备份，跳过）。
+	if err := securefile.TryCreateExclusive(backupPath, encoded); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			// 已有备份：保留原始快照，不覆盖。
+			return nil
+		}
 		return fmt.Errorf("写入 Cursor 配置备份失败: %w", err)
 	}
 	logger.Infof("writeCursorSettingsBackup: backed up %d injected keys path=%s", len(injectedCursorSettingsKeys), backupPath)
@@ -231,9 +231,24 @@ func cursorSettingValueEqual(a, b any) bool {
 	return bytes.Equal(aj, bj)
 }
 
-// settingsHasInjectedKeys 判断 settings 是否含任意注入键（用于崩溃恢复检测）。
+// cursorSwitchExclusiveInjectedKeys 是 cursor-switch 几乎不会与用户自设冲突的专有注入键。
+// 用于崩溃恢复判定：只有这些键存在，才能确定是 cursor-switch 注入残留，而非用户自设。
+// http.proxy / http.proxySupport 等用户也可能独立设置，单独存在不足以判定为注入残留
+// （N-57：否则用户自设代理会被误清）。
+var cursorSwitchExclusiveInjectedKeys = []string{
+	"cursor.general.disableHttp2",
+	"http.experimental.systemCertificatesV2",
+}
+
+// settingsHasInjectedKeys 判断 settings 是否含 cursor-switch 专有注入键（用于崩溃恢复检测）。
+//
+// N-57：不再用全部注入键集合判定——http.proxy 等用户也可能独立设置，单凭 http.proxy
+// 存在会误判为"cursor-switch 注入残留"触发崩溃恢复清掉用户自设代理。改用专有键集合
+// （cursor.general.disableHttp2 / systemCertificatesV2），这些键用户几乎不会自设，
+// 其存在可强指示 cursor-switch 注入。http.proxy 等非专有键的清理由 restoreCursorSettingsKeys
+// 据备份记录决定，不在判定阶段误伤。
 func settingsHasInjectedKeys(settings map[string]any) bool {
-	for _, key := range injectedCursorSettingsKeys {
+	for _, key := range cursorSwitchExclusiveInjectedKeys {
 		if _, exists := settings[key]; exists {
 			return true
 		}
@@ -298,11 +313,10 @@ func RestoreCursorSettingsFromCrash() error {
 		return fmt.Errorf("序列化 Cursor 配置失败: %w", err)
 	}
 	encoded = append(encoded, '\n')
-	tempPath := settingsPath + ".tmp"
-	if err := os.WriteFile(tempPath, encoded, 0o644); err != nil {
-		return fmt.Errorf("写入 Cursor 配置临时文件失败: %w", err)
-	}
-	if err := os.Rename(tempPath, settingsPath); err != nil {
+	// N-10/F-13：崩溃一致性对齐——唯一 tmp 名 + Sync + 原子 rename + 目录 fsync，
+	// 避免 rename 前崩溃留下零字节/截断的 settings.json。settings.json 是 Cursor
+	// 的用户配置文件，保持 0644 权限语义（不收紧到 0600）。
+	if err := securefile.WriteViaTempSync(settingsPath, encoded, 0o644); err != nil {
 		return fmt.Errorf("保存 Cursor 配置失败: %w", err)
 	}
 	removeCursorSettingsBackup()
@@ -336,12 +350,15 @@ func WriteUserProxySettings(proxyURL string) error {
 	} else if len(bytes.TrimSpace(data)) > 0 {
 		parsed, err := decodeCursorSettingsJSONC(data)
 		if err != nil {
-			backupPath := settingsPath + ".corrupt.bak"
+			// N-25：损坏的 settings.json 用带时间戳的备份名避免覆盖既有损坏现场，
+			// 且不再在空 settings 上继续注入（否则会清空用户全部配置只留注入键）。
+			// 对齐 M8/F-12 对 CA 损坏的处理姿态：fail 并提示用户手动处理。
+			backupPath := settingsPath + ".corrupt." + time.Now().Format("20060102-150405") + ".bak"
 			if renameErr := os.Rename(settingsPath, backupPath); renameErr != nil && !errors.Is(renameErr, os.ErrNotExist) {
 				return fmt.Errorf("解析 Cursor 配置失败，且备份损坏配置失败: %w", renameErr)
 			}
 			logger.Infof("writeCursorUserProxySettings: backed up invalid settings path=%s backup=%s err=%v", settingsPath, backupPath, err)
-			data = nil
+			return fmt.Errorf("Cursor 配置 settings.json 损坏无法解析（已备份到 %s），请检查后重试: %w", backupPath, err)
 		} else {
 			settings = parsed
 		}
@@ -370,11 +387,8 @@ func WriteUserProxySettings(proxyURL string) error {
 		return nil
 	}
 
-	tempPath := settingsPath + ".tmp"
-	if err := os.WriteFile(tempPath, encoded, 0o644); err != nil {
-		return fmt.Errorf("写入 Cursor 配置临时文件失败: %w", err)
-	}
-	if err := os.Rename(tempPath, settingsPath); err != nil {
+	// N-10/F-13：原子写 + Sync，settings.json 保持 0644。
+	if err := securefile.WriteViaTempSync(settingsPath, encoded, 0o644); err != nil {
 		return fmt.Errorf("保存 Cursor 配置失败: %w", err)
 	}
 
@@ -440,11 +454,8 @@ func ClearUserProxySettings() error {
 	}
 	encoded = append(encoded, '\n')
 
-	tempPath := settingsPath + ".tmp"
-	if err := os.WriteFile(tempPath, encoded, 0o644); err != nil {
-		return fmt.Errorf("写入 Cursor 配置临时文件失败: %w", err)
-	}
-	if err := os.Rename(tempPath, settingsPath); err != nil {
+	// N-10/F-13：原子写 + Sync，settings.json 保持 0644。
+	if err := securefile.WriteViaTempSync(settingsPath, encoded, 0o644); err != nil {
 		return fmt.Errorf("保存 Cursor 配置失败: %w", err)
 	}
 

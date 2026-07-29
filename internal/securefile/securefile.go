@@ -11,9 +11,12 @@ package securefile
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"time"
 )
 
 // FileMode 是敏感数据文件的权限（仅属主可读写）。
@@ -139,4 +142,123 @@ func CopyFileViaSecure(path string, r io.Reader) error {
 		return err
 	}
 	return EnsureMode(path, FileMode)
+}
+
+// WriteViaTempSync 用「唯一临时文件 + Sync + 原子 rename + 目录 fsync」写文件（F-13 等价）。
+//
+// 与 WriteViaTemp 的区别：写完临时文件后显式 file.Sync() 把数据刷到稳定存储再 Close 再 rename，
+// 并对父目录做 fsync（Unix），保证 rename 完成时数据与目录项均已持久——崩溃窗口内不会留下
+// 零字节/截断的目标文件。tempPath 用 pid+纳秒后缀保证唯一，避免固定 .tmp 名在并发/重入时碰撞。
+//
+// mode 由调用方决定：敏感数据用 FileMode(0600)；Cursor settings.json 这类属于宿主应用
+// 的用户配置文件应保持 0644（不可收紧到 0600，否则改变 Cursor 配置文件既有权限语义）。
+// 已存在的目标文件若权限与 mode 不同，写后收紧到 mode（与 WriteFile 一致）。
+func WriteViaTempSync(path string, data []byte, mode os.FileMode) error {
+	if err := MkdirAll(filepath.Dir(path)); err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	var tempPath string
+	var file *os.File
+	var err error
+	for attempt := 0; attempt < 32; attempt++ {
+		tempPath = filepath.Join(dir, fmt.Sprintf("%s.tmp-%d-%d", base, os.Getpid(), time.Now().UnixNano()))
+		file, err = os.OpenFile(tempPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+		if err == nil {
+			break
+		}
+		if !os.IsExist(err) {
+			return err
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("exhausted temp file attempts: %w", err)
+	}
+
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	// F-13：rename 前 Sync 把数据刷到磁盘，避免 rename 后崩溃留下零字节目标。
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	// Windows 上同名 rename 是替换语义且原子；仍提供有限重试以应对目标被短暂占用。
+	if err := renameWithRetry(tempPath, path); err != nil {
+		return err
+	}
+	renamed = true
+	if err := EnsureMode(path, mode); err != nil {
+		return err
+	}
+	return syncDir(dir)
+}
+
+// TryCreateExclusive 以 O_CREATE|O_EXCL 独占创建 path 并写入 data（权限 0600）。
+// 已存在返回 os.ErrExist（包裹在 err 里，调用方用 os.IsExist/ errors.Is(err, os.ErrExist) 判定）。
+// 用于"仅当无备份时写"场景：把 Stat-then-Write 的 TOCTOU 收敛为单次原子创建——
+// 创建失败即说明已有备份或并发写者，调用方据此保留不动。
+func TryCreateExclusive(path string, data []byte) error {
+	if err := MkdirAll(filepath.Dir(path)); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, FileMode)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	return EnsureMode(path, FileMode)
+}
+
+// renameWithRetry 在 Windows 上对 rename 做有限重试（目标可能被防病毒/编辑器短暂占用）。
+func renameWithRetry(tempPath, path string) error {
+	if runtime.GOOS != "windows" {
+		return os.Rename(tempPath, path)
+	}
+	delay := 10 * time.Millisecond
+	var lastErr error
+	for attempt := 0; attempt < 12; attempt++ {
+		lastErr = os.Rename(tempPath, path)
+		if lastErr == nil {
+			return nil
+		}
+		if os.IsNotExist(lastErr) || attempt == 11 {
+			break
+		}
+		time.Sleep(delay)
+		if delay < 200*time.Millisecond {
+			delay *= 2
+		}
+	}
+	return lastErr
+}
+
+// syncDir 在 Unix 上 fsync 父目录（rename 的目录项持久化）；Windows no-op。
+func syncDir(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }

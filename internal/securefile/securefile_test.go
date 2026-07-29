@@ -1,9 +1,11 @@
 package securefile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -144,5 +146,92 @@ func TestEnsureTreeNonexistentRoot(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	if err := EnsureTree(missing); err != nil {
 		t.Fatalf("EnsureTree on missing root should not error: %v", err)
+	}
+}
+
+// TestWriteViaTempSync_PreservesCallerMode 覆盖 N-10：
+// 调用方指定 0644 时，写出的文件保持 0644（不收紧到 0600）——
+// Cursor settings.json 是宿主应用的用户配置，权限语义不可改变。
+func TestWriteViaTempSync_PreservesCallerMode(t *testing.T) {
+	skipOnWindows(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sub", "settings.json")
+	if err := WriteViaTempSync(path, []byte(`{"http.proxy":"x"}`), 0o644); err != nil {
+		t.Fatalf("WriteViaTempSync 0644: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("file perm = %o, want 0644 (caller-specified mode must be preserved)", info.Mode().Perm())
+	}
+	// 目录 0700。
+	dInfo, _ := os.Stat(filepath.Join(dir, "sub"))
+	if dInfo.Mode().Perm() != DirMode {
+		t.Fatalf("dir perm = %o, want 0700", dInfo.Mode().Perm())
+	}
+}
+
+// TestWriteViaTempSync_NoTempLeftBehind 覆盖 N-10/N-26：
+// 写完后目录中不应残留 .tmp-* 临时文件（原子 rename 成功后清理）。
+// 固定 .tmp 名在并发/重入下会碰撞——这里间接验证唯一 tmp 名 + rename 不残留。
+func TestWriteViaTempSync_NoTempLeftBehind(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := WriteViaTempSync(path, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("WriteViaTempSync: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "settings.json.tmp-") {
+			t.Errorf("temp file left behind after WriteViaTempSync: %s", e.Name())
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(data) != "payload" {
+		t.Fatalf("content = %q, want %q", string(data), "payload")
+	}
+}
+
+// TestWriteViaTempSync_OverwritesExistingAtomically 原子覆盖既有文件：
+// 写入后内容完整替换，不出现部分写入。
+func TestWriteViaTempSync_OverwritesExistingAtomically(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := WriteViaTempSync(path, []byte("old-content"), 0o644); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if err := WriteViaTempSync(path, []byte("new-content"), 0o644); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != "new-content" {
+		t.Fatalf("content = %q, want new-content (atomic overwrite)", string(data))
+	}
+}
+
+// TestTryCreateExclusive_FirstWinsSecondSkips 覆盖 N-11：
+// O_EXCL 独占创建——第一次写入成功，第二次（已有文件）返回 ErrExist 而非覆盖。
+func TestTryCreateExclusive_FirstWinsSecondSkips(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "backup.json")
+	if err := TryCreateExclusive(path, []byte("original")); err != nil {
+		t.Fatalf("first TryCreateExclusive: %v", err)
+	}
+	// 第二次尝试应失败（ErrExist），不覆盖原始内容。
+	err := TryCreateExclusive(path, []byte("injected"))
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("second TryCreateExclusive should return ErrExist, got %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != "original" {
+		t.Errorf("exclusive create should not overwrite: got %q, want original", string(data))
 	}
 }
