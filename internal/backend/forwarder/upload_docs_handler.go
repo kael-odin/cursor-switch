@@ -42,7 +42,7 @@ func newUploadServiceHandler(service *Service) http.Handler {
 	return mux
 }
 
-func (service *Service) UploadDocumentation(_ context.Context, req *connect.Request[aiserverv1.UploadDocumentationRequest]) (*connect.Response[aiserverv1.UploadResponse], error) {
+func (service *Service) UploadDocumentation(ctx context.Context, req *connect.Request[aiserverv1.UploadDocumentationRequest]) (*connect.Response[aiserverv1.UploadResponse], error) {
 	store, err := service.requireDocsIndexStore()
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -51,11 +51,25 @@ func (service *Service) UploadDocumentation(_ context.Context, req *connect.Requ
 	if identifier == "" {
 		identifier = stableDocsIdentifier("upload-documentation", time.Now().UTC().Format(time.RFC3339Nano))
 	}
-	record, err := store.Upsert(uploadedDocsIndexRecord(identifier))
+	record := uploadedDocsIndexRecord(identifier)
+	// N-21：上传时抓取页面正文入库——此前 Content 恒空，模型 @docs 引用拿不到正文。
+	// 抓取是 best-effort：失败（SSRF/超时/非 HTML）返回空 Content 不阻断上传，仅记日志。
+	url := record.URL
+	content, fetchErr := fetchDocsPageContent(ctx, url)
+	if fetchErr != nil {
+		logger.Infof("UploadService UploadDocumentation fetch content failed (non-fatal) doc_identifier=%s url=%s err=%v", identifier, url, fetchErr)
+	}
+	if content == "" {
+		logger.Infof("UploadService UploadDocumentation no content fetched doc_identifier=%s url=%s", identifier, url)
+	} else {
+		record.Content = content
+		record.LastCrawlAt = time.Now().UTC()
+	}
+	record, err = store.Upsert(record)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	logger.Infof("UploadService UploadDocumentation completed doc_identifier=%s", record.Identifier)
+	logger.Infof("UploadService UploadDocumentation completed doc_identifier=%s content_len=%d", record.Identifier, len(record.Content))
 	return connect.NewResponse(&aiserverv1.UploadResponse{
 		Status:        aiserverv1.UploadResponse_STATUS_SUCCESS,
 		Progress:      1,
