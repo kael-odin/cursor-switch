@@ -42,6 +42,30 @@ type anthropicTool struct {
 	CacheControl map[string]any `json:"cache_control,omitempty"`
 }
 
+// anthropicInputSchema 把上游工具的 parameters 归一化为 Anthropic input_schema。
+// 处理两点（审计 N-03 / N-23）：
+//   - nil（无参工具）→ 空 object。Anthropic Messages API 要求 input_schema 必须是对象，
+//     收到 null 会返回 400 invalid_request_error，导致 Anthropic 通道工具调用全挂。
+//   - 剥离 OpenAI strict-schema 专属字段（$schema、strict）。Anthropic input_schema
+//     不识别这两个字段，部分兼容端会校验未知字段拒绝 400。additionalProperties 语义
+//     兼容故保留。返回新 map，不修改入参。
+func anthropicInputSchema(params map[string]any) map[string]any {
+	if len(params) == 0 {
+		return map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	out := make(map[string]any, len(params))
+	for k, v := range params {
+		if k == "$schema" || k == "strict" {
+			continue
+		}
+		out[k] = v
+	}
+	if _, ok := out["type"]; !ok {
+		out["type"] = "object"
+	}
+	return out
+}
+
 const (
 	anthropicThinkOpenTag            = "<think>"
 	anthropicThinkCloseTag           = "</think>"
@@ -263,9 +287,9 @@ func (adapter *AnthropicAdapter) streamOnce(ctx context.Context, req StreamReque
 				return err
 			}
 			tools = append(tools, anthropicTool{
-				Name:        strings.TrimSpace(descriptor.Function.Name),
+				Name:         strings.TrimSpace(descriptor.Function.Name),
 				Description: strings.TrimSpace(descriptor.Function.Description),
-				InputSchema: descriptor.Function.Parameters,
+				InputSchema:  anthropicInputSchema(descriptor.Function.Parameters),
 			})
 		}
 
