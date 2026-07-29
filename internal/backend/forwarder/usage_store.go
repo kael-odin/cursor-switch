@@ -140,6 +140,35 @@ func (store *UsageFileStore) UpsertEvent(event usageFileEvent) error {
 	if store == nil || strings.TrimSpace(store.path) == "" {
 		return nil
 	}
+	if strings.TrimSpace(event.EventID) == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(store.path), 0o755); err != nil {
+		return fmt.Errorf("create usage directory: %w", err)
+	}
+	release, err := acquireConversationLock(store.path + ".lock")
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	doc, err := readUsageFileDocument(store.path)
+	if err != nil {
+		return err
+	}
+	if err := upsertUsageEventInDoc(&doc, event); err != nil {
+		return err
+	}
+	return writeJSONFileAtomic(store.path, doc)
+}
+
+// upsertUsageEventInDoc 在内存文档上做单事件的增量 upsert（归一化→negate 旧值→apply 新值→
+// 更新 RecentEvents/EventIndex），不含锁与文件 IO，供 UpsertEvent 与 UpsertTurnFinalized
+// 复用以共享同一份读改写逻辑（N-28）。
+func upsertUsageEventInDoc(doc *usageFileDocument, event usageFileEvent) error {
+	if doc == nil {
+		return nil
+	}
 	event.EventID = strings.TrimSpace(event.EventID)
 	if event.EventID == "" {
 		return nil
@@ -157,6 +186,36 @@ func (store *UsageFileStore) UpsertEvent(event usageFileEvent) error {
 	event.CacheWriteTokens = nonNegativeInt64(event.CacheWriteTokens)
 	event.TotalTokens = event.InputTokens + event.OutputTokens + event.CacheReadTokens + event.CacheWriteTokens
 
+	if doc.EventIndex == nil {
+		doc.EventIndex = make(map[string]usageFileEvent)
+	}
+	if oldEvent, found := doc.EventIndex[event.EventID]; found {
+		applyUsageFileDelta(doc, oldEvent.At, negateUsageFileDelta(usageFileEventDelta(oldEvent)))
+	}
+	applyUsageFileDelta(doc, event.At, usageFileEventDelta(event))
+	doc.RecentEvents = upsertRecentUsageEvent(doc.RecentEvents, event)
+	doc.RecentEvents = trimRecentUsageEvents(doc.RecentEvents, usageRecentEventLimit)
+	// EventIndex 增量 upsert：只更新当前 event 的条目，不因 RecentEvents 截断而清掉其它条目。
+	// 旧实现 buildUsageEventIndex(doc.RecentEvents) 会把超出 500 条的老事件从索引抹掉，
+	// 导致 recordTurnFinalizedSnapshot 用老 requestID LookupEvent 时聚合到 0 token（H5）。
+	doc.EventIndex[event.EventID] = event
+	doc.EventIndex = pruneUsageEventIndex(doc.EventIndex)
+	doc.SchemaVersion = usageFileSchemaVersion
+	doc.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+// UpsertTurnFinalized 在单次 locked 读改写内完成 LookupEvent(aggregate) + UpsertEvent(turn)，
+// 把 recordTurnFinalizedSnapshot 原本的两次全量读改写（Lookup + Upsert）合并为一次（N-28）。
+// aggregate 从同一次加载的内存 doc 的 EventIndex 聚合，语义与 LookupEvent 完全一致。
+func (store *UsageFileStore) UpsertTurnFinalized(turnEvent usageFileEvent, aggregateRequestID string) error {
+	if store == nil || strings.TrimSpace(store.path) == "" {
+		return nil
+	}
+	turnEvent.EventID = strings.TrimSpace(turnEvent.EventID)
+	if turnEvent.EventID == "" {
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(store.path), 0o755); err != nil {
 		return fmt.Errorf("create usage directory: %w", err)
 	}
@@ -170,23 +229,26 @@ func (store *UsageFileStore) UpsertEvent(event usageFileEvent) error {
 	if err != nil {
 		return err
 	}
-	if doc.EventIndex == nil {
-		doc.EventIndex = make(map[string]usageFileEvent)
+	if aggregate, ok, _ := lookupUsageEventInDoc(doc, aggregateRequestID); ok {
+		turnEvent.InputTokens = aggregate.InputTokens
+		turnEvent.OutputTokens = aggregate.OutputTokens
+		turnEvent.CacheReadTokens = aggregate.CacheReadTokens
+		turnEvent.CacheWriteTokens = aggregate.CacheWriteTokens
+		turnEvent.UsagePresent = aggregate.UsagePresent
+		// N-12：turn 事件继承 provider_call 聚合的模型/Provider 归属，dashboard 按模型计成本。
+		if strings.TrimSpace(turnEvent.ModelID) == "" {
+			turnEvent.ModelID = aggregate.ModelID
+		}
+		if strings.TrimSpace(turnEvent.ModelName) == "" {
+			turnEvent.ModelName = aggregate.ModelName
+		}
+		if strings.TrimSpace(turnEvent.Provider) == "" {
+			turnEvent.Provider = aggregate.Provider
+		}
 	}
-	oldEvent, found := doc.EventIndex[event.EventID]
-	if found {
-		applyUsageFileDelta(&doc, oldEvent.At, negateUsageFileDelta(usageFileEventDelta(oldEvent)))
+	if err := upsertUsageEventInDoc(&doc, turnEvent); err != nil {
+		return err
 	}
-	applyUsageFileDelta(&doc, event.At, usageFileEventDelta(event))
-	doc.RecentEvents = upsertRecentUsageEvent(doc.RecentEvents, event)
-	doc.RecentEvents = trimRecentUsageEvents(doc.RecentEvents, usageRecentEventLimit)
-	// EventIndex 增量 upsert：只更新当前 event 的条目，不因 RecentEvents 截断而清掉其它条目。
-	// 旧实现 buildUsageEventIndex(doc.RecentEvents) 会把超出 500 条的老事件从索引抹掉，
-	// 导致 recordTurnFinalizedSnapshot 用老 requestID LookupEvent 时聚合到 0 token（H5）。
-	doc.EventIndex[event.EventID] = event
-	doc.EventIndex = pruneUsageEventIndex(doc.EventIndex)
-	doc.SchemaVersion = usageFileSchemaVersion
-	doc.UpdatedAt = time.Now().UTC()
 	return writeJSONFileAtomic(store.path, doc)
 }
 
@@ -198,12 +260,18 @@ func (store *UsageFileStore) LookupEvent(needle string) (usageFileEvent, bool, e
 	if err != nil {
 		return usageFileEvent{}, false, err
 	}
+	return lookupUsageEventInDoc(doc, needle)
+}
+
+// lookupUsageEventInDoc 在已加载的内存文档上做事件聚合，避免 LookupEvent + UpsertEvent
+// 各自全量读+unmarshal（N-28）。语义与原 LookupEvent 完全一致：精确匹配 needle 或
+// 前缀匹配 needle+"::" 的事件聚合到一条。先精确直查 EventIndex（O(1) 热路径），
+// 未命中再前缀扫描；前缀扫描无可避免（聚合语义要求收集所有 needle:: 子事件）。
+func lookupUsageEventInDoc(doc usageFileDocument, needle string) (usageFileEvent, bool, error) {
 	trimmed := strings.TrimSpace(needle)
 	if trimmed == "" {
 		return usageFileEvent{}, false, nil
 	}
-	var aggregate usageFileEvent
-	found := false
 	events := doc.EventIndex
 	if len(events) == 0 {
 		events = make(map[string]usageFileEvent, len(doc.RecentEvents))
@@ -213,9 +281,33 @@ func (store *UsageFileStore) LookupEvent(needle string) (usageFileEvent, bool, e
 			}
 		}
 	}
+	var aggregate usageFileEvent
+	found := false
+	// N-28：精确匹配是热路径（单 provider_call eventID == requestID），直接查 map 免遍历。
+	if event, ok := events[trimmed]; ok {
+		aggregate = usageFileEvent{EventID: trimmed, At: event.At}
+		found = true
+		aggregate.Kind = event.Kind
+		aggregate.Status = event.Status
+		aggregate.ModelID = event.ModelID
+		aggregate.ModelName = event.ModelName
+		aggregate.Provider = event.Provider
+		aggregate.InputTokens = nonNegativeInt64(event.InputTokens)
+		aggregate.OutputTokens = nonNegativeInt64(event.OutputTokens)
+		aggregate.CacheReadTokens = nonNegativeInt64(event.CacheReadTokens)
+		aggregate.CacheWriteTokens = nonNegativeInt64(event.CacheWriteTokens)
+		aggregate.TotalTokens = nonNegativeInt64(event.TotalTokens)
+		aggregate.UsagePresent = event.UsagePresent
+	}
+	// 前缀匹配：收集所有 needle:: 子事件。精确命中后仍需扫描——一个 requestID 可能
+	// 对应多条 modelCallID 子事件（B2 failover 链各候选），必须全部聚合。
+	prefix := trimmed + "::"
 	for _, event := range events {
 		eventID := strings.TrimSpace(event.EventID)
-		if eventID != trimmed && !strings.HasPrefix(eventID, trimmed+"::") {
+		if eventID == trimmed {
+			continue
+		}
+		if !strings.HasPrefix(eventID, prefix) {
 			continue
 		}
 		if !found {

@@ -438,3 +438,79 @@ func TestLookupEventHitsBackfilledIndexNotLinearScan(t *testing.T) {
 	// 为避免误读契约，这里只断言 LookupEvent 返回正确，不额外断言磁盘态。
 	_ = agg
 }
+
+// TestUpsertTurnFinalizedAggregatesInOneTransaction 覆盖 N-28：
+// UpsertTurnFinalized 在单次 locked 读改写内，从同一内存 doc 的 EventIndex 聚合
+// provider_call 事件回填到 turn 事件，不再先 LookupEvent（全量读）再 UpsertEvent（又一次全量读）。
+// 语义与原 LookupEvent+UpsertEvent 一致：turn 事件继承聚合的 token 数与模型归属（N-12）。
+func TestUpsertTurnFinalizedAggregatesInOneTransaction(t *testing.T) {
+	dir := t.TempDir()
+	store := NewUsageFileStore(dir)
+	at := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	// 两条同 requestID 前缀的 provider_call 子事件（B2 failover 链各候选）。
+	if err := store.UpsertEvent(usageFileEvent{
+		EventID: "req-1::call-A", Kind: usageEventKindProvider, At: at,
+		InputTokens: 1000, OutputTokens: 200, ModelID: "gpt-5", ModelName: "GPT-5", Provider: "openai",
+	}); err != nil {
+		t.Fatalf("UpsertEvent call-A: %v", err)
+	}
+	if err := store.UpsertEvent(usageFileEvent{
+		EventID: "req-1::call-B", Kind: usageEventKindProvider, At: at.Add(time.Second),
+		InputTokens: 500, OutputTokens: 100, ModelID: "gpt-5", ModelName: "GPT-5", Provider: "openai",
+	}); err != nil {
+		t.Fatalf("UpsertEvent call-B: %v", err)
+	}
+
+	turnEventID := "turn::conv-1::1"
+	if err := store.UpsertTurnFinalized(usageFileEvent{
+		EventID: turnEventID,
+		Kind:    usageEventKindTurn,
+		Status:  usageTurnStatusDone,
+		At:      at.Add(2 * time.Second),
+	}, "req-1"); err != nil {
+		t.Fatalf("UpsertTurnFinalized: %v", err)
+	}
+
+	turn, ok, err := store.LookupEvent(turnEventID)
+	if err != nil || !ok {
+		t.Fatalf("LookupEvent turn: ok=%v err=%v", ok, err)
+	}
+	// 聚合两条 provider_call：input 1500, output 300。
+	if turn.InputTokens != 1500 {
+		t.Errorf("turn InputTokens = %d, want 1500 (aggregated)", turn.InputTokens)
+	}
+	if turn.OutputTokens != 300 {
+		t.Errorf("turn OutputTokens = %d, want 300 (aggregated)", turn.OutputTokens)
+	}
+	// N-12：模型/Provider 归属必须继承。
+	if turn.ModelID != "gpt-5" || turn.Provider != "openai" {
+		t.Errorf("turn model/provider = (%q,%q), want (gpt-5,openai)", turn.ModelID, turn.Provider)
+	}
+	if turn.Kind != usageEventKindTurn {
+		t.Errorf("turn Kind = %q, want %q", turn.Kind, usageEventKindTurn)
+	}
+}
+
+// TestLookupEventExactKeyShortCircuit 覆盖 N-28：精确匹配走直查热路径，
+// 不依赖前缀扫描。单条 provider_call（eventID == requestID）LookupEvent 应 O(1) 命中。
+func TestLookupEventExactKeyShortCircuit(t *testing.T) {
+	dir := t.TempDir()
+	store := NewUsageFileStore(dir)
+	at := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	if err := store.UpsertEvent(usageFileEvent{
+		EventID: "req-exact", Kind: usageEventKindProvider, At: at,
+		InputTokens: 4321, ModelID: "claude-5",
+	}); err != nil {
+		t.Fatalf("UpsertEvent: %v", err)
+	}
+	agg, ok, err := store.LookupEvent("req-exact")
+	if err != nil || !ok {
+		t.Fatalf("LookupEvent req-exact: ok=%v err=%v", ok, err)
+	}
+	if agg.InputTokens != 4321 {
+		t.Errorf("exact lookup input = %d, want 4321", agg.InputTokens)
+	}
+	if agg.ModelID != "claude-5" {
+		t.Errorf("exact lookup model = %q, want claude-5", agg.ModelID)
+	}
+}

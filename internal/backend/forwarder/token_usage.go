@@ -390,31 +390,20 @@ func (service *Service) recordTurnFinalizedSnapshot(stream *ActiveStream, conver
 		return nil
 	}
 	eventID := turnUsageEventID(conversationID, turnSeq, requestID)
-	usage := usageFileEvent{}
-	if aggregate, ok, err := service.usageStore.LookupEvent(strings.TrimSpace(requestID)); err != nil {
-		return err
-	} else if ok {
-		usage = aggregate
-	}
-	return service.usageStore.UpsertEvent(usageFileEvent{
+	// N-28：原 LookupEvent + UpsertEvent 各自全量读+unmarshal usage.json（单 turn finalize 两次
+	// 全文件读改写）。改用 UpsertTurnFinalized：单次 locked 读改写内，先从同一内存 doc 的
+	// EventIndex 聚合 provider_call 事件，再 upsert turn 事件。读改写次数 2→1。
+	return service.usageStore.UpsertTurnFinalized(usageFileEvent{
 		EventID:          eventID,
 		Kind:             usageEventKindTurn,
 		Status:           normalizeUsageTurnStatus(status),
 		At:               time.Now().UTC(),
-		InputTokens:      usage.InputTokens,
-		OutputTokens:     usage.OutputTokens,
-		CacheReadTokens:  usage.CacheReadTokens,
-		CacheWriteTokens: usage.CacheWriteTokens,
-		UsagePresent:     usage.UsagePresent,
-		// 审计 N-12：补上 ModelID/ModelName/Provider（来自 LookupEvent 聚合的
-		// provider_call 事件）。此前落盘 ModelID=""，dashboard 把 turn_finalized
-		// 当 legacy 语义处理：高缓存命中 turn 被误标 CalibrationAnomaly，且该行
-		// input 成本按 legacy 减 cacheRead 后 clamp 到 0（漏算 FRESH input 成本），
-		// recent_events 表同一 turn 出现两条互相矛盾的成本行。
-		ModelID:   usage.ModelID,
-		ModelName: usage.ModelName,
-		Provider:  usage.Provider,
-	})
+		// InputTokens/OutputTokens/Cache*/UsagePresent/ModelID/ModelName/Provider
+		// 由 UpsertTurnFinalized 从聚合 provider_call 事件回填，与原 LookupEvent 结果一致。
+		// 审计 N-12：turn 事件须继承 provider_call 的 ModelID/ModelName/Provider，否则
+		// dashboard 把 turn_finalized 当 legacy 语义处理：高缓存命中 turn 被误标
+		// CalibrationAnomaly，input 成本按 legacy 减 cacheRead 后 clamp 到 0 漏算。
+	}, strings.TrimSpace(requestID))
 }
 
 func normalizeUsageTurnStatus(status string) string {
