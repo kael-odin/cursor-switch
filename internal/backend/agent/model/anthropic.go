@@ -33,6 +33,10 @@ type anthropicToolAccumulator struct {
 	LastEmittedPath        string
 	LastStreamContent      string
 	LastCreatePlanSnapshot string
+	// pathSearchFrom/streamSearchFrom（N-07）：key 搜索起始偏移，避免每 delta 对整个
+	// 累积 args 重扫定位 key（O(n²)）。未命中时回退 keyToken 长度-1 以兼容跨 delta 边界。
+	pathSearchFrom   int
+	streamSearchFrom int
 }
 
 type anthropicTool struct {
@@ -1494,9 +1498,13 @@ func emitAnthropicToolProgress(
 	}
 
 	rawArgs := accumulator.Args.String()
-	path, pathFound, pathComplete := extractJSONStringFieldPrefix(rawArgs, "path")
+	path, pathFound, pathComplete := extractJSONStringFieldPrefixFrom(rawArgs, "path", accumulator.pathSearchFrom)
 	if !pathFound {
-		path, pathFound, pathComplete = extractJSONStringFieldPrefix(rawArgs, "file_path")
+		accumulator.pathSearchFrom = max(0, len(rawArgs)-len(`"path"`)+1)
+		path, pathFound, pathComplete = extractJSONStringFieldPrefixFrom(rawArgs, "file_path", accumulator.pathSearchFrom)
+		if !pathFound {
+			accumulator.pathSearchFrom = max(0, len(rawArgs)-len(`"file_path"`)+1)
+		}
 	}
 	if pathFound && pathComplete {
 		trimmedPath := strings.TrimSpace(path)
@@ -1542,8 +1550,11 @@ func emitAnthropicToolProgress(
 			}
 		}
 	}
-	streamContent, streamFound := extractToolStreamContentPrefix(rawArgs, toolName)
+	streamContent, streamFound := extractToolStreamContentPrefixFrom(rawArgs, toolName, accumulator.streamSearchFrom)
 	if !streamFound {
+		// 未命中：key 可能尚未出现，下个 delta 从当前末尾回退 keyToken 长度-1 处重试，
+		// 兼容 key 跨 delta 边界。命中后不更新偏移（key 已定位，后续从同点取 value 即可）。
+		accumulator.streamSearchFrom = max(0, len(rawArgs)-len(`"stream_content"`)+1)
 		return nil
 	}
 	delta := suffixAfterCommonPrefix(accumulator.LastStreamContent, streamContent)
@@ -1583,12 +1594,31 @@ func isEmptyAnthropicToolInput(input any) bool {
 	}
 }
 
+// extractJSONStringFieldPrefix 在 input 里查找 `"field":"..."` 的 value 前缀。
+// 返回 (value, found, complete)：found 表示定位到字段值起点；complete 表示值字符串已闭合。
+// 等价于 extractJSONStringFieldPrefixFrom(input, field, 0)。
 func extractJSONStringFieldPrefix(input string, field string) (string, bool, bool) {
+	return extractJSONStringFieldPrefixFrom(input, field, 0)
+}
+
+// extractJSONStringFieldPrefixFrom 从 searchFrom 偏移开始查找字段 key（N-07）。
+// accumulator 维护 searchFrom 偏移，每个 delta 只扫新增长度区间定位 key，
+// 避免对整个累积 args 重复 strings.Index 全扫（O(n²) per 工具调用）。
+// 调用方在未找到 key 时应把 searchFrom 设为 max(0, len(input)-len(keyToken)+1)，
+// 以处理 keyToken 跨 delta 边界（key 首字节在上个 delta 末、其余在本 delta 头）。
+func extractJSONStringFieldPrefixFrom(input string, field string, searchFrom int) (string, bool, bool) {
 	keyToken := `"` + strings.TrimSpace(field) + `"`
-	start := strings.Index(input, keyToken)
+	if searchFrom < 0 {
+		searchFrom = 0
+	}
+	if searchFrom > len(input) {
+		searchFrom = len(input)
+	}
+	start := strings.Index(input[searchFrom:], keyToken)
 	if start < 0 {
 		return "", false, false
 	}
+	start += searchFrom
 	index := start + len(keyToken)
 	for index < len(input) && isJSONWhitespace(input[index]) {
 		index++
@@ -1699,14 +1729,20 @@ func suffixAfterCommonPrefix(previous string, current string) string {
 }
 
 func extractToolStreamContentPrefix(rawArgs string, toolName string) (string, bool) {
+	return extractToolStreamContentPrefixFrom(rawArgs, toolName, 0)
+}
+
+// extractToolStreamContentPrefixFrom 从 searchFrom 偏移开始查 streamContent key（N-07）。
+// accumulator 维护 streamSearchFrom 避免每 delta 全扫累积 args 定位 key。
+func extractToolStreamContentPrefixFrom(rawArgs string, toolName string, searchFrom int) (string, bool) {
 	switch strings.TrimSpace(toolName) {
 	case "PatchEdit":
-		if value, found, _ := extractJSONStringFieldPrefix(rawArgs, "new_string"); found {
+		if value, found, _ := extractJSONStringFieldPrefixFrom(rawArgs, "new_string", searchFrom); found {
 			return value, true
 		}
 	case "Write":
 		for _, field := range []string{"contents", "content", "stream_content", "streamContent"} {
-			if value, found, _ := extractJSONStringFieldPrefix(rawArgs, field); found {
+			if value, found, _ := extractJSONStringFieldPrefixFrom(rawArgs, field, searchFrom); found {
 				return value, true
 			}
 		}

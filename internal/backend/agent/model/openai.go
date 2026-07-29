@@ -59,6 +59,10 @@ type openAIToolAccumulator struct {
 	LastStreamContent      string
 	LastCreatePlanSnapshot string
 	ProviderItemID         string
+	// pathSearchFrom/streamSearchFrom（N-07）：key 搜索起始偏移，避免每 delta 对整个
+	// 累积 args 重复 strings.Index 全扫。未找到时回退 keyToken 长度-1 处理跨边界。
+	pathSearchFrom   int
+	streamSearchFrom int
 	ProviderCallID         string
 	ProviderStatus         string
 }
@@ -1687,9 +1691,15 @@ func emitOpenAIToolProgress(
 	}
 
 	rawArgs := accumulator.Args.String()
-	path, pathFound, pathComplete := extractJSONStringFieldPrefix(rawArgs, "path")
+	// N-07：path 搜索从 accumulator 记录的偏移开始，避免每 delta 全扫累积 args。
+	path, pathFound, pathComplete := extractJSONStringFieldPrefixFrom(rawArgs, "path", accumulator.pathSearchFrom)
 	if !pathFound {
-		path, pathFound, pathComplete = extractJSONStringFieldPrefix(rawArgs, "file_path")
+		// 跨 delta 边界回退 keyToken 长度-1（"path"=6 字节，回退 5）。
+		accumulator.pathSearchFrom = max(0, len(rawArgs)-len(`"path"`)+1)
+		path, pathFound, pathComplete = extractJSONStringFieldPrefixFrom(rawArgs, "file_path", accumulator.pathSearchFrom)
+		if !pathFound {
+			accumulator.pathSearchFrom = max(0, len(rawArgs)-len(`"file_path"`)+1)
+		}
 	}
 	if pathFound && pathComplete {
 		trimmedPath := strings.TrimSpace(path)
@@ -1735,8 +1745,11 @@ func emitOpenAIToolProgress(
 			}
 		}
 	}
-	streamContent, streamFound := extractToolStreamContentPrefix(rawArgs, toolName)
+	streamContent, streamFound := extractToolStreamContentPrefixFrom(rawArgs, toolName, accumulator.streamSearchFrom)
 	if !streamFound {
+		// 未命中：key 可能尚未出现，下个 delta 从当前末尾回退 keyToken 长度-1 处重试，
+		// 兼容 key 跨 delta 边界。命中后不更新偏移（key 已定位，后续从同点取 value 即可）。
+		accumulator.streamSearchFrom = max(0, len(rawArgs)-len(`"stream_content"`)+1)
 		return nil
 	}
 	delta := suffixAfterCommonPrefix(accumulator.LastStreamContent, streamContent)
