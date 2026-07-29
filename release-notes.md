@@ -1,5 +1,11 @@
 # 2.0.5
 
+## L7 stale exec control 区分"已处理"与"从未存在"（可观测性）
+
+- **问题**：`shouldIgnoreMissingExecControl`（stream 存在但 pending exec 找不到时）经 `shouldIgnoreStaleExecControl` 对 Heartbeat/StreamClose 一律静默吞。重连客户端迟到的控制消息确实是传输级噪声（合理忽略），但若 pending exec 被错误清除也表现为 missing，无条件吞会掩盖真实协议错误。
+- **修复**：拆出 `isStaleTransportExecControl` 复用于两处。`shouldIgnoreMissingExecControl` 对传输级控制消息先查 `recentlyCompletedExecExists`——已处理则忽略（合理）；**从未存在则仍忽略但记 WARN**（`... never existed; ignored, may indicate protocol drift`），让真实协议异常可被诊断。
+- **关键取舍**："never existed" 必须**返回 true 不杀流**——若返回 error 会经 `actor.go` 的 `failStream` 把整个流标失败，重连客户端迟到的 Heartbeat 会误杀整个对话，比静默吞更糟。故选"忽略 + WARN"而非"surface error"。`shouldIgnoreStaleExecControl`（stream 已不 active 场景）转调 `isStaleTransportExecControl` 保持原静默吞语义。13 回归场景。
+
 ## L3 前端 normalizer 回归测试
 
 - **问题**：`appState.js` 的 normalizer（`normalizeModelAdapter`/`normalizeModelAdapters`/`normalizeConfig`）是前端 config 层契约边界——F-02（payload merge 透传）、L5（旧品牌 key 迁移）、v2.0.3（per-namespace 路由）、A6（cursor 配置）等改动都经手这些函数，但前端此前零自动化测试，回归只能靠人工点 UI。

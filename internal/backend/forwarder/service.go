@@ -1512,8 +1512,27 @@ func shouldIgnoreMissingExecResult(message *agentv1.ExecClientMessage, stream *A
 	return recentlyCompletedExecExists(stream, message.GetId())
 }
 
-func shouldIgnoreMissingExecControl(message *agentv1.ExecClientControlMessage, stream *ActiveStream) bool {
-	if shouldIgnoreStaleExecControl(message) {
+func shouldIgnoreMissingExecControl(message *agentv1.ExecClientControlMessage, stream *ActiveStream, requestID string) bool {
+	if message == nil {
+		return false
+	}
+	// 审计 L7：Heartbeat/StreamClose 在"stream 存在但 pending exec 找不到"时，
+	// 原实现经 shouldIgnoreStaleExecControl 一律静默吞。重连客户端的迟到控制消息
+	// 确实是传输级噪声（合理忽略），但若 pending exec 被错误清除也表现为 missing，
+	// 无条件吞会掩盖真实协议错误。这里区分两种情况：
+	//   - recentlyCompletedExecExists：该 exec 最近刚完成（已被处理），忽略合理；
+	//   - 从未存在：可能是协议错误，仍忽略（绝不杀流——返回 error 会经 failStream
+	//     误杀整个流，比静默吞更糟），但记 WARN 让真实协议异常可被诊断。
+	if isStaleTransportExecControl(message) {
+		messageID, ok := execControlMessageID(message)
+		if ok && recentlyCompletedExecExists(stream, messageID) {
+			return true
+		}
+		log.Printf(
+			"forwarder stale exec control has no pending exec request_id=%s message_id=%d (never existed; ignored, may indicate protocol drift)",
+			strings.TrimSpace(requestID),
+			messageID,
+		)
 		return true
 	}
 	messageID, ok := execControlMessageID(message)
@@ -1523,19 +1542,27 @@ func shouldIgnoreMissingExecControl(message *agentv1.ExecClientControlMessage, s
 	return recentlyCompletedExecExists(stream, messageID)
 }
 
-func shouldIgnoreStaleExecControl(message *agentv1.ExecClientControlMessage) bool {
+// isStaleTransportExecControl 判定是否为重连客户端可能迟发的传输级控制消息
+// （Heartbeat / StreamClose）。这类消息即便对应 pending exec 已不存在也不应杀流。
+func isStaleTransportExecControl(message *agentv1.ExecClientControlMessage) bool {
 	if message == nil {
 		return false
 	}
 	switch message.GetMessage().(type) {
 	case *agentv1.ExecClientControlMessage_Heartbeat, *agentv1.ExecClientControlMessage_StreamClose:
-		// Reconnecting Cursor clients may keep sending transport-level exec
-		// heartbeats / close acks after the original in-memory pending state is gone.
-		// Treat these as idempotent noise instead of surfacing protocol 400s.
 		return true
 	default:
 		return false
 	}
+}
+
+func shouldIgnoreStaleExecControl(message *agentv1.ExecClientControlMessage) bool {
+	if message == nil {
+		return false
+	}
+	// 此处 stream 已不 active（request 结束/崩溃/换代会话）：重连客户端迟发的
+	// Heartbeat/StreamClose 是纯传输级噪声，静默吞合理，也无 RecentCompletedExecs 可查。
+	return isStaleTransportExecControl(message)
 }
 
 type pendingAssistantMessage struct {

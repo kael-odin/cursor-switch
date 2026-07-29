@@ -107,7 +107,7 @@ func (service *Service) handleExecControl(intent InboundIntent) error {
 	}
 	pending, found := selectPendingExecByControl(intent.ExecClientControlMessage, stream)
 	if !found {
-		if shouldIgnoreMissingExecControl(intent.ExecClientControlMessage, stream) {
+		if shouldIgnoreMissingExecControl(intent.ExecClientControlMessage, stream, intent.RequestID) {
 			return nil
 		}
 		return fmt.Errorf("pending exec not found for control message")
