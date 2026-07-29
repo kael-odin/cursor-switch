@@ -1,5 +1,11 @@
 # 2.0.5
 
+## L3 前端 normalizer 回归测试
+
+- **问题**：`appState.js` 的 normalizer（`normalizeModelAdapter`/`normalizeModelAdapters`/`normalizeConfig`）是前端 config 层契约边界——F-02（payload merge 透传）、L5（旧品牌 key 迁移）、v2.0.3（per-namespace 路由）、A6（cursor 配置）等改动都经手这些函数，但前端此前零自动化测试，回归只能靠人工点 UI。
+- **修复**：引入 `vitest` + `happy-dom` 最小测试环境。`frontend/vitest.config.js` 故意不复用 `vite.config.js`（后者挂载 wails 插件，纯 Node 测试环境会拉起 wails 绑定导致加载失败），只设最小 `@`/`@bindings` 别名 + happy-dom（提供 localStorage/window，appState.js 模块加载时 `migrateLegacyStorageKeys`/`loadCachedState` 依赖之）。`appState.test.js` 12 场景锁住契约：baseURL 归一（协议/host 小写、去尾斜杠、非 http(s) 置空）、字段别名契约（`baseURL||url`、`apiKey||key`、数值字段接受 snake_case）、未知 type 置空、非法 reasoningEffort 回落 medium、enabled 默认 true、costMultiplier F-02 透传、openai 专属字段仅在 openai 类型生效、非数组归一为空数组、空 config 全默认、perNamespace 清洗非法值丢 auto、mode 非法值回落 local、round-trip 幂等。为测 `normalizeConfig` 导出之（纯函数，导出无副作用，生产代码仅加一个 export 关键字，行为零变化）。`package.json` 加 `test`/`test:watch` 脚本。
+- **未做**：ESLint（维持 2.0.2 既定暂缓决策——前端无现成 lint 基础设施，投入产出比低）、i18n 快照测试（`static-i18n-plugin.js` 是构建期转换，快照价值低于 normalizer，留后续）。normalizer 单测是 L3 高价值核心，先行落地。
+
 ## A6 Cursor 配置接管安全网（备份/还原/崩溃恢复）
 
 - **问题**：cursor-switch 接管时 `WriteUserProxySettings` 改写用户 Cursor `settings.json` 注入 5 个代理键（`http.proxy` 等）。原 `ClearUserProxySettings` 退出时直接 delete 这些键——**若用户接管前有自己的 `http.proxy`，退出后用户原始代理配置丢失**（被覆盖再被抹掉，而非还原）。若崩溃没来得及 Clear，下次启动在已污染 settings 上再注入，备份污染值还会覆盖真实原始值。
