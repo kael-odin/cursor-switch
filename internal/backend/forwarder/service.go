@@ -30,6 +30,12 @@ const (
 	completedExecRetention         = 15 * time.Second
 	nonStreamingExecCloseGrace     = 1500 * time.Millisecond
 	defaultSummaryCompletedThought = "Chat context summarized"
+	// encryptedReasoningPlaceholder 是 OpenAI Responses 模型返回加密 thinking（仅有
+	// encrypted_content / ReasoningSignature、无明文 reasoning_summary_text delta）时的
+	// 占位文本。BYOK 代理无法解密——加密内容只对官方 Cursor/OpenAI 后端可读（N-34）。
+	// 文案诚实声明"加密、本地不可读"，不再用"Please wait a moment"误导用户等待
+	// 永远不会到来的明文。有明文 summary delta 时走正常 thinking delta 路径，不触发此占位。
+	encryptedReasoningPlaceholder = "Reasoning is encrypted by the provider and not available through BYOK."
 	providerDefaultMaxOutputTokens = 65536
 	providerOutputSafetyTokens     = 4096
 

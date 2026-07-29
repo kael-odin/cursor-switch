@@ -524,7 +524,11 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 			stream.mu.Unlock()
 		}
 		if shouldEmitSyntheticThinking {
-			if err := service.broker.Publish(requestID, StreamEvent{Message: buildThinkingDeltaMessage("Thinking is encrypted. Please wait a moment.", event.ThinkingStyle)}); err != nil {
+			// N-34：OpenAI Responses 加密 thinking 兜底。仅当 provider 只给 encrypted_content
+			// (ReasoningSignature) 而无任何明文 reasoning_summary_text delta 时触发——此时
+			// ProviderAccumulatedReasoning 为空。加密内容 BYOK 本地无法解密（只对官方后端可读），
+			// 故诚实声明不可读，而非"请稍候"误导用户等待永不到来的明文。完整解密回传链属阶段三。
+			if err := service.broker.Publish(requestID, StreamEvent{Message: buildThinkingDeltaMessage(encryptedReasoningPlaceholder, event.ThinkingStyle)}); err != nil {
 				return err
 			}
 		}

@@ -104,6 +104,11 @@ func openAIResponsesReasoningItem(message Message) map[string]any {
 		"type":              "reasoning",
 		"encrypted_content": strings.TrimSpace(message.ReasoningSignature),
 	}
+	// N-34：encrypted_content（= ReasoningSignature）原样回传供后续 turn 的 reasoning
+	// 续接（OpenAI Responses 要求把上轮加密 reasoning 原样回传以保持链路）。这是 replay
+	// 链的完整回传，但加密内容本身 BYOK 本地无法解密还原给 UI——UI 侧对无明文 summary
+	// 的 reasoning 显示 encryptedReasoningPlaceholder 占位。有明文 summary delta 的模型
+	// 走正常 thinking delta 路径，不依赖占位。完整解密还原属阶段三架构决策。
 	if reasoningID := strings.TrimSpace(message.OpenAIResponsesReasoningID); reasoningID != "" {
 		reasoningItem["id"] = reasoningID
 	}
