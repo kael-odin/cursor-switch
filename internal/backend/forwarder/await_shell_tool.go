@@ -64,12 +64,94 @@ func (service *Service) handleAwaitShellToolInvocation(stream *ActiveStream, inv
 		}
 		return service.completeImmediateToolResult(stream, invocation, string(payload), buildAwaitShellToolCall(buildAwaitArgsFromAwaitShellArgs(args), buildAwaitShellProtoResult(result)))
 	}
+
+	// 审计 N-04：此前直接调 awaitShellSnapshot 同步返回，block_until_ms 仅用于
+	// 计算 timedOut 布尔，从不实际阻塞。AwaitShell 退化为一次性快照——模型几乎
+	// 总是拿到 {matched:false, timed_out:true} + 调用瞬间的部分输出，即便 shell
+	// 随后立即产出匹配行也看不到，导致 agent 误判命令未完成、反复重跑，长任务/
+	// 构建场景彻底失效。
+	//
+	// 修：当 block_until_ms > 0 且 shell 未匹配/未终态时，进入阻塞轮询循环：
+	// 周期性 refresh terminal 文件 + peek 输出，直到 pattern 匹配、shell 进入
+	// 终态、或超时。peek 不推进 AwaitStdoutOffset，避免循环期间丢失已消费输出；
+	// 仅最终返回时经 awaitShellSnapshot 一次推进 offset。
+	blockUntilMS := int64(30000)
+	if args.BlockUntilMS != nil {
+		blockUntilMS = *args.BlockUntilMS
+	}
+	if blockUntilMS > 0 && strings.TrimSpace(args.ShellID) != "" {
+		service.awaitShellBlockUntilMatched(stream, args, blockUntilMS)
+	}
+
 	result := service.awaitShellSnapshot(stream, args)
 	payload, err := json.Marshal(result)
 	if err != nil {
 		return err
 	}
 	return service.completeImmediateToolResult(stream, invocation, string(payload), buildAwaitShellToolCall(buildAwaitArgsFromAwaitShellArgs(args), buildAwaitShellProtoResult(result)))
+}
+
+// awaitShellBlockUntilMatched 阻塞轮询直到 pattern 匹配、shell 进入终态、或超时。
+// 不推进 AwaitStdoutOffset（offset 推进由调用方最终的 awaitShellSnapshot 负责）。
+// 轮询期间不持 stream.mu（仅 peek 时短暂持锁），不阻塞 actor mailbox。
+func (service *Service) awaitShellBlockUntilMatched(stream *ActiveStream, args awaitShellArgs, blockUntilMS int64) {
+	const pollInterval = 200 * time.Millisecond
+	deadline := time.Now().Add(time.Duration(blockUntilMS) * time.Millisecond)
+	shellID := strings.TrimSpace(args.ShellID)
+	pattern := strings.TrimSpace(args.Pattern)
+
+	for {
+		service.refreshBackgroundShellFromTerminalFile(stream, shellID)
+
+		matched, terminal, exists := service.peekAwaitShellState(stream, shellID, pattern)
+		if !exists {
+			return // shell 已失效（unknown/expired），交给 snapshot 返回 unknown。
+		}
+		if matched || terminal {
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		// 下一轮前等待 pollInterval，但不超过剩余 deadline。
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return
+		}
+		wait := pollInterval
+		if remaining < wait {
+			wait = remaining
+		}
+		time.Sleep(wait)
+	}
+}
+
+// peekAwaitShellState 轻量读取 shell 当前状态，判断是否匹配 pattern / 是否终态。
+// 不推进 offset。返回 (matched, terminal, exists)。
+func (service *Service) peekAwaitShellState(stream *ActiveStream, shellID, pattern string) (matched, terminal, exists bool) {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	state, ok := stream.BackgroundShells[shellID]
+	if !ok || state == nil {
+		return false, false, false
+	}
+	status := strings.TrimSpace(state.Status)
+	if status == "" {
+		status = backgroundShellStatusUnknown
+	}
+	terminal = isBackgroundShellTerminalStatus(status)
+	if pattern == "" {
+		// 无 pattern：匹配条件退化为"有新输出或已终态"；这里仅靠终态驱动返回，
+		// 无 pattern 时匹配恒 false，由 terminal/超时决定。
+		return false, terminal, true
+	}
+	combined := state.StdoutBuffer + "\n" + state.StderrBuffer
+	m, _, err := awaitShellPatternMatched(pattern, combined)
+	if err != nil {
+		// 正则错误：不阻塞，立即返回让 snapshot 报错。
+		return true, true, true
+	}
+	return m, terminal, true
 }
 
 func decodeAwaitShellArgs(raw []byte) (awaitShellArgs, error) {
