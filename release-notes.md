@@ -1,5 +1,15 @@
 # 2.0.5
 
+## A6 Cursor 配置接管安全网（备份/还原/崩溃恢复）
+
+- **问题**：cursor-switch 接管时 `WriteUserProxySettings` 改写用户 Cursor `settings.json` 注入 5 个代理键（`http.proxy` 等）。原 `ClearUserProxySettings` 退出时直接 delete 这些键——**若用户接管前有自己的 `http.proxy`，退出后用户原始代理配置丢失**（被覆盖再被抹掉，而非还原）。若崩溃没来得及 Clear，下次启动在已污染 settings 上再注入，备份污染值还会覆盖真实原始值。
+- **修复**（对齐 cc-switch `proxy_live_backup` + `live_takeover_active`）：
+  - **接管前备份**：`WriteUserProxySettings` 注入前把被覆盖键的原始值（含"接管前是否存在"标记）快照到 `~/.cursor-local-assistant-v2/data/cursor-settings-backup.json`（0700 目录 + 0600 文件）。仅当无已有备份时写——防"接管→崩溃→重启→又备份当前注入值"覆盖真实原始值。
+  - **退出还原**：`ClearUserProxySettings` 不再简单 delete，从备份还原——接管前存在的键写回原始值（用户原始代理回来），接管前不存在的键 delete。无备份退回旧 delete 语义。还原后清备份。
+  - **崩溃恢复**：`ApplyCursorSettings` 注入前先 `RestoreCursorSettingsFromCrash`——检测 settings 残留注入键 + 有备份 → 上次非正常退出 → 据备份还原原始配置；残留但无备份 → best-effort 清注入键退回"无代理"。
+  - **B3 切换锁**：已由 F-35 的 `lifecycleMu` 串行化 `StartProxy`/`StopProxy`/`SaveUserConfig` 覆盖，`ApplyCursorSettings`/`ClearCursorSettings` 都在锁内调用不会并发半切换，无需额外锁。
+- **测试**：`settings_backup_test.go` 8 场景——备份+还原核心契约（接管前有代理→退出还原原始值而非抹掉）/ 无原始代理退出删键 / 崩溃恢复从备份还原 / 崩溃恢复无备份清残留 / 无残留 no-op / 备份不覆盖防污染 / 逐键还原逻辑 / 无备份退回 delete。
+
 ## A3 Thinking Signature 整流器（自愈式重试）
 
 - **问题**：走 Anthropic 兼容路由的第三方中转（DeepSeek/Kimi/Qwen/GLM/… 回签 Anthropic 风格响应的）实现 thinking signature 参差，常回签无效签名。cursor-switch 把会话历史里的 assistant 推理内容与签名原样回带上行，provider 校验签名失败直接返回 HTTP 400——而 400 属不可重试错误，Router 不会 failover，签名错误原样透传给用户，对话中断。

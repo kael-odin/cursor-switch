@@ -76,3 +76,11 @@ func CACertFilePath() string {
 func CAKeyFilePath() string {
 	return filepath.Join(DataRootPath(), "ca.key")
 }
+
+// CursorSettingsBackupPath 返回宿主 Cursor settings.json 注入键原始值的备份路径。
+// cursor-switch 接管时会改写用户 Cursor 的 settings.json（注入 http.proxy 等键）；
+// 为防止退出/崩溃后用户原始代理配置丢失，接管前把被覆盖键的原始值备份到此文件，
+// 退出或崩溃恢复时据此还原。文件位于权限 0700 的 DataRoot 下，不进 git。
+func CursorSettingsBackupPath() string {
+	return filepath.Join(DataRootPath(), "cursor-settings-backup.json")
+}
