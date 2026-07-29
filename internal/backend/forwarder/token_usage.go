@@ -406,6 +406,14 @@ func (service *Service) recordTurnFinalizedSnapshot(stream *ActiveStream, conver
 		CacheReadTokens:  usage.CacheReadTokens,
 		CacheWriteTokens: usage.CacheWriteTokens,
 		UsagePresent:     usage.UsagePresent,
+		// 审计 N-12：补上 ModelID/ModelName/Provider（来自 LookupEvent 聚合的
+		// provider_call 事件）。此前落盘 ModelID=""，dashboard 把 turn_finalized
+		// 当 legacy 语义处理：高缓存命中 turn 被误标 CalibrationAnomaly，且该行
+		// input 成本按 legacy 减 cacheRead 后 clamp 到 0（漏算 FRESH input 成本），
+		// recent_events 表同一 turn 出现两条互相矛盾的成本行。
+		ModelID:   usage.ModelID,
+		ModelName: usage.ModelName,
+		Provider:  usage.Provider,
 	})
 }
 

@@ -232,6 +232,18 @@ func (store *UsageFileStore) LookupEvent(needle string) (usageFileEvent, bool, e
 		if strings.TrimSpace(aggregate.ModelName) == "" {
 			aggregate.ModelName = event.ModelName
 		}
+		// 审计 N-12：Kind/Provider 同样需取非空继承（聚合初始化只设 EventID+At，
+		// 否则 turn 事件读回时 Kind/Provider 丢失，dashboard 无法按 Kind 区分
+		// turn_finalized 与 provider_call、无法显示 Provider）。
+		if strings.TrimSpace(aggregate.Kind) == "" {
+			aggregate.Kind = event.Kind
+		}
+		if strings.TrimSpace(aggregate.Provider) == "" {
+			aggregate.Provider = event.Provider
+		}
+		if strings.TrimSpace(aggregate.Status) == "" {
+			aggregate.Status = event.Status
+		}
 		aggregate.InputTokens += nonNegativeInt64(event.InputTokens)
 		aggregate.OutputTokens += nonNegativeInt64(event.OutputTokens)
 		aggregate.CacheReadTokens += nonNegativeInt64(event.CacheReadTokens)
