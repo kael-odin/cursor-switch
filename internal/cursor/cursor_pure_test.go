@@ -119,62 +119,7 @@ func TestDisplayOSName(t *testing.T) {
 	}
 }
 
-// TestCursorStateDJB2Hash 验证 DJB2 变体哈希的确定性。
-func TestCursorStateDJB2Hash(t *testing.T) {
-	// 确定性：同输入同输出。
-	if cursorStateDJB2Hash("abc") != cursorStateDJB2Hash("abc") {
-		t.Fatal("hash not deterministic")
-	}
-	// 不同输入不同输出。
-	if cursorStateDJB2Hash("abc") == cursorStateDJB2Hash("abd") {
-		t.Fatal("collision for distinct inputs")
-	}
-	// 手算验证：hash=0; 'a'=97 → 0*31+97=97; 'b'=98 → 97*31+98=3105; 'c'=99 → 3105*31+99=96354
-	if got := cursorStateDJB2Hash("abc"); got != "96354" {
-		t.Errorf("hash(abc) = %q, want 96354", got)
-	}
-}
-
-// TestDisableCursorStatsigGate 验证 gate 被强制置 false，且保留既有字段。
-func TestDisableCursorStatsigGate(t *testing.T) {
-	gates := map[string]any{}
-	disableCursorStatsigGate(gates, "some_gate")
-	gate, ok := gates["some_gate"].(map[string]any)
-	if !ok {
-		t.Fatalf("gate not created: %+v", gates)
-	}
-	if gate["value"] != false {
-		t.Fatalf("value = %v, want false", gate["value"])
-	}
-	if gate["name"] != "some_gate" {
-		t.Fatalf("name = %v", gate["name"])
-	}
-
-	// 已存在的 gate 只置 value，不重建。
-	existing := map[string]any{"some_gate": map[string]any{"name": "orig", "custom": "keep"}}
-	disableCursorStatsigGate(existing, "some_gate")
-	ex := existing["some_gate"].(map[string]any)
-	if ex["custom"] != "keep" {
-		t.Fatalf("existing field lost: %+v", ex)
-	}
-	if ex["value"] != false {
-		t.Fatalf("value not set to false: %+v", ex)
-	}
-}
-
-// TestBuildCursorAuthStateValues 验证 auth state 值结构与 trim。
-func TestBuildCursorAuthStateValues(t *testing.T) {
-	v := buildCursorAuthStateValues("  user@example.com  ", "  tok-123  ")
-	if v["cursorAuth/cachedEmail"] != "user@example.com" {
-		t.Errorf("email not trimmed: %q", v["cursorAuth/cachedEmail"])
-	}
-	if v["cursorAuth/accessToken"] != "tok-123" {
-		t.Errorf("token not trimmed: %q", v["cursorAuth/accessToken"])
-	}
-	if v["cursorAuth/refreshToken"] != "tok-123" {
-		t.Errorf("refreshToken should mirror token: %q", v["cursorAuth/refreshToken"])
-	}
-	if _, ok := v["cursorAuth/cachedSignUpType"]; !ok {
-		t.Errorf("signUpType missing: %+v", v)
-	}
-}
+// 注：cursorStateDJB2Hash / disableCursorStatsigGate / buildCursorAuthStateValues
+// 三组函数随 InjectCursorUserInfo 死代码在 P3-1 一并移除（无调用者），
+// 对应的 TestCursorStateDJB2Hash / TestDisableCursorStatsigGate /
+// TestBuildCursorAuthStateValues 同步删除。

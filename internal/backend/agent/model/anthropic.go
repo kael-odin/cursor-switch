@@ -425,6 +425,10 @@ func (adapter *AnthropicAdapter) streamOnce(ctx context.Context, req StreamReque
 	// finishReason 默认 "message_stop" 仅用于 artifact 摘要展示，绝不代表流确已终止：
 	// 零事件 200 / 提前 EOF 同样会以默认值结束，必须靠本标志区分合法终止与"空成功"。
 	sawTerminator := false
+	// P1-2：emittedAny 记录是否已向下游发过有效 content/tool 事件。
+	// 部分第三方中转在流末尾直接 EOF 不发 message_stop。已发过有效事件则 EOF 视为
+	// 正常完成；仅在零事件时才判截断（F-20 防"空成功伪装"的初衷）。
+	emittedAny := false
 	firstEventAt := time.Time{}
 	fail := func(streamErr error) error {
 		finishedAt = time.Now().UTC()
@@ -464,6 +468,7 @@ func (adapter *AnthropicAdapter) streamOnce(ctx context.Context, req StreamReque
 			return nil
 		}
 		streamIdle.MarkEffectiveContent()
+		emittedAny = true
 		if err := flushThinkingCompleted(); err != nil {
 			return err
 		}
@@ -480,6 +485,7 @@ func (adapter *AnthropicAdapter) streamOnce(ctx context.Context, req StreamReque
 			return nil
 		}
 		streamIdle.MarkEffectiveContent()
+		emittedAny = true
 		if thinkingStarted.IsZero() {
 			thinkingStarted = time.Now()
 		}
@@ -611,6 +617,7 @@ func (adapter *AnthropicAdapter) streamOnce(ctx context.Context, req StreamReque
 				}
 				toolBlocks[event.Index] = accumulator
 				streamIdle.MarkEffectiveContent()
+				emittedAny = true
 				if err := emitAnthropicToolProgress(sink, currentModel, accumulator, ""); err != nil {
 					return err
 				}
@@ -634,6 +641,7 @@ func (adapter *AnthropicAdapter) streamOnce(ctx context.Context, req StreamReque
 				if accumulator != nil && event.Delta.PartialJSON != "" {
 					_, _ = accumulator.Args.WriteString(event.Delta.PartialJSON)
 					streamIdle.MarkEffectiveContent()
+					emittedAny = true
 					if err := emitAnthropicToolProgress(sink, currentModel, accumulator, event.Delta.PartialJSON); err != nil {
 						return err
 					}
@@ -651,6 +659,7 @@ func (adapter *AnthropicAdapter) streamOnce(ctx context.Context, req StreamReque
 					return err
 				}
 				streamIdle.MarkEffectiveContent()
+				emittedAny = true
 				if err := sink(ModelEvent{
 					Kind:       ModelEventKindToolLikeCompleted,
 					OccurredAt: time.Now().UTC(),
@@ -748,9 +757,11 @@ func (adapter *AnthropicAdapter) streamOnce(ctx context.Context, req StreamReque
 	if err := flushThinkingCompleted(); err != nil {
 		return fail(err)
 	}
-	if !sawTerminator {
-		// F-20：流以正常 EOF 结束但未收到 message_stop——视作被截断（典型：零事件 200
-		// 或上游提前断流）。作为可重试错误返回，触发 Router failover 换候选重试。
+	if !sawTerminator && !emittedAny {
+		// F-20：流以正常 EOF 结束且未收到 message_stop，且未发过任何有效事件——视作被截断
+		// （典型：零事件 200 或上游提前断流）。作为可重试错误返回，触发 Router failover 换候选重试。
+		// P1-2：已发过有效 content/tool 事件但无 message_stop（部分第三方中转 EOF 不发终止符）
+		// 视为正常完成，避免完整回复后报截断。
 		return fail(streamTerminatorMissingError("anthropic"))
 	}
 	finishedAt = time.Now().UTC()

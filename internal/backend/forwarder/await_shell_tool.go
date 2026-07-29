@@ -17,6 +17,12 @@ import (
 
 const awaitShellOutputLimit = 16 * 1024
 
+// awaitShellBufferCap 是单个后台 shell Stdout/Stderr buffer 的容量上限（字节）。
+// 超限后保留尾部，避免高频输出（如 `yes`/`find /`）导致 buffer 无界增长 OOM。
+// 取值远大于 awaitShellOutputLimit（返回给模型的快照切片上限），保证正常场景
+// 不丢失信息、异常刷屏场景只丢历史保留最近输出。
+const awaitShellBufferCap = 256 * 1024
+
 const (
 	backgroundShellStatusBackgrounded     = "backgrounded"
 	backgroundShellStatusRunning          = "running"
@@ -330,8 +336,15 @@ func backgroundShellRuntimeMS(createdAt time.Time, completedAt time.Time) uint64
 const (
 	// awaitShellPatternMaxLen 限制模型提供的正则长度，防止超大模式导致编译/回溯爆炸。
 	awaitShellPatternMaxLen = 512
-	// awaitShellPatternMatchTimeout 限制单次正则匹配耗时，防止 ReDoS 卡死 actor goroutine。
+	// awaitShellPatternMatchTimeout 限制单次正则匹配等待耗时，防止卡死 actor goroutine。
+	// Go 标准库 regexp 基于 RE2，匹配对所有输入保证线性时间（无回溯爆炸），因此超时
+	// 主要用于防御病态长 input 的线性扫描。超时后调用方放弃等待；泄漏的匹配 goroutine
+	// 因 input 有界（awaitShellPatternInputLimit）会在有限时间内自行结束（P0-1）。
 	awaitShellPatternMatchTimeout = 2 * time.Second
+	// awaitShellPatternInputLimit 限制传入正则匹配的 output 长度。AwaitShell 语义是
+	// "等待最近输出匹配某模式"，只需匹配尾部即可；截断 input 把泄漏 goroutine 的
+	// 执行时间收敛到有界（P0-1）。
+	awaitShellPatternInputLimit = 32 * 1024
 )
 
 func awaitShellPatternMatched(pattern string, output string) (bool, *string, error) {
@@ -346,12 +359,18 @@ func awaitShellPatternMatched(pattern string, output string) (bool, *string, err
 	if err != nil {
 		return false, nil, fmt.Errorf("invalid AwaitShell pattern: %w", err)
 	}
+	// 截断 input 到有界长度（保留尾部，符合 await 语义），使超时泄漏的匹配 goroutine
+	// 在有限时间内结束（P0-1）。Go regexp 基于 RE2 无回溯爆炸，input 有界即可保证 goroutine 有界。
+	bounded := output
+	if len(bounded) > awaitShellPatternInputLimit {
+		bounded = bounded[len(bounded)-awaitShellPatternInputLimit:]
+	}
 	type matchResult struct {
 		match string
 	}
 	resultCh := make(chan matchResult, 1)
 	go func() {
-		match := expr.FindString(output)
+		match := expr.FindString(bounded)
 		resultCh <- matchResult{match: match}
 	}()
 	select {
@@ -361,7 +380,7 @@ func awaitShellPatternMatched(pattern string, output string) (bool, *string, err
 		}
 		return true, &res.match, nil
 	case <-time.After(awaitShellPatternMatchTimeout):
-		return false, nil, fmt.Errorf("AwaitShell pattern match timed out after %s (possible ReDoS)", awaitShellPatternMatchTimeout)
+		return false, nil, fmt.Errorf("AwaitShell pattern match timed out after %s", awaitShellPatternMatchTimeout)
 	}
 }
 
@@ -424,7 +443,7 @@ func (service *Service) refreshBackgroundShellFromTerminalFile(stream *ActiveStr
 		state.CreatedAt = firstNonZeroTime(terminalSnapshot.StartedAt, now)
 	}
 	if state.StdoutBuffer == "" && state.StderrBuffer == "" && terminalSnapshot.Output != "" {
-		state.StdoutBuffer = terminalSnapshot.Output
+		state.StdoutBuffer = clampShellBuffer(terminalSnapshot.Output)
 		if !isBackgroundShellTerminalStatus(state.Status) {
 			state.Status = backgroundShellStatusRunning
 		}
@@ -662,13 +681,13 @@ func (service *Service) observeBackgroundShellSpawnResultLocked(stream *ActiveSt
 	switch {
 	case result.GetRejected() != nil:
 		state.Status = backgroundShellStatusRejected
-		state.StderrBuffer += strings.TrimSpace(result.GetRejected().GetReason())
+		state.StderrBuffer = appendBackgroundShellBuffer(state.StderrBuffer, result.GetRejected().GetReason())
 	case result.GetPermissionDenied() != nil:
 		state.Status = backgroundShellStatusPermissionDenied
-		state.StderrBuffer += strings.TrimSpace(result.GetPermissionDenied().GetError())
+		state.StderrBuffer = appendBackgroundShellBuffer(state.StderrBuffer, result.GetPermissionDenied().GetError())
 	case result.GetError() != nil:
 		state.Status = backgroundShellStatusTransportClosed
-		state.StderrBuffer += strings.TrimSpace(result.GetError().GetError())
+		state.StderrBuffer = appendBackgroundShellBuffer(state.StderrBuffer, result.GetError().GetError())
 	default:
 		return false
 	}
@@ -781,7 +800,7 @@ func (service *Service) observeShellStreamLocked(stream *ActiveStream, pending r
 		if state == nil {
 			return
 		}
-		state.StdoutBuffer += execbridge.DecodeShellStdout(event.Stdout)
+		state.StdoutBuffer = appendShellStreamBuffer(state.StdoutBuffer, execbridge.DecodeShellStdout(event.Stdout))
 		state.Status = backgroundShellStatusRunning
 		state.LastActivityAt = now
 	case *agentv1.ShellStream_Stderr:
@@ -789,7 +808,7 @@ func (service *Service) observeShellStreamLocked(stream *ActiveStream, pending r
 		if state == nil {
 			return
 		}
-		state.StderrBuffer += event.Stderr.GetData()
+		state.StderrBuffer = appendShellStreamBuffer(state.StderrBuffer, event.Stderr.GetData())
 		state.Status = backgroundShellStatusRunning
 		state.LastActivityAt = now
 	case *agentv1.ShellStream_Exit:
@@ -809,7 +828,7 @@ func (service *Service) observeShellStreamLocked(stream *ActiveStream, pending r
 			return
 		}
 		state.Status = backgroundShellStatusRejected
-		state.StderrBuffer += strings.TrimSpace(event.Rejected.GetReason())
+		state.StderrBuffer = appendBackgroundShellBuffer(state.StderrBuffer, event.Rejected.GetReason())
 		state.LastActivityAt = now
 		state.CompletedAt = now
 	case *agentv1.ShellStream_PermissionDenied:
@@ -818,7 +837,7 @@ func (service *Service) observeShellStreamLocked(stream *ActiveStream, pending r
 			return
 		}
 		state.Status = backgroundShellStatusPermissionDenied
-		state.StderrBuffer += strings.TrimSpace(event.PermissionDenied.GetError())
+		state.StderrBuffer = appendBackgroundShellBuffer(state.StderrBuffer, event.PermissionDenied.GetError())
 		state.LastActivityAt = now
 		state.CompletedAt = now
 	}
@@ -993,10 +1012,32 @@ func appendBackgroundShellBuffer(current string, value string) string {
 	if trimmed == "" {
 		return current
 	}
+	var next string
 	if current == "" || strings.HasSuffix(current, "\n") {
-		return current + trimmed
+		next = current + trimmed
+	} else {
+		next = current + "\n" + trimmed
 	}
-	return current + "\n" + trimmed
+	return clampShellBuffer(next)
+}
+
+// appendShellStreamBuffer 把流式 chunk（未 trim，保留原始字节）追加到 buffer，
+// 超过 awaitShellBufferCap 时保留尾部。用于 Stdout/Stderr 的原始流式拼接，
+// 与 appendBackgroundShellBuffer（trim 后的完成 detail）区分。
+func appendShellStreamBuffer(current string, chunk string) string {
+	if chunk == "" {
+		return current
+	}
+	return clampShellBuffer(current + chunk)
+}
+
+// clampShellBuffer 超过容量上限时只保留尾部 awaitShellBufferCap 字节。
+// 避免高频刷屏命令导致 buffer 无界增长 OOM（P0-2）。
+func clampShellBuffer(value string) string {
+	if len(value) <= awaitShellBufferCap {
+		return value
+	}
+	return value[len(value)-awaitShellBufferCap:]
 }
 
 func ensureBackgroundShellStateLocked(stream *ActiveStream, shellID string, pending runtimecore.PendingExec, now time.Time) *BackgroundShellState {

@@ -94,6 +94,13 @@ type CircuitBreaker struct {
 	// halfOpenInFlight 当前 HalfOpen 状态已放行的探测请求数（限流，上限 1）。
 	halfOpenInFlight uint32
 
+	// P1-4：滑动窗口替代全期累计错误率。旧实现 RecordSuccess 只清 consecutiveFailures
+	// 不清 failedRequests，错误率用全期 failedRequests/totalRequests，历史失败长期累积
+	// 导致健康渠道偶发抖动后单次失败即触发熔断。recentResults 是固定容量环形（true=成功），
+	// windowFailed 是窗口内失败计数，熔断决策基于窗口错误率而非全期。
+	recentResults []bool
+	windowFailed  uint32
+
 	// lastFailureReason 最近一次 RecordFailure 记录的真实失败原因（N-39）。
 	// 熔断打开后，路由层跳过该候选时用它还原"因何而熔断"，避免最终错误只剩
 	// "circuit open" 而丢失真实上游失败（连接超时/5xx/鉴权失败等），便于排障。
@@ -151,6 +158,46 @@ func (cb *CircuitBreaker) shouldRecoverLocked() bool {
 	return time.Since(cb.lastOpenedAt) >= time.Duration(cb.config.TimeoutSeconds)*time.Second
 }
 
+// circuitBreakerRecentWindowSize 是错误率滑动窗口容量（P1-4）。
+// 熔断决策基于最近这么多请求的错误率，而非全期累计，避免历史失败长期拉高错误率
+// 导致健康渠道偶发抖动后被反复熔断。
+const circuitBreakerRecentWindowSize = 50
+
+// pushRecentResultLocked 把一次成功/失败推入滑动窗口，维护 windowFailed 计数。
+// 窗口满后淘汰最旧记录（环形）。调用方持锁。
+func (cb *CircuitBreaker) pushRecentResultLocked(failed bool) {
+	if cap(cb.recentResults) < circuitBreakerRecentWindowSize {
+		cb.recentResults = make([]bool, 0, circuitBreakerRecentWindowSize)
+	}
+	if len(cb.recentResults) >= circuitBreakerRecentWindowSize {
+		// 淘汰最旧：切片头元素出队。
+		if cb.recentResults[0] {
+			// 旧元素是成功，windowFailed 不变。
+		} else {
+			if cb.windowFailed > 0 {
+				cb.windowFailed--
+			}
+		}
+		cb.recentResults = cb.recentResults[1:]
+	}
+	cb.recentResults = append(cb.recentResults, !failed)
+	if failed {
+		cb.windowFailed++
+	}
+}
+
+// recentErrorRateLocked 返回窗口错误率（0-1）。窗口不足 MinRequests 时返回 0，
+// 与旧逻辑"不足最小请求数时不触发错误率熔断"语义对齐。调用方持锁。
+func (cb *CircuitBreaker) recentErrorRateLocked() float64 {
+	if uint32(len(cb.recentResults)) < cb.config.MinRequests {
+		return 0
+	}
+	if len(cb.recentResults) == 0 {
+		return 0
+	}
+	return float64(cb.windowFailed) / float64(len(cb.recentResults))
+}
+
 // AllowRequest 检查是否允许请求通过，必要时获取 HalfOpen 探测名额。
 func (cb *CircuitBreaker) AllowRequest() AllowResult {
 	cb.mu.Lock()
@@ -199,6 +246,7 @@ func (cb *CircuitBreaker) RecordSuccess(usedHalfOpenPermit bool) {
 	}
 	cb.consecutiveFailures = 0
 	cb.totalRequests++
+	cb.pushRecentResultLocked(false) // 成功：窗口推入，不计 failedRequests 衰减
 	// N-39：成功即清除陈旧失败原因，避免后续偶发跳过时展示过期成因。
 	cb.lastFailureReason = ""
 
@@ -222,6 +270,7 @@ func (cb *CircuitBreaker) RecordFailure(usedHalfOpenPermit bool) {
 	cb.totalRequests++
 	cb.failedRequests++
 	cb.consecutiveSuccesses = 0
+	cb.pushRecentResultLocked(true) // 失败：窗口推入
 
 	switch cb.state {
 	case CircuitHalfOpen:
@@ -230,8 +279,9 @@ func (cb *CircuitBreaker) RecordFailure(usedHalfOpenPermit bool) {
 	case CircuitClosed:
 		if cb.consecutiveFailures >= cb.config.FailureThreshold {
 			cb.transitionToOpenLocked()
-		} else if cb.totalRequests >= cb.config.MinRequests {
-			errorRate := float64(cb.failedRequests) / float64(cb.totalRequests)
+		} else {
+			// P1-4：错误率基于滑动窗口而非全期累计，避免历史失败长期拉高错误率。
+			errorRate := cb.recentErrorRateLocked()
 			if errorRate >= cb.config.ErrorRateThreshold {
 				cb.transitionToOpenLocked()
 			}
@@ -257,6 +307,20 @@ func (cb *CircuitBreaker) LastFailureReason() string {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 	return cb.lastFailureReason
+}
+
+// ReleaseHalfOpenPermit 释放可能占用的 HalfOpen 探测名额，但不更新健康统计。
+// 用于"既非成功也非 provider 故障"的路径（如下游 sink 写失败、客户端取消）——
+// 这些不应计入 provider 的成功/失败统计，否则会扭曲错误率（P1-4）或把下游错计成成功。
+// 但若不释放，permit.UsedHalfOpenPermit==true 时 halfOpenInFlight 卡在 1，渠道
+// 永久卡死 HalfOpen 只能人工 Reset（P0-3）。usedHalfOpenPermit 须来自 AllowRequest。
+func (cb *CircuitBreaker) ReleaseHalfOpenPermit(usedHalfOpenPermit bool) {
+	if !usedHalfOpenPermit {
+		return
+	}
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.releaseHalfOpenPermitLocked()
 }
 
 // releaseHalfOpenPermitLocked 释放 HalfOpen 探测名额，不影响健康统计。调用方持锁。
@@ -291,6 +355,8 @@ func (cb *CircuitBreaker) transitionToClosedLocked() {
 	cb.consecutiveSuccesses = 0
 	cb.totalRequests = 0
 	cb.failedRequests = 0
+	cb.recentResults = cb.recentResults[:0]
+	cb.windowFailed = 0
 }
 
 // State 返回当前状态（用于 UI/诊断）。

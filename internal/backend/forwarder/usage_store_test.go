@@ -235,6 +235,49 @@ func TestPruneUsageEventIndexLimit(t *testing.T) {
 	}
 }
 
+// TestPruneUsageEventIndexKeepsTurnFinalized 覆盖 P1-5：
+// turn_finalized 事件是 turn 计费落盘点，必须永不被 prune 淘汰——否则该 turn 的
+// provider_call 子事件被淘汰后，异步 finalize 聚合会漏算，turn 永久落盘为偏小值。
+// 构造大量 provider_call + 若干很老的 turn_finalized，验证 turn 全保留。
+func TestPruneUsageEventIndexKeepsTurnFinalized(t *testing.T) {
+	index := make(map[string]usageFileEvent, usageEventIndexLimit+20)
+	base := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	// 很老的 turn_finalized（早于所有 provider_call，正常按时间会被最先淘汰）。
+	for i := 0; i < 5; i++ {
+		id := "turn-old-" + itoa(i)
+		index[id] = usageFileEvent{
+			EventID: id,
+			Kind:    usageEventKindTurn,
+			At:      base.Add(time.Duration(i) * time.Second), // 最老
+		}
+	}
+	// 大量 provider_call 使总数超限触发 prune。
+	for i := 0; i < usageEventIndexLimit+10; i++ {
+		id := "call-" + itoa(i)
+		index[id] = usageFileEvent{
+			EventID: id,
+			Kind:    usageEventKindProvider,
+			At:      base.Add(time.Duration(10+i) * time.Second),
+		}
+	}
+	pruned := pruneUsageEventIndex(index)
+	// 所有 turn_finalized 必须保留。
+	for i := 0; i < 5; i++ {
+		id := "turn-old-" + itoa(i)
+		if _, ok := pruned[id]; !ok {
+			t.Errorf("turn_finalized %q must NEVER be pruned (P1-5), but it was removed", id)
+		}
+	}
+	// 总数不超过上限。
+	if len(pruned) > usageEventIndexLimit {
+		t.Errorf("pruned size = %d, must not exceed limit %d", len(pruned), usageEventIndexLimit)
+	}
+	// provider_call 最老的应被淘汰（给 turn 腾位）。
+	if _, ok := pruned["call-0"]; ok {
+		t.Errorf("oldest provider_call call-0 should be pruned to make room for turn_finalized")
+	}
+}
+
 // itoa 是避免在测试里引入 strconv 的本地最小实现。
 func itoa(i int) string {
 	if i == 0 {

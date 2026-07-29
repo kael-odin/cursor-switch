@@ -32,3 +32,11 @@ func newSSRFSafeDialContext() func(ctx context.Context, network, address string)
 func newSSRFSafeTransport(base *http.Transport) *http.Transport {
 	return safehttp.NewSSRFSafeTransport(base)
 }
+
+// syncWebFetchAllowlist 把本次 WebFetch 配置的 host 白名单同步到 safehttp 全局表。
+// 在 executeWebFetch 入口调用，保证后续 resolveAndValidateHost / DialContext 放行
+// 用户显式配置的内网 host（企业内网 Wiki/Confluence，审计「行为偏离-3」）。
+// nil/空 = 恢复硬拒绝基线。仅当前请求生效——下次 WebFetch 按其时点配置再同步。
+func syncWebFetchAllowlist(hosts []string) {
+	safehttp.SetHostAllowlist(hosts)
+}

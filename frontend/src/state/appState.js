@@ -174,7 +174,45 @@ function normalizePerNamespace(raw) {
   return cleaned;
 }
 
-// 可配置的 per-namespace 路由目录（高价值子集，非全部 ~30 条路由）。
+// 审计「行为偏离-3」：WebSearch provider 合法值。duckduckgo = 免 key 降级质量；
+// bing/serper/tavily = 需对应 APIKey（BYOK）。空/非认可值归 duckduckgo。
+const SUPPORTED_WEB_SEARCH_PROVIDERS = new Set([
+  "duckduckgo",
+  "bing",
+  "serper",
+  "tavily",
+]);
+
+export const WEB_SEARCH_PROVIDER_OPTIONS = [
+  { value: "duckduckgo", label: "DuckDuckGo（免 key，降级质量）" },
+  { value: "bing", label: "Bing Web Search v7（需 key）" },
+  { value: "serper", label: "Serper / Google（需 key）" },
+  { value: "tavily", label: "Tavily（需 key）" },
+];
+
+function normalizeWebSearchProvider(value) {
+  const text = asString(value).toLowerCase();
+  if (SUPPORTED_WEB_SEARCH_PROVIDERS.has(text)) {
+    return text;
+  }
+  return "duckduckgo";
+}
+
+// WebFetch host 白名单：去空白 + 小写 + 去重，空数组保留为空（后端归一为 nil = 硬拒绝基线）。
+function normalizeWebFetchHostAllowlist(raw) {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const seen = new Set();
+  const cleaned = [];
+  for (const entry of raw) {
+    const host = asString(entry).trim().toLowerCase();
+    if (!host || seen.has(host)) continue;
+    seen.add(host);
+    cleaned.push(host);
+  }
+  return cleaned;
+}
 // 推理面（run_sse/bidi_append/ai_service）默认 byok local，不暴露在此——它们强制本地是
 // 项目目标。此处只列「云端一体化服务」类，对应审计优先级 1：可按需透传到用户本人 cursor
 // 账号（牺牲隐私换召回质量）。value 为路由名（后端 host.go 的 server.Name）。
@@ -612,6 +650,7 @@ export function normalizeConfig(source) {
   const raw = source && typeof source === "object" ? source : {};
   const routing = raw.routing && typeof raw.routing === "object" ? raw.routing : {};
   const homeMetrics = raw.homeMetrics && typeof raw.homeMetrics === "object" ? raw.homeMetrics : {};
+  const webTools = raw.webTools && typeof raw.webTools === "object" ? raw.webTools : {};
   return {
     log: asBoolean(raw.log),
     providerStreamIdleTimeout: asPositiveInteger(raw.providerStreamIdleTimeout),
@@ -629,6 +668,13 @@ export function normalizeConfig(source) {
     },
     homeMetrics: {
       includeCacheWriteInHitRate: asBoolean(homeMetrics.includeCacheWriteInHitRate),
+    },
+    // 审计「行为偏离-3」：WebSearch provider + WebFetch host 白名单 round-trip。
+    // 前端清洗 provider 合法值，白名单去空白+去重+小写；后端 merge 整块覆盖。
+    webTools: {
+      webSearchProvider: normalizeWebSearchProvider(webTools.webSearchProvider),
+      webSearchAPIKey: asString(webTools.webSearchAPIKey),
+      webFetchHostAllowlist: normalizeWebFetchHostAllowlist(webTools.webFetchHostAllowlist),
     },
     lastAgentModelHash: asString(raw.lastAgentModelHash),
     // F-02: pricing 透传——前端从不解释 pricing 字段（CRUD 走 MetricsService 独立路径），
@@ -675,6 +721,7 @@ function buildConfigPayload(source = appState) {
     modelAdapters: normalized.modelAdapters.map(({ id, ...adapter }) => adapter),
     routing: normalized.routing,
     homeMetrics: normalized.homeMetrics,
+    webTools: normalized.webTools,
     lastAgentModelHash: normalized.lastAgentModelHash,
     // F-02: pricing 透传到 payload——后端 MergeUserPatch 保留磁盘 pricing，
     // 但前端必须把当前已加载的 pricing 带回去，避免 round-trip 后状态丢失。
@@ -695,6 +742,9 @@ function applyConfigToState(config, { modelAdaptersOnly = false } = {}) {
   appState.tabServerBaseURL = normalized.routing.tabServerBaseURL || "";
   appState.perNamespace = normalized.routing.perNamespace;
   appState.includeCacheWriteInHitRate = normalized.homeMetrics.includeCacheWriteInHitRate;
+  appState.webSearchProvider = normalized.webTools.webSearchProvider || "";
+  appState.webSearchAPIKey = normalized.webTools.webSearchAPIKey || "";
+  appState.webFetchHostAllowlist = normalized.webTools.webFetchHostAllowlist || [];
   return normalized;
 }
 
@@ -720,8 +770,15 @@ async function persistConfigPayload(config, { modelAdaptersOnly = false } = {}) 
   }
 
   appState.configSaving = true;
+  // P1-8：区分"保存失败"与"保存成功但回读失败"。
+  // saveUserConfig 成功后磁盘已是新值；若此时 loadPersistedUserConfig/applyConfigToState
+  // 因 Wails 超时/网络抖动抛错，旧逻辑返回 ok:false → 调用方把 appState 回滚到旧值，
+  // 造成 UI 显示旧值而磁盘是新值的脱节。修复：保存成功后回读失败不视为失败，
+  // 保留乐观值（下次任意刷新会对齐磁盘真值），绝不回滚到与磁盘矛盾的旧值。
+  let savedToDisk = false;
   try {
     await saveUserConfig(payload);
+    savedToDisk = true;
     const persisted = await loadPersistedUserConfig();
     applyConfigToState(persisted, { modelAdaptersOnly });
     return {
@@ -729,6 +786,14 @@ async function persistConfigPayload(config, { modelAdaptersOnly = false } = {}) 
       error: "",
     };
   } catch (error) {
+    if (savedToDisk) {
+      // 保存已落盘，仅回读失败：不回滚（避免 UI/disk 脱节），返回成功，
+      // 下次 reloadUserConfig 会把 appState 对齐磁盘真值。
+      return {
+        ok: true,
+        error: "",
+      };
+    }
     return {
       ok: false,
       error: toUserError(error),
@@ -928,6 +993,10 @@ export const appState = reactive({
   tabServerBaseURL: cachedConfig.routing.tabServerBaseURL || "",
   perNamespace: cachedConfig.routing.perNamespace,
   includeCacheWriteInHitRate: cachedConfig.homeMetrics.includeCacheWriteInHitRate,
+  // 审计「行为偏离-3」：WebSearch provider/key + WebFetch host 白名单。
+  webSearchProvider: cachedConfig.webTools.webSearchProvider || "duckduckgo",
+  webSearchAPIKey: cachedConfig.webTools.webSearchAPIKey || "",
+  webFetchHostAllowlist: cachedConfig.webTools.webFetchHostAllowlist || [],
 
   serviceRunning: asBoolean(cachedState.serviceRunning),
   backendRunning: asBoolean(cachedState.backendRunning),
@@ -1199,6 +1268,11 @@ export async function persistUserConfig() {
       ...currentConfig.homeMetrics,
       includeCacheWriteInHitRate: appState.includeCacheWriteInHitRate,
     },
+    webTools: {
+      webSearchProvider: appState.webSearchProvider || "duckduckgo",
+      webSearchAPIKey: appState.webSearchAPIKey || "",
+      webFetchHostAllowlist: normalizeWebFetchHostAllowlist(appState.webFetchHostAllowlist),
+    },
   });
 }
 
@@ -1278,6 +1352,69 @@ export async function saveTabServerBaseURL(value) {
   });
   if (!result.ok) {
     appState.tabServerBaseURL = previousValue;
+  }
+  return result;
+}
+
+// saveWebSearchProvider 设置 WebSearch 上游 provider（审计「行为偏离-3」）。
+// duckduckgo = 免 key 降级；bing/serper/tavily = 需对应 APIKey（BYOK）。
+export async function saveWebSearchProvider(provider) {
+  const currentConfig = await loadPersistedUserConfig();
+  const previous = appState.webSearchProvider;
+  const next = normalizeWebSearchProvider(provider);
+  appState.webSearchProvider = next;
+  const result = await persistConfigPayload({
+    ...currentConfig,
+    webTools: {
+      webSearchProvider: next,
+      webSearchAPIKey: currentConfig.webTools?.webSearchAPIKey || "",
+      webFetchHostAllowlist: normalizeWebFetchHostAllowlist(currentConfig.webTools?.webFetchHostAllowlist),
+    },
+  });
+  if (!result.ok) {
+    appState.webSearchProvider = previous;
+  }
+  return result;
+}
+
+// saveWebSearchAPIKey 设置 WebSearch provider 的 API key（BYOK，明文本机存储）。
+export async function saveWebSearchAPIKey(value) {
+  const currentConfig = await loadPersistedUserConfig();
+  const previous = appState.webSearchAPIKey;
+  const next = String(value || "").trim();
+  appState.webSearchAPIKey = next;
+  const result = await persistConfigPayload({
+    ...currentConfig,
+    webTools: {
+      webSearchProvider: normalizeWebSearchProvider(currentConfig.webTools?.webSearchProvider || appState.webSearchProvider),
+      webSearchAPIKey: next,
+      webFetchHostAllowlist: normalizeWebFetchHostAllowlist(currentConfig.webTools?.webFetchHostAllowlist),
+    },
+  });
+  if (!result.ok) {
+    appState.webSearchAPIKey = previous;
+  }
+  return result;
+}
+
+// saveWebFetchHostAllowlist 设置 WebFetch 允许放行的内网 host 白名单（审计「行为偏离-3」）。
+// 企业内网 Wiki/Confluence 场景：默认空 = 保持 SSRF 硬拒绝基线；显式放行的 host 绕过私网拒绝。
+// rawAllowlist 为字符串数组（或逗号/换行分隔字符串，由 Config.vue 拆分后传入数组）。
+export async function saveWebFetchHostAllowlist(rawAllowlist) {
+  const currentConfig = await loadPersistedUserConfig();
+  const previous = appState.webFetchHostAllowlist;
+  const next = normalizeWebFetchHostAllowlist(rawAllowlist);
+  appState.webFetchHostAllowlist = next;
+  const result = await persistConfigPayload({
+    ...currentConfig,
+    webTools: {
+      webSearchProvider: normalizeWebSearchProvider(currentConfig.webTools?.webSearchProvider || appState.webSearchProvider),
+      webSearchAPIKey: currentConfig.webTools?.webSearchAPIKey || "",
+      webFetchHostAllowlist: next,
+    },
+  });
+  if (!result.ok) {
+    appState.webFetchHostAllowlist = previous;
   }
   return result;
 }

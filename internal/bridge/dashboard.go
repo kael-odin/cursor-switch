@@ -337,33 +337,40 @@ func computeDailyCost(d historymetrics.UsageDashboardRawDaily, pricing PricingSn
 	return total, anyMatched || len(d.ByModel) > 0
 }
 
-// estimateDailyCost 用全局默认倍率 + 所有已配定价的加权均价近似日成本。
+// estimateDailyCost 用全局默认倍率 + 所有已配定价的简单均价近似日成本。
 // 这是不精确的（daily 不含模型维度）；仅用于趋势图，精确成本看 byModel。
+//
+// P1-9/P2-1：旧实现用 input 价同时做权重和价格（w=m.InputPerMillion，
+// weightedInput += m.InputPerMillion * w = Σprice²），高价模型被平方放大，
+// 定价表含 Opus($15)与 Haiku($0.25)时"均价"被 Opus 主导到接近 $15，日成本高估。
+// 改为简单均价 Σprice/N，不再用价格自身做权重。
 func estimateDailyCost(d historymetrics.UsageDashboardRawDaily, pricing PricingSnapshot, defaultMultiplier float64) float64 {
 	if len(pricing.Models) == 0 {
 		return 0
 	}
-	var weightedInput, weightedOutput, weightedCacheRead, weightedCacheWrite float64
-	var totalWeight float64
+	var sumInput, sumOutput, sumCacheRead, sumCacheWrite float64
+	count := 0
 	for _, m := range pricing.Models {
-		// 用 input 价做权重近似（高价模型权重高）
-		w := m.InputPerMillion
-		if w <= 0 {
+		if m.InputPerMillion <= 0 {
 			continue
 		}
-		weightedInput += m.InputPerMillion * w
-		weightedOutput += m.OutputPerMillion * w
-		weightedCacheRead += m.CacheReadPerMillion * w
-		weightedCacheWrite += m.CacheWritePerMillion * w
-		totalWeight += w
+		sumInput += m.InputPerMillion
+		sumOutput += m.OutputPerMillion
+		sumCacheRead += m.CacheReadPerMillion
+		sumCacheWrite += m.CacheWritePerMillion
+		count++
 	}
-	if totalWeight <= 0 {
+	if count == 0 {
 		return 0
 	}
-	input := float64(d.InputTokens) / 1_000_000 * (weightedInput / totalWeight)
-	output := float64(d.OutputTokens) / 1_000_000 * (weightedOutput / totalWeight)
-	cacheRead := float64(d.CacheReadTokens) / 1_000_000 * (weightedCacheRead / totalWeight)
-	cacheWrite := float64(d.CacheWriteTokens) / 1_000_000 * (weightedCacheWrite / totalWeight)
+	avgInput := sumInput / float64(count)
+	avgOutput := sumOutput / float64(count)
+	avgCacheRead := sumCacheRead / float64(count)
+	avgCacheWrite := sumCacheWrite / float64(count)
+	input := float64(d.InputTokens) / 1_000_000 * avgInput
+	output := float64(d.OutputTokens) / 1_000_000 * avgOutput
+	cacheRead := float64(d.CacheReadTokens) / 1_000_000 * avgCacheRead
+	cacheWrite := float64(d.CacheWriteTokens) / 1_000_000 * avgCacheWrite
 	return (input + output + cacheRead + cacheWrite) * defaultMultiplier
 }
 

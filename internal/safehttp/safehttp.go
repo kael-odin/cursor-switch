@@ -23,8 +23,50 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
+
+// hostAllowlist 是 WebFetch 显式放行的 host 白名单（审计「行为偏离-3」）。
+// 默认空 = 保持现 SSRF 硬拒绝行为（最安全）；用户配置内网 Wiki/Confluence 等 host 后，
+// 命中白名单的 host 在 ResolveAndValidateHost 里跳过 IsPublicIP 拒绝，允许内网抓取。
+// 这是对硬编码安全基线的「用户显式放行叠加」，不是放开默认行为。
+var (
+	hostAllowlistMu sync.RWMutex
+	hostAllowlist  map[string]struct{}
+)
+
+// SetHostAllowlist 替换全局 host 白名单。传入 nil/空 = 清空白名单（恢复硬拒绝）。
+// host 由调用方去重/小写/去空白后再传入；本函数只做 TrimSpace + ToLower 兜底。
+// 由 interaction.Bridge 在每次 WebFetch 前、根据当前 WebToolsConfig 同步设置。
+func SetHostAllowlist(hosts []string) {
+	next := make(map[string]struct{}, len(hosts))
+	for _, host := range hosts {
+		trimmed := strings.ToLower(strings.TrimSpace(host))
+		if trimmed != "" {
+			next[trimmed] = struct{}{}
+		}
+	}
+	hostAllowlistMu.Lock()
+	hostAllowlist = next
+	hostAllowlistMu.Unlock()
+}
+
+// IsHostAllowlisted 判定 host 是否在用户显式放行白名单内。host 已归一（小写/去空白）。
+// 导出供 interaction.validateWebFetchURL 在字面 host 拒绝前查询（与 ResolveAndValidateHost
+// 内部用同一全局表，保证两处判定一致，审计「行为偏离-3」）。
+func IsHostAllowlisted(host string) bool {
+	hostAllowlistMu.RLock()
+	defer hostAllowlistMu.RUnlock()
+	if len(hostAllowlist) == 0 {
+		return false
+	}
+	_, ok := hostAllowlist[strings.ToLower(strings.TrimSpace(strings.Trim(host, "[]")))]
+	return ok
+}
+
+// isHostAllowlisted 是 IsHostAllowlisted 的未导出别名，供包内调用。
+func isHostAllowlisted(host string) bool { return IsHostAllowlisted(host) }
 
 // IsPublicIP 判定一个 IP 是否允许安全抓取连接。
 // 拒绝：loopback / 私网 / link-local / 未指定 / 云元数据地址段。
@@ -64,14 +106,18 @@ func ResolveAndValidateHost(host string) (net.IP, error) {
 	if host == "" {
 		return nil, fmt.Errorf("web fetch host is empty")
 	}
+	// 用户显式放行白名单（审计「行为偏离-3」）：命中则跳过 IsPublicIP 拒绝，
+	// 允许企业内网 Wiki/Confluence 等 host 抓取。仍走解析以拿首个 IP 固定（防 rebinding）。
+	allowlisted := isHostAllowlisted(host)
 	// 字面 IP：直接判，不查 DNS（避免 rebinding 中间层）。
 	if ip := net.ParseIP(host); ip != nil {
-		if !IsPublicIP(ip) {
+		if !allowlisted && !IsPublicIP(ip) {
 			return nil, fmt.Errorf("web fetch host %s is not public-web accessible", host)
 		}
 		return ip, nil
 	}
 	// 域名：解析全部 A/AAAA，逐个校验，至少一个公网 IP 才放行。
+	// 白名单 host 放宽到「任一解析 IP 即可」（内网 IP 也接受）。
 	// 不用 net.DefaultResolver 的 LookupIP，因其在 DialContext 内调用可能受系统 hosts 影响；
 	// 显式走 PreferGo 解析器，30s 超时。
 	resolver := &net.Resolver{
@@ -93,7 +139,7 @@ func ResolveAndValidateHost(host string) (net.IP, error) {
 	}
 	var firstPublic net.IP
 	for _, entry := range ips {
-		if IsPublicIP(entry.IP) {
+		if allowlisted || IsPublicIP(entry.IP) {
 			firstPublic = entry.IP
 			break
 		}

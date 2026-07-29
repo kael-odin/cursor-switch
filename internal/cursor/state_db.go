@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 
 	"cursor/internal/logger"
@@ -27,172 +26,10 @@ const (
 	cursorStateStatsigBootstrapKey = "workbench.experiments.statsigBootstrap"
 )
 
-var cursorStateDisabledStatsigGates = []string{
-	"decompose_always_local_ext_host",
-	"cursor_extensions_isolation_v2",
-}
-
-// InjectCursorUserInfo synchronizes the Cursor user-level auth cache used by the
-// Settings page. It does not modify the installed Cursor app bundle.
-func InjectCursorUserInfo(email, token string) error {
-	stateDBPath, err := resolveCursorStateDBPath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(stateDBPath), 0o755); err != nil {
-		return fmt.Errorf("创建 Cursor 状态目录失败: %w", err)
-	}
-
-	values := buildCursorAuthStateValues(email, token)
-	if err := syncCursorAuthStateDB(stateDBPath, values); err != nil {
-		return fmt.Errorf("同步 Cursor 状态库失败 path=%s: %w", stateDBPath, err)
-	}
-
-	logger.Infof(
-		"injectCursorUserInfo synced path=%s email=%s membership=%s subscription=%s disabled_statsig_gates=%s",
-		stateDBPath,
-		values["cursorAuth/cachedEmail"],
-		values["cursorAuth/stripeMembershipType"],
-		values["cursorAuth/stripeSubscriptionStatus"],
-		strings.Join(cursorStateDisabledStatsigGates, ","),
-	)
-	return nil
-}
-
-func buildCursorAuthStateValues(email, token string) map[string]string {
-	email = strings.TrimSpace(email)
-	token = strings.TrimSpace(token)
-
-	return map[string]string{
-		"cursorAuth/accessToken":              token,
-		"cursorAuth/cachedEmail":              email,
-		"cursorAuth/cachedSignUpType":         cursorStateDefaultSignUpType,
-		"cursorAuth/refreshToken":             token,
-		"cursorAuth/stripeMembershipType":     cursorStateMembershipType,
-		"cursorAuth/stripeSubscriptionStatus": cursorStateSubscriptionStatus,
-	}
-}
-
-func syncCursorAuthStateDB(path string, values map[string]string) error {
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-
-	ctx := context.Background()
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", cursorStateSQLiteBusyTimeoutMS)); err != nil {
-		return err
-	}
-	if _, err := db.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)"); err != nil {
-		return err
-	}
-
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	stmt, err := tx.PrepareContext(ctx, "INSERT OR REPLACE INTO ItemTable(key, value) VALUES(?, ?)")
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for _, key := range keys {
-		if _, err := stmt.ExecContext(ctx, key, values[key]); err != nil {
-			return err
-		}
-	}
-
-	if err := disableCursorStatsigGates(ctx, tx); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	committed = true
-	return nil
-}
-
-func disableCursorStatsigGates(ctx context.Context, tx *sql.Tx) error {
-	var raw []byte
-	err := tx.QueryRowContext(ctx, "SELECT value FROM ItemTable WHERE key = ?", cursorStateStatsigBootstrapKey).Scan(&raw)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		return err
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return fmt.Errorf("解析 Cursor Statsig bootstrap 失败: %w", err)
-	}
-
-	featureGates, _ := payload["feature_gates"].(map[string]any)
-	if featureGates == nil {
-		featureGates = map[string]any{}
-		payload["feature_gates"] = featureGates
-	}
-
-	hashUsed, _ := payload["hash_used"].(string)
-	for _, gate := range cursorStateDisabledStatsigGates {
-		disableCursorStatsigGate(featureGates, gate)
-		if strings.EqualFold(hashUsed, "djb2") {
-			disableCursorStatsigGate(featureGates, cursorStateDJB2Hash(gate))
-		}
-	}
-
-	updated, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("编码 Cursor Statsig bootstrap 失败: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE ItemTable SET value = ? WHERE key = ?", updated, cursorStateStatsigBootstrapKey); err != nil {
-		return err
-	}
-	return nil
-}
-
-func disableCursorStatsigGate(featureGates map[string]any, key string) {
-	gate, _ := featureGates[key].(map[string]any)
-	if gate == nil {
-		gate = map[string]any{
-			"name":       key,
-			"rule_id":    "local_disabled",
-			"ruleID":     "local_disabled",
-			"group_name": "local_disabled",
-			"groupName":  "local_disabled",
-			"id_type":    "userID",
-			"idType":     "userID",
-		}
-		featureGates[key] = gate
-	}
-	gate["value"] = false
-}
-
-func cursorStateDJB2Hash(value string) string {
-	var hash uint32
-	for _, b := range []byte(value) {
-		hash = hash*31 + uint32(b)
-	}
-	return fmt.Sprintf("%d", hash)
-}
+// InjectCursorUserInfo 已移除（P0-4/P3-1 死代码清理）。
+// 旧版 StartProxy 每次无条件写入假 Ultra 身份会覆盖用户真实 state.vscdb；
+// 新架构下真实 Cursor 账号是唯一权威，byok 不再写任何假身份。
+// 历史残留由 RepairLegacyInjectedIdentity 安全清理（仅匹配旧假指纹才删）。
 
 func resolveCursorStateDBPath() (string, error) {
 	homeDir, err := os.UserHomeDir()
@@ -220,6 +57,98 @@ func resolveCursorStateDBPath() (string, error) {
 	}
 }
 
+// CursorAccountStatus 是 Cursor 账号登录状态的只读探针结果。
+type CursorAccountStatus struct {
+	// AccountPresent 表示 state.vscdb 中存在 cursorAuth/accessToken 且非空。
+	// false 意味着 Cursor 客户端未登录账号——Tab 补全 / Git 消息等依赖官方账号
+	// 的能力将不可用，前端应明确告警而非静默失败（能力缺失标注）。
+	AccountPresent bool `json:"accountPresent"`
+	// Email 是缓存邮箱（脱敏：仅前缀，用于提示"已登录 xxx@..."）。无则空串。
+	Email string `json:"email"`
+	// DBExists 表示 state.vscdb 文件是否存在。false 通常意味着 Cursor 从未启动过。
+	DBExists bool `json:"dbExists"`
+	// ProbeError 探针自身出错时的只读错误信息（前端可降级展示）。
+	ProbeError string `json:"probeError,omitempty"`
+}
+
+// ProbeCursorAccount 只读探测 Cursor 客户端是否登录了官方账号。
+// 仅 SELECT、不开写事务、不修改任何数据——即便 Cursor 进程正在运行也安全（只读连接
+// 不会与 Cursor 的写事务竞争损坏库）。用于前端"Tab 补全依赖官方账号"的缺失告警。
+func ProbeCursorAccount() CursorAccountStatus {
+	stateDBPath, err := resolveCursorStateDBPath()
+	if err != nil {
+		return CursorAccountStatus{ProbeError: err.Error()}
+	}
+	status := CursorAccountStatus{}
+	if _, statErr := os.Stat(stateDBPath); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return status // DBExists=false, AccountPresent=false
+		}
+		status.ProbeError = statErr.Error()
+		return status
+	}
+	status.DBExists = true
+
+	db, err := sql.Open("sqlite", stateDBPath)
+	if err != nil {
+		status.ProbeError = err.Error()
+		return status
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", cursorStateSQLiteBusyTimeoutMS)); err != nil {
+		status.ProbeError = err.Error()
+		return status
+	}
+	// 只读查询：accessToken 非空即视为已登录。不读 token 原文返回前端。
+	access, err := readItemTableValueReadOnly(ctx, db, "cursorAuth/accessToken")
+	if err != nil {
+		status.ProbeError = err.Error()
+		return status
+	}
+	if strings.TrimSpace(access) == "" {
+		return status // AccountPresent=false
+	}
+	status.AccountPresent = true
+	if email, err := readItemTableValueReadOnly(ctx, db, "cursorAuth/cachedEmail"); err == nil {
+		status.Email = maskEmail(strings.TrimSpace(email))
+	}
+	return status
+}
+
+// readItemTableValueReadOnly 用只读连接查询单个 ItemTable 值；不存在返回空串。
+// 与 readItemTableValue（事务内）区分，避免开写事务。
+func readItemTableValueReadOnly(ctx context.Context, db *sql.DB, key string) (string, error) {
+	var raw []byte
+	err := db.QueryRowContext(ctx, "SELECT value FROM ItemTable WHERE key = ?", key).Scan(&raw)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(raw), nil
+}
+
+// maskEmail 脱敏邮箱：保留 @ 后域名与前 1 字符，避免把完整邮箱回传前端日志。
+func maskEmail(email string) string {
+	if email == "" {
+		return ""
+	}
+	at := strings.IndexByte(email, '@')
+	if at <= 0 || at >= len(email)-1 {
+		// 无 @ 或格式异常：只露首字符。
+		if len(email) <= 1 {
+			return email
+		}
+		return string(email[0]) + "***"
+	}
+	return string(email[0]) + "***" + email[at:]
+}
+
 // legacyFakeEmail / legacyFakeToken 是历史版本注入 Cursor state.vscdb 的假账号指纹。
 // 这两个值必须与旧版 runtime.InjectAccountEmail / InjectAuthToken 完全一致，
 // 用于识别「确由旧版 byok 写入」的假身份，避免误删用户真实账号。
@@ -245,6 +174,14 @@ var legacyInjectedKeys = []string{
 // 六个 cursorAuth 字段并清理由旧版写入的 Statsig gate 覆盖。任何字段一旦变成真实值都不删。
 // 绝不创建库/表；库不存在或未匹配指纹时零写入直接返回。
 func RepairLegacyInjectedIdentity() error {
+	// P0-4：若 Cursor 进程正在运行，它会持有 state.vscdb 的写锁或与之交错写。
+	// 此时并发修复既可能被 SQLITE_BUSY 拒绝（假账号残留不被清理），更可能在
+	// schema/BLOB 编码上与 Cursor 冲突导致用户状态库损坏。检测到运行中则跳过，
+	// 待下次 Cursor 未运行时（正常 StartProxy 时机）再修。绝不冒险并发写。
+	if isCursorProcessRunning() {
+		logger.Infof("repairLegacyInjectedIdentity: Cursor 进程运行中，跳过 state.vscdb 修复以防并发写损坏（下次未运行时再修）")
+		return nil
+	}
 	stateDBPath, err := resolveCursorStateDBPath()
 	if err != nil {
 		return err

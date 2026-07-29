@@ -110,18 +110,48 @@ async function handleOpenUsageDocs() {
   }
 }
 
+// P2-8：窗口隐藏到托盘时暂停后台轮询，避免持续发 Wails RPC（用户不可见、浪费 IPC）。
+// 重新可见时立即同步一次并恢复轮询。
+let visibilityHandler = null;
+
 onMounted(() => {
   proxyStateTimer = window.setInterval(() => {
     if (showFooter.value) {
       void syncServiceState().catch(() => {});
     }
   }, proxyStatePollIntervalMs);
+  if (typeof document !== "undefined") {
+    visibilityHandler = () => {
+      if (document.hidden) {
+        // 隐藏：清掉轮询定时器，暂停后台 RPC。
+        if (proxyStateTimer) {
+          window.clearInterval(proxyStateTimer);
+          proxyStateTimer = null;
+        }
+      } else {
+        // 恢复可见：立即同步一次，再重启轮询。
+        void syncServiceState().catch(() => {});
+        if (!proxyStateTimer) {
+          proxyStateTimer = window.setInterval(() => {
+            if (showFooter.value) {
+              void syncServiceState().catch(() => {});
+            }
+          }, proxyStatePollIntervalMs);
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", visibilityHandler);
+  }
 });
 
 onUnmounted(() => {
   if (proxyStateTimer) {
     window.clearInterval(proxyStateTimer);
     proxyStateTimer = null;
+  }
+  if (visibilityHandler) {
+    document.removeEventListener("visibilitychange", visibilityHandler);
+    visibilityHandler = null;
   }
 });
 </script>

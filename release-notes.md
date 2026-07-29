@@ -1,3 +1,55 @@
+# 2.0.7
+
+## Web 工具增强（免费、零部署、惠及所有用户）
+
+2.0.7 收口独立全量审计（[docs/AUDIT_2026-07-29_独立全量审查.md](./docs/AUDIT_2026-07-29_独立全量审查.md)）中「行为偏离-3」的两项外网工具强化——全部免费、零部署，无需任何配置即开箱可用。
+
+### WebSearch 多 provider SDK + DuckDuckGo JSON lite 端点
+
+- **多 provider BYOK**：WebSearch 不再硬编码 DuckDuckGo HTML 抓取。在「Web 工具」配置卡选 Bing / Serper / Tavily，填对应 API key 即走各家官方 HTTPS JSON（自带 key = BYOK，质量与时效性远优于 HTML 抓取）。`dispatchWebSearch` 按 `WebToolsConfig.WebSearchProvider` 分派；空/非认可值回退 DuckDuckGo 免 key 降级。
+- **缺 key 显式告警**：选了需 key 的 provider 但未填 key → 返回 `errWebSearchAPIKeyMissing`，工具结果显式告警「需配置 API key」，不静默返回空（与后端缺 key 错误对齐）。前端 `Config.vue` 加 provider Select + API key Input + 缺 key 告警条。
+- **DuckDuckGo JSON lite 端点**：不配 provider 时首选 DuckDuckGo **Instant Answer JSON 端点**（`api.duckduckgo.com/?format=json&no_redirect=1&no_html=1`，官方、结构化、不依赖易变 HTML class，**更稳**）；空结果/失败回退原 HTML 抓取路径（`executeDuckDuckGoHTMLSearch`），保证覆盖率不降。`parseDuckDuckGoInstantAnswer` 纯函数解析 Abstract 摘要 + 递归 RelatedTopics，按 URL 去重。
+- **关键判断**：经核实 DuckDuckGo 无公开完整搜索结果 JSON API（官方 `api.duckduckgo.com/?format=json` 仅返回 Instant Answer 摘要，非完整网页结果列表，多数查询返回空）。选 Instant Answer 作首选、空则回退 HTML，是「更稳 + 不丢结果」的稳妥折中。
+
+### WebFetch 正文 LRU 缓存 + 内网 host 白名单
+
+- **正文 LRU 缓存**：`executeWebFetch` 入口查进程内 LRU 缓存（`globalWebFetchCache`，4MiB 上限 + 10min TTL，`container/list` + map，O(1) 命中/淘汰）。命中即原样返回最终 payload（已转 markdown + 截断），跳过 HTTP + readability 全流程，降延迟与被封概率。URL 规范化为键（去 fragment / 默认端口 http:80/https:443 / host 小写 / query 按字典序排序），不同写法命中同一缓存项。失败不缓存（让下游重试）；空 payload 不缓存；单条超总容量不缓存（不独占）。
+- **内网 host 白名单**：`safehttp` 加包级 allowlist 表（`SetHostAllowlist`/`IsHostAllowlisted`），`ResolveAndValidateHost` 对白名单 host 放行私网解析（即便解析到内网 IP 也返回首 IP）；`executeWebFetch` 入口 `syncWebFetchAllowlist` 同步配置；`validateWebFetchURL` 查同一全局表跳过字面拒绝。前端 `Config.vue` 加白名单 textarea（逗号/换行/空格分隔），空表 = 保持 SSRF 硬拒绝基线（最安全）。白名单是「用户显式放行」叠加在硬编码安全基线之上，不削弱默认防护。
+
+### 按路由面官方透传开关（@codebase / @docs / Repository Index）
+
+@codebase / @docs / Repository Index 的真实向量检索依赖 Cursor 云索引，纯本地 BYOK 无法实现。改为在「按路由面覆盖」里给 `file_sync`（Codebase/Repository）与 `network_service`（@docs）面加官方透传开关：切「直连 Cursor」即用本人 Cursor 账号的真索引走上游透传（`repositoryServiceProcedure`/`uploadServiceProcedure` 的 `CredentialOriginalCursor` 分支，N-33）；留「本地」=桩化登记（**安全特性，阻断代码上传到第三方 provider，非缺陷，不「修」成真实上传**）。默认仍全本地。本地嵌入模型暂不实现（画蛇添足）。
+
+### 审计 P0/P1 闭合
+
+2.0.7 一并闭合独立审计的 P0/P1 项（逐条 ✅ 标注 + 修复历史见审计文档第九节）：
+
+- **P0-1/P0-2**：AwaitShell 正则 goroutine 泄漏 + 后台 shell 无界 buffer → OOM。RE2 无回溯故放弃嵌套量词检测，改 32KiB 尾截断输入；256KiB 上限 + `appendShellStreamBuffer`/`clampShellBuffer` 有界 helper。
+- **P0-3**：half-open permit 漏放致渠道永久卡死。新增 `ReleaseHalfOpenPermit`（仅释放名额、不污染统计），非 provider 失败路径（client cancel / sink 写失败）显式调用。
+- **P0-4**：state.vscdb 与运行中 Cursor 进程并发写竞争。`RepairLegacyInjectedIdentity` 入口加 `isCursorProcessRunning()` 检测（unix pgrep / windows tasklist），Cursor 运行时跳过修复。
+- **P1-2**：F-20 截断判定过激（无 `[DONE]`/`message_stop` 的正常完成被判截断，已发文本丢失）。OpenAI/Anthropic 适配器加 `emittedAny` 闸门，已发有效事件的 EOF 不再判截断。
+- **P1-3**：`applyChannelToRequest` 原地修改共享 `RequestKnobs` map 跨候选污染。入口对 map 做深拷贝。
+- **P1-4**：熔断错误率不滑动致健康渠道反复熔断。加滑动窗口（50）`recentErrorRateLocked`，`transitionToClosedLocked` 重置窗口。
+- **P1-5**：EventIndex prune 淘汰旧 provider_call 致 turn 计费漏算。`pruneUsageEventIndex` 改为只淘汰已有 `turn_finalized` 落盘的 provider_call；`turn_finalized` 免 prune。
+- **P1-7**：Config.vue 运行模式 Select 不持久化。改 `@update:model-value` 立即持久化（乐观更新 + 失败回滚）。
+- **P1-8**：乐观更新回滚与磁盘真值脱节。失败时先 `reloadUserConfig` 对齐磁盘再回滚。
+- **行为偏离-1**：prefix cache 跨天失效（日期串用 `time.Now()`）。日期串移至 latest-only 段尾，稳定前缀跨天不变。
+- **P2-1**：`estimateDailyCost` 用 input 价平方做权重。改 token 占比加权。
+- **P2-7**：EChart 无 ResizeObserver。加 ResizeObserver 观察容器。
+- **P2-8**：MainLayout 后台轮询不暂停。改监听 `document.visibilitychange`，隐藏时暂停。
+- **P3-1**：死代码清理。删 `local_relay_bridge.go`/`directUpstreamProcedure`/`ParseAndValidateRawURL`/`InjectCursorUserInfo` 及辅助函数。
+
+### 测试
+
+`go build ./...` ✓ · `go vet ./internal/backend/agent/bridge/interaction/` ✓ 零 warning · `go test ./...` ✓ 全绿。新增测试：`websearch_provider_test.go`（多 provider 分派 + Bing 解析 + Instant Answer 解析 + host 白名单）、`webfetch_cache_test.go`（LRU 命中/过期/淘汰/键规范化/超限跳过）、`circuit_breaker_sliding_test.go`、`router_halfopen_permit_sink_test.go`。
+
+### 用户约束边界
+
+- **「不需要画蛇添足」**：Tab 补全不实现本地补全模型，仅标注 + 告警；@codebase/@docs/Repository 桩化不「修」成真实上传（桩化是安全特性）。
+- **拒绝 ToS 绕过**：不设计多账号轮换/账号共享绕过。官方透传仅限「用本人 Cursor 账号额度」。
+
+---
+
 # 2.0.6
 
 ## 第三轮全量审计 P0–P3 全部闭合（N-01 ~ N-40）

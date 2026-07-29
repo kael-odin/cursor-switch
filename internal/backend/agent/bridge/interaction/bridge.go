@@ -26,6 +26,7 @@ import (
 	"cursor/gen/agentv1"
 	"cursor/internal/backend/agent/core"
 	"cursor/internal/netproxy"
+	"cursor/internal/safehttp"
 )
 
 // InteractionApplyResult 表示一次交互桥结果归一化后的最小产物。
@@ -56,13 +57,38 @@ type Bridge struct {
 	nextID atomic.Uint32
 	// httpClient 负责执行 web search / web fetch 等需要外网的操作。
 	httpClient *http.Client
+	// webToolsConfig 实时返回 WebSearch/WebFetch 工具配置（provider/key/host 白名单）。
+	// nil = 全部走默认降级行为（WebSearch=duckduckgo，WebFetch=SSRF 硬拒绝内网）。
+	// 注入由 forwarder.Service 经 ChannelResolver 类型断言完成（见 service.go）。
+	webToolsConfig func() WebToolsConfig
 }
 
-// NewBridge 创建一个交互桥实例。
-func NewBridge() *Bridge {
-	return &Bridge{
+// WebToolsConfig 是 interaction 包对 WebSearch/WebFetch 工具配置的最小视图。
+// 由 forwarder.Service 从 serverconfig.WebToolsConfig 映射注入，避免 interaction
+// 反向依赖 serverconfig 包（bridge 处于更底层）。
+type WebToolsConfig struct {
+	WebSearchProvider     string
+	WebSearchAPIKey       string
+	WebFetchHostAllowlist []string
+}
+
+// NewBridge 创建一个交互桥实例。webTools 可为 nil（走默认降级行为）。
+func NewBridge(webTools ...func() WebToolsConfig) *Bridge {
+	b := &Bridge{
 		httpClient: netproxy.NewHTTPClient(15 * time.Second),
 	}
+	if len(webTools) > 0 && webTools[0] != nil {
+		b.webToolsConfig = webTools[0]
+	}
+	return b
+}
+
+// currentWebTools 返回当前 WebTools 配置；未注入时返回零值（全默认降级）。
+func (bridge *Bridge) currentWebTools() WebToolsConfig {
+	if bridge == nil || bridge.webToolsConfig == nil {
+		return WebToolsConfig{}
+	}
+	return bridge.webToolsConfig()
 }
 
 // OpenQuery 打开一条交互型工具调用。
@@ -428,7 +454,7 @@ func (bridge *Bridge) applyWebSearchResponse(response *agentv1.WebSearchRequestR
 	switch item := response.GetResult().(type) {
 	case *agentv1.WebSearchRequestResponse_Approved_:
 		_ = item
-		references, payload, err := bridge.executeWebSearch(strings.TrimSpace(args.GetSearchTerm()))
+		references, payload, err := bridge.dispatchWebSearch(strings.TrimSpace(args.GetSearchTerm()))
 		if err != nil {
 			return &agentv1.WebSearchResult{
 				Result: &agentv1.WebSearchResult_Error{
@@ -568,6 +594,10 @@ var (
 	htmlTitlePattern        = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 	htmlTagPattern          = regexp.MustCompile(`(?is)<[^>]+>`)
 	webSearchURLOverride    = "https://html.duckduckgo.com/html/?q="
+	// duckDuckGoInstantAnswerURL 是 DuckDuckGo Instant Answer JSON API（官方、免 key）。
+	// format=json 返回结构化 Instant Answer（AbstractText/RelatedTopics），比 HTML 抓取更稳、
+	// 不依赖易变的 HTML class 名。仅返回 Instant Answer，非完整网页结果列表——故空结果时回退 HTML。
+	duckDuckGoInstantAnswerURL = "https://api.duckduckgo.com/?format=json&no_redirect=1&no_html=1&q="
 )
 
 const (
@@ -578,7 +608,62 @@ const (
 	webSearchChunkLimit   = 2 * 1024
 )
 
-func (bridge *Bridge) executeWebSearch(searchTerm string) ([]*agentv1.WebSearchReference, string, error) {
+// executeDuckDuckGoSearch 是免 key 的降级搜索路径：首选 DuckDuckGo Instant Answer JSON
+// 端点（官方、结构化、比 HTML 抓取更稳，不依赖易变 HTML class），空结果或请求失败时
+// 回退到 HTML 端点解析（保留原降级路径）。
+//
+// 仅在用户未配置需 key 的 provider（duckduckgo / 空 / 非认可值）时使用。
+// 审计「行为偏离-3」：DuckDuckGo HTML 端点易被封禁、质量差，作为降级而非默认首选。
+func (bridge *Bridge) executeDuckDuckGoSearch(searchTerm string) ([]*agentv1.WebSearchReference, string, error) {
+	if strings.TrimSpace(searchTerm) == "" {
+		return nil, "", fmt.Errorf("web search search_term is required")
+	}
+	// 首选 JSON Instant Answer 端点。
+	if references, payload, err := executeDuckDuckGoInstantAnswerSearch(bridge.httpClient, searchTerm); err == nil && len(references) > 0 {
+		return references, payload, nil
+	}
+	// 回退：HTML 端点解析（原降级路径）。
+	return bridge.executeDuckDuckGoHTMLSearch(searchTerm)
+}
+
+// executeDuckDuckGoInstantAnswerSearch 调 DuckDuckGo Instant Answer JSON API。
+// 只在查询有 Instant Answer 时返回结构化结果；空结果返回 (nil,"",nil) 让调用方回退 HTML。
+// 解析逻辑（parseDuckDuckGoInstantAnswer）抽为纯函数，便于单测。
+func executeDuckDuckGoInstantAnswerSearch(client *http.Client, searchTerm string) ([]*agentv1.WebSearchReference, string, error) {
+	if client == nil {
+		client = netproxy.NewHTTPClient(15 * time.Second)
+	}
+	requestURL := duckDuckGoInstantAnswerURL + neturl.QueryEscape(searchTerm)
+	request, err := http.NewRequest(http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	request.Header.Set("User-Agent", "cursor-local-agent/1.0")
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("duckduckgo instant answer http status %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024))
+	if err != nil {
+		return nil, "", err
+	}
+	references := parseDuckDuckGoInstantAnswer(body)
+	if len(references) == 0 {
+		// 空 Instant Answer 是常态（多数查询无 IA）——返回空错让调用方回退 HTML。
+		return nil, "", fmt.Errorf("duckduckgo instant answer returned no results")
+	}
+	if len(references) > 5 {
+		references = references[:5]
+	}
+	return references, formatWebSearchPayload(searchTerm, references), nil
+}
+
+// executeDuckDuckGoHTMLSearch 抓 DuckDuckGo HTML 端点解析（原降级路径，作为 JSON 空结果兜底）。
+func (bridge *Bridge) executeDuckDuckGoHTMLSearch(searchTerm string) ([]*agentv1.WebSearchReference, string, error) {
 	if strings.TrimSpace(searchTerm) == "" {
 		return nil, "", fmt.Errorf("web search search_term is required")
 	}
@@ -709,6 +794,17 @@ func truncateWebSearchReplay(searchTerm string, references []*agentv1.WebSearchR
 }
 
 func (bridge *Bridge) executeWebFetch(rawURL string) (string, error) {
+	// 审计「行为偏离-3」：把当前 WebFetch host 白名单同步到 safehttp，供后续
+	// resolveAndValidateHost 与 DialContext 放行内网 host（企业内网 Wiki/Confluence）。
+	syncWebFetchAllowlist(bridge.currentWebTools().WebFetchHostAllowlist)
+	// 进程内 LRU 缓存：同 URL 短期走缓存，免重复外网请求 + readability 解析。
+	// 键在 URL 规范化后计算（去 fragment/默认端口/排序 query），命中即原样返回最终 payload。
+	cacheKey := normalizeWebFetchCacheKey(rawURL)
+	if cacheKey != "" {
+		if cached, ok := globalWebFetchCache.get(cacheKey); ok {
+			return cached, nil
+		}
+	}
 	parsedURL, err := validateWebFetchURL(rawURL)
 	if err != nil {
 		return "", err
@@ -762,7 +858,12 @@ func (bridge *Bridge) executeWebFetch(rawURL string) (string, error) {
 		title = parsedURL.String()
 	}
 	payload := fmt.Sprintf("Title: %s\nURL: %s\n\nContent:\n%s", title, parsedURL.String(), markdown)
-	return truncateWebFetchMarkdown(payload), nil
+	result := truncateWebFetchMarkdown(payload)
+	// 成功结果写回缓存（失败不缓存，让下游每次重试而非固化瞬时错误）。
+	if cacheKey != "" {
+		globalWebFetchCache.put(cacheKey, result)
+	}
+	return result, nil
 }
 
 func validateWebFetchURL(rawURL string) (*neturl.URL, error) {
@@ -783,15 +884,35 @@ func validateWebFetchURL(rawURL string) (*neturl.URL, error) {
 	if host == "" {
 		return nil, fmt.Errorf("web fetch url host is required")
 	}
-	if isBlockedWebFetchHost(host) {
+	// 审计「行为偏离-3」：用户显式放行的 host（企业内网 Wiki/Confluence 等）跳过字面 host
+	// 拒绝与 DNS 私网拒绝。白名单由 syncWebFetchAllowlist 在 executeWebFetch 入口同步到
+	// safehttp 全局表，resolveAndValidateHost 会据此放行内网解析。此处查同一全局表跳过字面拒绝。
+	allowlisted := safehttp.IsHostAllowlisted(host)
+	if !allowlisted && isBlockedWebFetchHost(host) {
 		return nil, fmt.Errorf("web fetch host is not public-web accessible")
 	}
 	// F-24：域名也要解析校验——攻击者可用解析到私网的域名绕过字面 IP 检查。
 	// DialContext 会再做一次最终固定（防 rebinding），此处提前拒绝省一次连接。
+	// 白名单 host 的 resolveAndValidateHost 由 safehttp 放行内网解析（仍拒绝 DNS 失败）。
 	if _, err := resolveAndValidateHost(host); err != nil {
 		return nil, err
 	}
 	return parsedURL, nil
+}
+
+// isWebFetchHostAllowlisted 判定 host 是否在本次 WebFetch 配置的放行白名单内（小写精确匹配）。
+// 供测试与需要本地判定的调用点使用；运行时主路径走 safehttp.IsHostAllowlisted（全局表）。
+func isWebFetchHostAllowlisted(host string, allowlist []string) bool {
+	host = strings.ToLower(strings.TrimSpace(strings.Trim(host, "[]")))
+	if host == "" || len(allowlist) == 0 {
+		return false
+	}
+	for _, entry := range allowlist {
+		if strings.ToLower(strings.TrimSpace(entry)) == host {
+			return true
+		}
+	}
+	return false
 }
 
 func isBlockedWebFetchHost(host string) bool {

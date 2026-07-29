@@ -346,7 +346,7 @@ func (service *Service) applyExecProgress(stream *ActiveStream, pending runtimec
 		current.ChunkCount++
 		current.StreamState = "streaming"
 		current.LastShellActivityAt = now
-		current.StdoutBuffer += execbridge.DecodeShellStdout(event.Stdout)
+		current.StdoutBuffer = appendShellStreamBuffer(current.StdoutBuffer, execbridge.DecodeShellStdout(event.Stdout))
 	case *agentv1.ShellStream_Stderr:
 		if current.FirstChunkAt.IsZero() {
 			current.FirstChunkAt = now
@@ -354,7 +354,7 @@ func (service *Service) applyExecProgress(stream *ActiveStream, pending runtimec
 		current.ChunkCount++
 		current.StreamState = "streaming"
 		current.LastShellActivityAt = now
-		current.StderrBuffer += event.Stderr.GetData()
+		current.StderrBuffer = appendShellStreamBuffer(current.StderrBuffer, event.Stderr.GetData())
 	case *agentv1.ShellStream_Start:
 		if current.FirstChunkAt.IsZero() {
 			current.FirstChunkAt = now

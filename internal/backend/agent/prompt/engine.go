@@ -298,6 +298,11 @@ func buildRequestContextRealtimeSections(requestContext *agentv1.RequestContext)
 	if pr := buildRequestContextPRAttributionSection(requestContext); pr != "" {
 		sections = append(sections, pr)
 	}
+	// P0 行为偏离-1：日期放 realtime（当轮动态）段尾，不进稳定前缀，
+	// 避免跨天变化破坏 prefix cache。realtime 每轮重算，日期变化不影响历史稳定前缀。
+	if date := formatRequestContextDate(); date != "" {
+		sections = append(sections, "Today's date: "+date)
+	}
 	return sections
 }
 
@@ -328,7 +333,9 @@ func buildRequestContextUserInfoSection(requestContext *agentv1.RequestContext) 
 		}
 	}
 	lines = append(lines, "Is directory a git repo: "+isGitRepo)
-	lines = append(lines, "Today's date: "+formatRequestContextDate())
+	// P0 行为偏离-1：日期串原先在此（static user_info section），跨天变化会破坏
+	// 稳定前缀导致 prefix cache 跨天失效。已移至 buildRequestContextRealtimeSections
+	// 末尾（当轮动态区），保持稳定前缀不受日期影响。
 	if terminalsFolder := strings.TrimSpace(env.GetTerminalsFolder()); terminalsFolder != "" {
 		lines = append(lines, "Terminals folder: "+terminalsFolder)
 	}

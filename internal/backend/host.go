@@ -657,25 +657,6 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 	return nil
 }
 
-func directUpstreamProcedure(pattern string, name string, protocol server.RouteOption, deps upstream.Dependencies) server.Option {
-	direct := upstream.DirectAction(deps, upstream.CompatRouteConfig{Name: name})
-	action := func(ctx *server.Context) error {
-		if ctx != nil && ctx.UpstreamURL == nil && ctx.Request != nil && ctx.Request.URL != nil {
-			targetURL := *ctx.Request.URL
-			targetURL.Scheme = "https"
-			targetURL.Host = "api2.cursor.sh:443"
-			ctx.UpstreamURL = &targetURL
-		}
-		return direct(ctx)
-	}
-	return server.POST(pattern,
-		server.Name(name),
-		protocol,
-		server.Local(action),
-		server.Upstream(action),
-	)
-}
-
 // officialProcedure 注册一个官方控制面透传路由：无论 local / upstream 模式，
 // 都以 CredentialOriginalCursor 策略回源到 Cursor 官方后端，恢复用户真实登录态。
 // 用于 marketplace / customize / 账号 / 登录 等接口，让 byok 不再 mock 官方身份。

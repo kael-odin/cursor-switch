@@ -100,6 +100,31 @@ When the same modelID has multiple adapters, a primary→backup candidate chain 
 
 ---
 
+## 🌐 2.0.7 Web tool enhancements (free, zero-deploy, all users benefit)
+
+2.0.7 closes the two web-tool items from [docs/AUDIT_2026-07-29_独立全量审查.md](./docs/AUDIT_2026-07-29_独立全量审查.md) ("behavior-deviation-3") — all free, zero-deploy, no config needed to start.
+
+### WebSearch multi-provider SDK + DuckDuckGo JSON lite endpoint
+
+- **Multi-provider BYOK**: WebSearch no longer hardcodes DuckDuckGo HTML scraping. Pick Bing / Serper / Tavily in the "Web Tools" config card, enter the API key, and it goes through each provider's official HTTPS JSON (your own key = BYOK, far better quality/timeliness than HTML scraping).
+- **No silent failure on missing key**: if you pick a key-required provider but leave the key empty, the tool result explicitly warns "API key required" instead of silently returning empty.
+- **DuckDuckGo JSON lite (default, free)**: with no provider configured, WebSearch first tries the DuckDuckGo **Instant Answer JSON endpoint** (`api.duckduckgo.com/?format=json`, official, structured, no reliance on brittle HTML classes — **more stable**); on empty results it falls back to the original HTML scrape, so coverage never drops.
+
+### WebFetch body LRU cache + intranet host allowlist
+
+- **Body LRU cache**: repeated WebFetch of the same URL within 10 min (model re-fetching one page across reasoning steps, or concurrent streams hitting the same doc) is served from an in-process cache (4 MiB cap + 10 min TTL), skipping the network request + readability parse — lower latency, lower ban risk. The URL is normalized to a key (strip fragment / default port / sort query) so different spellings hit the same entry. Failures are not cached.
+- **Intranet host allowlist**: WebFetch by default hard-rejects all non-public IPs (SSRF safety baseline). You can now add a host allowlist in the config card to explicitly allow enterprise intranet Wiki/Confluence; empty list = safest (reject all intranet). The allowlist is an explicit overlay on top of the hardcoded baseline — it never weakens default protection.
+
+### Per-route official passthrough switch (@codebase / @docs / Repository Index)
+
+Real vector retrieval for @codebase / @docs / Repository Index depends on the Cursor cloud index, which pure-local BYOK cannot replicate. Instead, the "per-route override" card now exposes an official passthrough switch for the `file_sync` (Codebase/Repository) and `network_service` (@docs) planes: switch to "direct Cursor" to use your own Cursor account's real index via upstream passthrough; keep "local" = stubbed registration (**a security feature that blocks code upload to third-party providers, not a defect**). Default stays all-local.
+
+### Audit P0/P1 closure
+
+2.0.7 also closes the independent audit's P0/P1 items: AwaitShell regex leak + unbounded buffer (P0-1/2), half-open permit leak freezing channels (P0-3), state.vscdb concurrent-write race (P0-4), F-20 over-aggressive truncation (P1-2), RequestKnobs shared-map pollution (P1-3), non-sliding circuit-breaker error rate (P1-4), EventIndex prune dropping turn billing (P1-5), Config route-mode Select not persisting (P1-7), optimistic-update rollback diverging from disk (P1-8), prefix-cache cross-day invalidation (behavior-deviation-1), cost square-weight (P2-1), EChart missing ResizeObserver (P2-7), background polling not pausing (P2-8), dead-code cleanup (P3-1). Per-item ✅ markers + fix history are in audit doc section 9.
+
+---
+
 ## 📖 What this is
 
 A desktop app (Wails v3 + Go backend + Vue 3 frontend) that runs a Cursor-compatible agent service locally and forwards Cursor client's chat / agent requests to **your own configured model provider**. It's not a Cursor replacement — it's a local man-in-the-middle proxy + a local agent execution core.
@@ -158,6 +183,8 @@ Each model config includes: `baseURL`, `apiKey`, `modelID`, provider type, endpo
 - **thinking / reasoning**: deep thinking, reasoning effort control, provider-differentiated disable-field injection
 - **Dynamic compaction reserve**: adaptive to channel context window (8%, min 16K / max 80K), no longer a fixed 10000
 - **128K default max output**: aligns with Claude Opus 5 / 4.8 / Sonnet 5 flagship output ceilings
+- **WebSearch multi-provider**: Bing / Serper / Tavily BYOK + DuckDuckGo JSON lite endpoint as free fallback; missing key warns explicitly
+- **WebFetch body cache + host allowlist**: 10-min LRU for same URL; intranet host allowlist for enterprise Wiki/Confluence (default SSRF hard-reject baseline preserved)
 - **Session persistence**: config / history / logs under `~/.cursor-local-assistant-v2/`
 
 ### Platform & security
@@ -284,6 +311,7 @@ docs/                    docs (architecture ref / refactor notes / release signi
 - [发版与签名 RELEASE_SIGNING](./docs/RELEASE_SIGNING.md) — release prerequisites, ed25519 signing, old CA handling
 - [开发指南 DEVELOPMENT](./docs/DEVELOPMENT.md) — dev loop, proto/bindings regen, test paradigms
 - [新模型上线 SOP](./docs/NEW_MODEL_SOP.md) — how to add pricing + context window when a new model launches
+- [Independent full audit 2026-07-29](./docs/AUDIT_2026-07-29_独立全量审查.md) — P0/P1/P2/P3 per-item ✅ markers + fix history
 
 ## 🤝 Contributing
 

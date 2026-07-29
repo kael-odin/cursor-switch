@@ -4,6 +4,7 @@ import (
 	serverconfig "cursor/internal/backend/server/config"
 	"cursor/internal/certs"
 	"cursor/internal/client"
+	"cursor/internal/cursor"
 	"cursor/internal/mitm"
 	"runtime"
 )
@@ -124,4 +125,12 @@ func (s *ProxyService) ShutdownForQuit() {
 // IsWindows 用于处理与 IsWindows 相关的逻辑。
 func (s *ProxyService) IsWindows() bool {
 	return runtime.GOOS == "windows"
+}
+
+// GetCursorAccountStatus 只读探测 Cursor 客户端是否登录了官方账号。
+// 用于前端"Tab 补全依赖官方账号"的缺失告警：未登录时 Tab 补全/Git 消息等
+// 依赖官方账号的能力不可用，前端明确告警而非静默失败。
+func (s *ProxyService) GetCursorAccountStatus() (cursor.CursorAccountStatus, error) {
+	status := cursor.ProbeCursorAccount()
+	return status, nil
 }

@@ -259,6 +259,16 @@ func (manager *Manager) RouteModeFor(hasUpstreamURL bool, routeName string) stri
 	return manager.RouteMode(hasUpstreamURL)
 }
 
+// WebTools 返回当前 WebToolsConfig（实时读 Current，支持热重载）。
+// 供 interaction.Bridge 在执行 WebSearch/WebFetch 时实时读取用户配置的
+// 搜索 provider/key 与 WebFetch host 白名单（审计「行为偏离-3」）。
+func (manager *Manager) WebTools() WebToolsConfig {
+	if manager == nil {
+		return WebToolsConfig{}
+	}
+	return manager.Current().WebTools
+}
+
 func (manager *Manager) setCurrent(cfg Config) {
 	next := cfg
 	manager.current.Store(&next)

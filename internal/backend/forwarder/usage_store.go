@@ -426,6 +426,11 @@ func buildUsageEventIndex(items []usageFileEvent) map[string]usageFileEvent {
 
 // pruneUsageEventIndex 把 EventIndex 控制在 usageEventIndexLimit 以内，超出时按 At 淘汰最老的条目。
 // EventIndex 不随 RecentEvents 截断丢失（H5），但必须有界防止无限增长。
+//
+// P1-5：turn_finalized 事件永不参与淘汰。turn 计费由 UpsertTurnFinalized 聚合该 requestID 的
+// 所有 provider_call 子事件得到；若某 turn 的 provider_call 子事件被 prune 淘汰而 turn_finalized
+// 后到（异步 finalize + 进程重启后触发），聚合会漏算，turn 永久落盘为偏小值。因此：
+// turn_finalized 全保留，仅对 provider_call 按时间淘汰最老。
 func pruneUsageEventIndex(index map[string]usageFileEvent) map[string]usageFileEvent {
 	if len(index) <= usageEventIndexLimit {
 		return index
@@ -434,14 +439,23 @@ func pruneUsageEventIndex(index map[string]usageFileEvent) map[string]usageFileE
 		id string
 		at time.Time
 	}
+	keep := make(map[string]usageFileEvent, len(index))
 	entries := make([]entry, 0, len(index))
 	for id, event := range index {
+		if normalizeUsageEventKind(event.Kind) == usageEventKindTurn {
+			// turn_finalized 永不淘汰（计费落盘点，丢失会漏算 turn 计费）。
+			keep[id] = event
+			continue
+		}
 		entries = append(entries, entry{id: id, at: event.At})
 	}
-	// 按时间降序，保留最近的 usageEventIndexLimit 条。
+	// 仅对 provider_call 按时间降序保留最近的若干条，使总数不超过 usageEventIndexLimit。
+	remaining := usageEventIndexLimit - len(keep)
+	if remaining < 0 {
+		remaining = 0
+	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].at.After(entries[j].at) })
-	keep := make(map[string]usageFileEvent, usageEventIndexLimit)
-	for i := 0; i < usageEventIndexLimit && i < len(entries); i++ {
+	for i := 0; i < remaining && i < len(entries); i++ {
 		id := entries[i].id
 		keep[id] = index[id]
 	}

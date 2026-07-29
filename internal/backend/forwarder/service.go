@@ -23,6 +23,7 @@ import (
 	runtimecore "cursor/internal/backend/agent/core"
 	modeladapter "cursor/internal/backend/agent/model"
 	protocol "cursor/internal/backend/agent/protocol"
+	serverconfig "cursor/internal/backend/server/config"
 )
 
 const (
@@ -73,6 +74,13 @@ type agentModelMemory interface {
 	SaveLastAgentModelHash(context.Context, string) error
 }
 
+// webToolsConfigProvider 由 *serverconfig.Manager 实现，返回当前 WebSearch/WebFetch 工具配置。
+// forwarder 经类型断言从 ChannelResolver（host.configs）拿到它，注入给 interaction.Bridge，
+// 使 WebSearch 多 provider 与 WebFetch host 白名单能实时读到用户配置（审计「行为偏离-3」）。
+type webToolsConfigProvider interface {
+	WebTools() serverconfig.WebToolsConfig
+}
+
 // NewService 使用默认依赖创建 forwarder 服务。
 func NewService(historyRoot string, resolver modeladapter.ChannelResolver) *Service {
 	projector := NewHistoryProjector()
@@ -86,6 +94,21 @@ func NewService(historyRoot string, resolver modeladapter.ChannelResolver) *Serv
 	var debugConfig debugLogConfig
 	if candidate, ok := resolver.(debugLogConfig); ok {
 		debugConfig = candidate
+	}
+	// 审计「行为偏离-3」：若 resolver（host.configs）实现了 webToolsConfigProvider，
+	// 把 WebTools 读取函数注入 interaction.Bridge，使 WebSearch 多 provider 与 WebFetch
+	// host 白名单能实时读用户配置。未实现时 NewBridge(nil) 走默认降级行为。
+	var interactionBridge interactionbridge.InteractionBridge = interactionbridge.NewBridge()
+	if provider, ok := resolver.(webToolsConfigProvider); ok {
+		reader := func() interactionbridge.WebToolsConfig {
+			cfg := provider.WebTools()
+			return interactionbridge.WebToolsConfig{
+				WebSearchProvider:      cfg.WebSearchProvider,
+				WebSearchAPIKey:        cfg.WebSearchAPIKey,
+				WebFetchHostAllowlist:  cfg.WebFetchHostAllowlist,
+			}
+		}
+		interactionBridge = interactionbridge.NewBridge(reader)
 	}
 	debug := newDebugRecorder(historyRoot, broker, debugConfig)
 	service := &Service{
@@ -103,7 +126,7 @@ func NewService(historyRoot string, resolver modeladapter.ChannelResolver) *Serv
 		recorder:           newArtifactRecorder(store, broker, debug),
 		debug:              debug,
 		execBridge:         execbridge.NewBridge(),
-		interactionBridge:  interactionbridge.NewBridge(),
+		interactionBridge:  interactionBridge,
 		appendSeq:          newAppendSequenceTracker(),
 	}
 	service.startHistoryMaintenance()

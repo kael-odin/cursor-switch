@@ -27,6 +27,9 @@ const props = defineProps({
 
 const containerRef = ref(null);
 const chart = shallowRef(null);
+// P2-7：ResizeObserver 监听容器尺寸变化重绘。window.resize 只在窗口缩放时触发，
+// 容器因侧栏伸缩/日期范围切换/滚动条出现导致尺寸变化时图表不自适应。
+let resizeObserver = null;
 
 function render() {
   if (!chart.value || !props.option) return;
@@ -41,10 +44,21 @@ onMounted(() => {
   chart.value = echarts.init(containerRef.value, "dark");
   render();
   window.addEventListener("resize", resize);
+  // main.js 已 polyfill ResizeObserver，安全使用。
+  if (typeof ResizeObserver !== "undefined" && containerRef.value) {
+    resizeObserver = new ResizeObserver(() => {
+      chart.value?.resize();
+    });
+    resizeObserver.observe(containerRef.value);
+  }
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", resize);
+  if (resizeObserver) {
+    resizeObserver.disconnect();
+    resizeObserver = null;
+  }
   chart.value?.dispose();
   chart.value = null;
 });

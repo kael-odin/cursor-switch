@@ -100,6 +100,31 @@ Tab 代码补全 / Git Commit / 分支名生成（`StreamCpp` / `CppConfig` / `W
 
 ---
 
+## 🌐 2.0.7 Web 工具增强（免费、零部署、惠及所有用户）
+
+2.0.7 收口 [docs/AUDIT_2026-07-29_独立全量审查.md](./docs/AUDIT_2026-07-29_独立全量审查.md) 中「行为偏离-3」的两项外网工具强化——全部免费、零部署，无需任何配置即开箱可用。
+
+### WebSearch 多 provider SDK + DuckDuckGo JSON lite 端点
+
+- **多 provider BYOK**：WebSearch 不再硬编码 DuckDuckGo HTML 抓取。在「Web 工具」配置卡选 Bing / Serper / Tavily，填对应 API key 即走各家官方 HTTPS JSON（自带 key = BYOK，质量与时效性远优于 HTML 抓取）。
+- **缺 key 不静默失败**：选了需 key 的 provider 但未填 key → 工具结果显式告警「需配置 API key」，不再静默返回空。
+- **DuckDuckGo JSON lite 端点（默认免费）**：不配 provider 时首选 DuckDuckGo **Instant Answer JSON 端点**（`api.duckduckgo.com/?format=json`，官方、结构化、不依赖易变 HTML class，**更稳**）；空结果再回退原 HTML 抓取路径，保证覆盖率不降。
+
+### WebFetch 正文 LRU 缓存 + 内网 host 白名单
+
+- **正文 LRU 缓存**：同一 URL 10 分钟内反复 WebFetch（模型多步推理反复抓同一页 / 多并发 stream 命中同一文档）走进程内缓存（4MiB 上限 + 10min TTL），免重复外网请求 + readability 解析，降延迟与被封概率。URL 规范化为键（去 fragment / 默认端口 / query 排序），不同写法命中同一缓存项。失败不缓存。
+- **内网 host 白名单**：WebFetch 默认 SSRF 硬拒绝所有非公网 IP（安全基线）。现可在配置卡加 host 白名单，显式放行企业内网 Wiki/Confluence 等；空表 = 最安全（拒绝所有内网），白名单是用户显式放行叠加在硬编码基线之上，不削弱默认防护。
+
+### 按路由面官方透传开关（@codebase / @docs / Repository Index）
+
+@codebase / @docs / Repository Index 的真实向量检索依赖 Cursor 云索引，纯本地 BYOK 无法实现。改为在「按路由面覆盖」里给 `file_sync`（Codebase/Repository）与 `network_service`（@docs）面加官方透传开关：切「直连 Cursor」即用本人 Cursor 账号的真索引走上游透传；留「本地」=桩化登记（**安全特性，阻断代码上传到第三方 provider，非缺陷**）。默认仍全本地。
+
+### 审计 P0/P1 闭合
+
+2.0.7 一并闭合独立审计的 P0/P1 项：AwaitShell 正则泄漏 + 无界 buffer（P0-1/2）、half-open permit 漏放致渠道卡死（P0-3）、state.vscdb 并发写竞争（P0-4）、F-20 截断判定过激（P1-2）、RequestKnobs 共享 map 污染（P1-3）、熔断错误率不滑动（P1-4）、EventIndex prune 淘汰 turn 计费（P1-5）、Config 路由模式不持久化（P1-7）、乐观更新回滚与磁盘脱节（P1-8）、prefix cache 跨天失效（行为偏离-1）、成本平方权重（P2-1）、EChart 无 ResizeObserver（P2-7）、后台轮询不暂停（P2-8）、死代码清理（P3-1）。逐条 ✅ 标注 + 修复历史见审计文档第九节。
+
+---
+
 ## 📖 这是什么
 
 一个桌面应用（Wails v3 + Go 后端 + Vue 3 前端），在本地起一个与 Cursor 兼容的 agent 服务，把 Cursor 客户端的 chat / agent 请求转发到**你自己配置的模型 provider**。它不是 Cursor 的替代品，而是一个本地中间人代理 + 本地 agent 执行内核。
@@ -159,6 +184,8 @@ Tab 代码补全 / Git Commit / 分支名生成（`StreamCpp` / `CppConfig` / `W
 - **thinking / reasoning**：深度思考、reasoning effort 控制、按 provider 差异化注入 disable 字段
 - **动态压缩预留**：按通道上下文窗口自适应（8%，min 16K / max 80K），不再固定 10000
 - **128K 默认最大输出**：对齐 Claude Opus 5 / 4.8 / Sonnet 5 等旗舰输出上限
+- **WebSearch 多 provider**：Bing / Serper / Tavily BYOK + DuckDuckGo JSON lite 端点免 key 降级，缺 key 显式告警
+- **WebFetch 正文缓存 + host 白名单**：同 URL 10min LRU 缓存；内网 host 白名单放行企业 Wiki/Confluence（默认 SSRF 硬拒绝基线不削）
 - **会话持久化**：`~/.cursor-local-assistant-v2/` 下 config / history / logs
 
 ### 平台与安全
@@ -285,6 +312,7 @@ docs/                    文档（架构速查 / 重构记录 / 发版签名 / �
 - [发版与签名](./docs/RELEASE_SIGNING.md) — 发版前置、ed25519 签名、旧 CA 处理
 - [开发指南](./docs/DEVELOPMENT.md) — 开发循环、proto/bindings 再生、测试范式
 - [新模型上线 SOP](./docs/NEW_MODEL_SOP.md) — 新模型发布时如何加定价 + 上下文窗口
+- [独立全量审计 2026-07-29](./docs/AUDIT_2026-07-29_独立全量审查.md) — P0/P1/P2/P3 逐条 ✅ 标注 + 修复历史
 
 ## 🤝 贡献
 

@@ -158,6 +158,11 @@ func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(M
 			cb.RecordFailure(permit.UsedHalfOpenPermit)
 			// N-39：记录真实失败原因，供后续请求跳过本候选时还原熔断成因。
 			cb.NoteFailureReason(effErr.Error())
+		} else {
+			// 不计 provider 故障的路径（客户端取消 / 下游 sink 写失败）：
+			// 不污染成功/失败统计，但必须释放可能占用的 HalfOpen 探测名额，
+			// 否则 halfOpenInFlight 卡在 1，渠道永久卡死 HalfOpen（P0-3）。
+			cb.ReleaseHalfOpenPermit(permit.UsedHalfOpenPermit)
 		}
 		lastErr = effErr
 
@@ -277,6 +282,8 @@ type channelBreaker interface {
 	AllowRequest() AllowResult
 	RecordSuccess(usedHalfOpenPermit bool)
 	RecordFailure(usedHalfOpenPermit bool)
+	// ReleaseHalfOpenPermit 释放可能占用的探测名额但不更新统计（P0-3）。
+	ReleaseHalfOpenPermit(usedHalfOpenPermit bool)
 	NoteFailureReason(reason string)
 	LastFailureReason() string
 }
@@ -296,6 +303,17 @@ func (router *Router) adapterFor(provider string) (ModelAdapter, error) {
 // 并完成 thinking effort / max_tokens / RequestKnobs 的归一化。每次 failover 对每个候选调一次。
 func (router *Router) applyChannelToRequest(req StreamRequest, channel *legacyruntime.ResolvedChannel, idleTimeout time.Duration) StreamRequest {
 	resolved := req
+	// P1-3：req.RequestKnobs 是 map 引用，值拷贝结构体后 resolved.RequestKnobs 仍指向
+	// 同一 map。下方 delete/写会污染原始 req 的 knobs，failover 跨候选时上一候选
+	// 残留的 knob（如 openai_endpoint 切到 anthropic 后仍在、thinking_rectified 泄漏）
+	// 会污染下一候选请求。深拷贝 map 隔离每候选的 knob 修改。
+	if req.RequestKnobs != nil {
+		cloned := make(map[string]any, len(req.RequestKnobs))
+		for k, v := range req.RequestKnobs {
+			cloned[k] = v
+		}
+		resolved.RequestKnobs = cloned
+	}
 	resolved.Provider = strings.TrimSpace(channel.Provider)
 	resolved.BaseURL = strings.TrimSpace(channel.BaseURL)
 	resolved.APIKey = strings.TrimSpace(channel.APIKey)
@@ -486,10 +504,11 @@ var noopCircuitBreakerInstance = &noopCircuitBreaker{}
 
 func (n *noopCircuitBreaker) IsAvailable() bool         { return true }
 func (n *noopCircuitBreaker) AllowRequest() AllowResult { return AllowResult{Allowed: true} }
-func (n *noopCircuitBreaker) RecordSuccess(bool)        {}
-func (n *noopCircuitBreaker) RecordFailure(bool)        {}
-func (n *noopCircuitBreaker) NoteFailureReason(string)  {}
-func (n *noopCircuitBreaker) LastFailureReason() string { return "" }
+func (n *noopCircuitBreaker) RecordSuccess(bool)               {}
+func (n *noopCircuitBreaker) RecordFailure(bool)               {}
+func (n *noopCircuitBreaker) ReleaseHalfOpenPermit(bool)       {}
+func (n *noopCircuitBreaker) NoteFailureReason(string)         {}
+func (n *noopCircuitBreaker) LastFailureReason() string        { return "" }
 
 
 // sanitizeProviderMessages removes replay-only placeholders and trims trailing

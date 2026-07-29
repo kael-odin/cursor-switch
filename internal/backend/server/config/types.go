@@ -76,6 +76,25 @@ type HomeMetricsConfig struct {
 	IncludeCacheWriteInHitRate bool `json:"includeCacheWriteInHitRate" yaml:"includeCacheWriteInHitRate"`
 }
 
+// WebToolsConfig 控制 agent 交互桥的两个外网工具：WebSearch 与 WebFetch。
+//
+// 审计「行为偏离-3」：WebSearch 原硬编码 DuckDuckGo HTML 抓取（易被封、质量差），
+// WebFetch 的 SSRF 防护硬性拒绝所有非公网 IP，企业内网 Wiki/Confluence 被一刀切。
+// 此 struct 把两者改为可配置（用户 BYOK 搜索 key + 内网 host 白名单），缺配置时
+// 回退既有安全/降级行为——不破坏默认安全基线。
+type WebToolsConfig struct {
+	// WebSearchProvider 选择 WebSearch 上游："" / "duckduckgo"（默认，免 key 降级质量）、
+	// "bing" / "serper" / "tavily"（需对应 APIKey，BYOK）。空与非认可值都回退 duckduckgo。
+	WebSearchProvider string `json:"webSearchProvider,omitempty" yaml:"webSearchProvider,omitempty"`
+	// WebSearchAPIKey 是 provider 的 API key（Bing/Serper/Tavily 必填）。
+	// duckduckgo 不用 key。明文存配置文件——与 ModelAdapterConfig.apiKey 同口径，本机存储。
+	WebSearchAPIKey string `json:"webSearchAPIKey,omitempty" yaml:"webSearchAPIKey,omitempty"`
+	// WebFetchHostAllowlist 是 WebFetch 允许放行的 host 白名单（精确域名/IP，小写）。
+	// 命中白名单的 host 绕过 safehttp 的私网/loopback 拒绝（企业内网 Wiki/Confluence 场景）。
+	// 默认空 = 保持现 SSRF 硬拒绝行为（最安全）。仅在用户显式放行时叠加放行。
+	WebFetchHostAllowlist []string `json:"webFetchHostAllowlist,omitempty" yaml:"webFetchHostAllowlist,omitempty"`
+}
+
 type Config struct {
 	Log                       bool                 `json:"log" yaml:"log"`
 	ProviderStreamIdleTimeout int                  `json:"providerStreamIdleTimeout" yaml:"providerStreamIdleTimeout"`
@@ -84,6 +103,7 @@ type Config struct {
 	ModelAdapters             []ModelAdapterConfig `json:"modelAdapters" yaml:"modelAdapters"`
 	Routing                   RoutingConfig        `json:"routing" yaml:"routing"`
 	HomeMetrics               HomeMetricsConfig    `json:"homeMetrics" yaml:"homeMetrics"`
+	WebTools                  WebToolsConfig       `json:"webTools" yaml:"webTools"`
 	Pricing                   PricingConfig        `json:"pricing" yaml:"pricing"`
 	LastAgentModelHash        string               `json:"lastAgentModelHash" yaml:"lastAgentModelHash"`
 }
@@ -124,6 +144,7 @@ func NormalizeConfig(input Config) (Config, error) {
 	}
 	output.Routing.TabServerBaseURL = strings.TrimSpace(input.Routing.TabServerBaseURL)
 	output.Routing.PerNamespace = normalizePerNamespace(input.Routing.PerNamespace)
+	output.WebTools = normalizeWebToolsConfig(input.WebTools)
 	adapters, err := NormalizeModelAdapterConfigs(input.ModelAdapters)
 	if err != nil {
 		return Config{}, err
@@ -263,6 +284,7 @@ func mergeUserPatchInto(dst *Config, patch Config) {
 		dst.Routing.PerNamespace = patch.Routing.PerNamespace
 	}
 	dst.HomeMetrics = patch.HomeMetrics
+	dst.WebTools = patch.WebTools
 	dst.LastAgentModelHash = patch.LastAgentModelHash
 
 	// adapter CostMultiplier 继承：先建 dst 旧列表的身份键 → 旧倍率索引。
@@ -454,4 +476,37 @@ func normalizePerNamespace(input map[string]string) map[string]string {
 		return nil
 	}
 	return cleaned
+}
+
+// normalizeWebToolsConfig 归一 WebSearch/WebFetch 工具配置。
+// Provider 仅认 duckduckgo/bing/serper/tavily 四值，其余（含空）回退 duckduckgo（免 key）。
+// Allowlist 去重 + 去空白 + 小写，空表归 nil（保持现 SSRF 硬拒绝基线）。
+func normalizeWebToolsConfig(input WebToolsConfig) WebToolsConfig {
+	provider := strings.ToLower(strings.TrimSpace(input.WebSearchProvider))
+	switch provider {
+	case "bing", "serper", "tavily", "duckduckgo":
+	default:
+		provider = "duckduckgo"
+	}
+	allowlist := []string{}
+	seen := make(map[string]struct{}, len(input.WebFetchHostAllowlist))
+	for _, host := range input.WebFetchHostAllowlist {
+		trimmed := strings.ToLower(strings.TrimSpace(host))
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		allowlist = append(allowlist, trimmed)
+	}
+	if len(allowlist) == 0 {
+		allowlist = nil
+	}
+	return WebToolsConfig{
+		WebSearchProvider:     provider,
+		WebSearchAPIKey:       strings.TrimSpace(input.WebSearchAPIKey),
+		WebFetchHostAllowlist: allowlist,
+	}
 }

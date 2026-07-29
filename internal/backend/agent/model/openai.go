@@ -494,6 +494,11 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 	// F-20：流终止状态机。OpenAI Chat Completions 的合法终止是 [DONE] 行或
 	// chunk.choice.finish_reason 出现。EOF 但两者都没到即截断错误（可 failover）。
 	sawTerminator := false
+	// P1-2：emittedAny 记录是否已向下游发过有效 content/tool 事件。
+	// 部分第三方中转在流末尾直接 EOF 不发 [DONE] 且末 chunk 不带 finish_reason。
+	// 旧逻辑此时判截断报错，用户看到完整回复 + 错误。F-20 防的是"零事件空成功伪装"，
+	// 故只在未发过任何有效事件时才视作截断；已发过有效事件则 EOF 视为正常完成。
+	emittedAny := false
 	turnFinishedPending := false
 	thinkingStarted := time.Time{}
 	thinkingActive := false
@@ -544,6 +549,7 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 			return nil
 		}
 		streamIdle.MarkEffectiveContent()
+		emittedAny = true
 		if err := flushThinkingCompleted(); err != nil {
 			return err
 		}
@@ -560,6 +566,7 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 			return nil
 		}
 		streamIdle.MarkEffectiveContent()
+		emittedAny = true
 		if !thinkingActive {
 			thinkingStarted = time.Now()
 			thinkingActive = true
@@ -786,6 +793,7 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 					return fail(err)
 				}
 				streamIdle.MarkEffectiveContent()
+				emittedAny = true
 			}
 			tools = make(map[int]*openAIToolAccumulator)
 			finishReason = strings.TrimSpace(*choice.FinishReason)
@@ -808,6 +816,7 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 			return fail(err)
 		}
 		streamIdle.MarkEffectiveContent()
+		emittedAny = true
 	}
 	if err := scanner.Err(); err != nil {
 		if idleErr := streamIdle.Err(); idleErr != nil {
@@ -824,9 +833,11 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 	if err := flushTurnFinished(); err != nil {
 		return fail(err)
 	}
-	// F-20：未收到合法终止事件（[DONE] 或 finish_reason）即 EOF——截断错误，可 failover。
-	// 此前正常 EOF 一律返回 nil，零事件 200 JSON 也被判成功。
-	if !sawTerminator {
+	// F-20：未收到合法终止事件（[DONE] 或 finish_reason）且未发过任何有效事件即 EOF——
+	// 截断错误（防零事件空成功伪装），可 failover。
+	// P1-2：已发过有效 content/tool 事件但无终止符（部分第三方中转 EOF 不发 [DONE]）
+	// 视为正常完成，避免用户看到完整回复后紧跟截断报错。
+	if !sawTerminator && !emittedAny {
 		return fail(streamTerminatorMissingError("openai"))
 	}
 	finishedAt = time.Now().UTC()
@@ -1579,8 +1590,9 @@ func (adapter *OpenAIAdapter) streamResponses(ctx context.Context, req StreamReq
 	if err := flushTurnFinished(); err != nil {
 		return fail(err)
 	}
-	// F-20：未收到 response.completed 即 EOF——截断错误，可 failover。
-	if !sawTerminator {
+	// F-20：未收到 response.completed 且未发过任何有效事件即 EOF——截断错误，可 failover。
+	// P1-2：已发过有效 text/tool 事件但无终止符视为正常完成，避免完整回复后报截断。
+	if !sawTerminator && !emittedText && !emittedToolInvocation {
 		return fail(streamTerminatorMissingError("openai"))
 	}
 	finishedAt = time.Now().UTC()

@@ -20,6 +20,7 @@ import { Call } from "@wailsio/runtime";
 
 const API_LOG_PREFIX = "[clientApi]";
 const PROXY_SERVICE_NAME = "cursor/internal/bridge.ProxyService";
+const METRICS_SERVICE_NAME = "cursor/internal/bridge.MetricsService";
 
 // F-37：生产构建移除 API 日志。这些 console 调用会把 SaveUserConfig / testModelAdapter /
 // fetchProviderModels 等的完整 payload（含 apiKey / customHeadersJSON / Authorization）和
@@ -84,7 +85,13 @@ export function getUsageDashboard() {
   );
 }
 
-const METRICS_SERVICE_NAME = "cursor/internal/bridge.MetricsService";
+// getCursorAccountStatus 只读探测 Cursor 客户端是否登录了官方账号。
+// 用于前端"Tab 补全依赖官方账号"的缺失告警（能力缺失标注）。
+export function getCursorAccountStatus() {
+  return withApiLogging("GetCursorAccountStatus", undefined, () =>
+    Call.ByName(`${PROXY_SERVICE_NAME}.GetCursorAccountStatus`),
+  );
+}
 
 export function getTokenPricing() {
   return withApiLogging("GetTokenPricing", undefined, () =>
