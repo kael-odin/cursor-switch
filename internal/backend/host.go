@@ -645,6 +645,13 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 		officialAnyProcedure("/aiserver.v1.HealthService/*", "official_health_service", server.HTTP(), routeDeps),
 		officialAnyProcedure("/aiserver.v1.MetricsService/*", "official_metrics_service", server.HTTP(), routeDeps),
 		officialAnyProcedure("/aiserver.v1.BackgroundComposerService/*", "official_background_composer_service", server.HTTP(), routeDeps),
+		// N-35 架构说明（Bugbot 端到端断裂，已知限制）：
+		// BackgroundComposerService/*（Bugbot 调度/通知/PR 集成）已整体透传到用户本人
+		// Cursor 账号（CredentialOriginalCursor）。但 Bugbot 触发的推理走 RunSSE/BidiAppend，
+		// 该推理面强制本地 byok（项目核心目标，刻意不暴露 upstream 切换——见 PerNamespace 注释）。
+		// 故 Bugbot 的调度面云端、推理面本地，端到端无法在本地拼出完整的云端一体化体验。
+		// 若要把 Bugbot 推理也整体透传到用户 Cursor 账号，需放开推理面 upstream——与项目
+		// byok 定位冲突，属阶段三架构决策，未排期。当前以"调度透传 + 推理本地"为已知限制。
 	)
 
 	return nil
@@ -701,7 +708,14 @@ func officialAnyProcedure(pattern string, name string, protocol server.RouteOpti
 
 func repositoryServiceProcedure(pattern string, name string, protocol server.RouteOption, module *forwarder.Module, deps upstream.Dependencies) server.Option {
 	localAction := server.HTTPHandlerAction(module.RepositoryServiceHandler)
-	upstreamAction := upstream.DirectAction(deps, upstream.CompatRouteConfig{Name: name})
+	// N-33：upstream 分支用 CredentialOriginalCursor 透传用户真实 Cursor 登录态。
+	// 默认 Mode=local（byok 本地索引）时此分支不触发；仅当用户经 PerNamespace 把某
+	// codebase 路由显式切到 upstream 时才回源到用户本人 Cursor 云端（复用其向量索引
+	// 额度）。这是审计建议的 config 开关控制、用户知情同意上传代码到 Cursor 云的透传分支。
+	upstreamAction := upstream.DirectAction(deps, upstream.CompatRouteConfig{
+		Name:       name,
+		Credential: upstream.CredentialOriginalCursor,
+	})
 	return server.POST(pattern,
 		server.Name(name),
 		protocol,
@@ -712,7 +726,12 @@ func repositoryServiceProcedure(pattern string, name string, protocol server.Rou
 
 func uploadServiceProcedure(pattern string, name string, protocol server.RouteOption, module *forwarder.Module, deps upstream.Dependencies) server.Option {
 	localAction := server.HTTPHandlerAction(module.UploadServiceHandler)
-	upstreamAction := upstream.DirectAction(deps, upstream.CompatRouteConfig{Name: name})
+	// N-33：@docs 路由 upstream 分支同样透传用户 Cursor 登录态，让用户显式切 upstream 时
+	// 可复用本人 Cursor 云端文档库。默认 local 不触发。
+	upstreamAction := upstream.DirectAction(deps, upstream.CompatRouteConfig{
+		Name:       name,
+		Credential: upstream.CredentialOriginalCursor,
+	})
 	return server.POST(pattern,
 		server.Name(name),
 		protocol,
