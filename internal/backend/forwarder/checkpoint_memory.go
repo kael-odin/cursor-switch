@@ -79,7 +79,10 @@ func (service *Service) appendConversationEntries(stream *ActiveStream, conversa
 		stream.mu.Unlock()
 		return nil, fmt.Errorf("checkpoint conversation is not initialized")
 	}
-	working := cloneConversationFile(stream.CheckpointConversation)
+	// N-05：消除双重克隆。原实现先克隆 CheckpointConversation 再调 AppendEntries
+	// （内部又克隆一次返回 persisted），前者在 store 持久化成功路径被丢弃——纯浪费。
+	// 改为：store 路径直接用 AppendEntries 返回的 persisted；仅在无 store 或持久化
+	// 返回 nil（不应发生但兜底）时才就地克隆 + 追加。
 	if service.store != nil {
 		persisted, assigned, err := service.store.AppendEntries(conversationID, resetEntrySequences(entries))
 		if err != nil {
@@ -87,15 +90,17 @@ func (service *Service) appendConversationEntries(stream *ActiveStream, conversa
 			return nil, err
 		}
 		if persisted != nil {
-			working = persisted
+			stream.CheckpointConversation = persisted
 		} else {
+			working := cloneConversationFile(stream.CheckpointConversation)
 			appendEntriesInPlace(working, assigned)
+			stream.CheckpointConversation = working
 		}
-		stream.CheckpointConversation = working
 		stream.UpdatedAt = time.Now().UTC()
 		stream.mu.Unlock()
 		return assigned, nil
 	}
+	working := cloneConversationFile(stream.CheckpointConversation)
 	assigned := appendEntriesInPlace(working, entries)
 	stream.CheckpointConversation = working
 	stream.UpdatedAt = time.Now().UTC()
