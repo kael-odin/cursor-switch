@@ -1,5 +1,18 @@
 # 2.0.5
 
+## F-01 多 Provider Failover 在正常 UI 选模链可达
+
+- **问题**：B2 已修好多 provider 候选链 + failover 核心（router/resolver/circuit breaker 全就绪且有单测），但用户从正常 Cursor UI 选模型时，`mocks.go` 暴露给 UI 的模型标识是**渠道 ID**（`adapter.ID`）而非逻辑 modelID。UI 回传渠道 ID 后，`ResolveAdapterIndexes` 第 1 层精确 ID 匹配命中唯一 adapter，第 3 层 providerModelID fallback 永不触发——同 modelID 多 provider 的候选链恒为 1，主渠道失败不切备用。**用户配了候选链却走不进去。**
+- **修复**：`mocks.go` 三处暴露标识从渠道 ID 改为逻辑 modelID：
+  - `collectModelAdapterRefs`（`defaultModel`/`fallbackModels`）返回 modelID，按 Priority 升序、按 modelID 去重——同 modelID 多 provider 在列表里只出现一次（选中任一都激活该 modelID 全部候选链）。
+  - `buildAvailableModelEntries` 的 `name`/`serverModelName` 改 modelID。
+  - `buildThinkingEffortVariants` 的 `variantStringRepresentation` 改 `<modelID>:<effort>`——UI 按 thinking intensity variant 选中后 `splitRuntimeThinkingEffortVariantString` 拆出 modelID。
+  - UI 回传 modelID → `ResolveAdapterIndexes` 第 1 层精确 ID（渠道 ID）不命中、第 3 层 providerModelID fallback 命中所有同 modelID 的 enabled adapter → 候选链 >1 → B2 failover 在正常 UI 选模链可达。
+  - 默认模型按 Priority 选（新增 `orderAdaptersByPriority`，与 `config/resolver.go` 候选链排序同口径），UI 默认选中项即候选链主候选。
+- **同 modelID 多 adapter 的 UI 呈现**：采"每 adapter 一条 entry + displayName 区分"方案（不合并）——下拉可能出现同名项（name=modelID），但选任一都回传 modelID 激活整条候选链，这是 failover 冗余配置的预期态；用户给主备 adapter 配不同 displayName 即可在下拉区分。
+- **测试**：`mocks_f01_failover_test.go` 3 端到端（暴露 modelID 契约 / 默认模型按 Priority / failover 经 modelID 可达）+ `mocks_disabled_filter_test.go` 更新断言（name=modelID）+ 加 dedupe/Priority 测试。resolver 层"传 modelID 返回多候选"已由 `config.TestResolveModelAdapterChannelsReturnsAllCandidates` / `modelchannel.TestResolveAdapterIndexesReturnsAll` 覆盖。
+- **未做真机验证**：Cursor 客户端是否对 `name` 字段格式有假设（之前是渠道 ID 字符串，现是 modelID）需真机点选验证；纯后端逻辑链已闭合。
+
 ## L7 stale exec control 区分"已处理"与"从未存在"（可观测性）
 
 - **问题**：`shouldIgnoreMissingExecControl`（stream 存在但 pending exec 找不到时）经 `shouldIgnoreStaleExecControl` 对 Heartbeat/StreamClose 一律静默吞。重连客户端迟到的控制消息确实是传输级噪声（合理忽略），但若 pending exec 被错误清除也表现为 missing，无条件吞会掩盖真实协议错误。

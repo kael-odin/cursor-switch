@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"html"
+	"sort"
 	"strings"
 	"time"
 
@@ -637,17 +638,20 @@ func buildAvailableModelEntries(adapters []legacyruntime.ModelAdapterConfig) []m
 	if len(adapters) == 0 {
 		return []map[string]any{}
 	}
-	output := make([]map[string]any, 0, len(adapters))
-	for _, adapter := range adapters {
+	// F-01：按 Priority 升序，使 UI 顺序与候选链主→备一致。同 modelID 多 adapter
+	// 仍各占一条 entry（displayName 区分）；name 统一用逻辑 modelID，使 UI 回传
+	// modelID 后 resolver 第 3 层 providerModelID fallback 命中全部同 modelID 候选。
+	ordered := orderAdaptersByPriority(adapters)
+	output := make([]map[string]any, 0, len(ordered))
+	for _, adapter := range ordered {
 		// F-08：disabled adapter 不进 UI 模型目录，与 collectModelAdapterRefs / resolver 同口径。
 		if !adapter.Enabled {
 			continue
 		}
-		channelID := strings.TrimSpace(adapter.ID)
-		displayName := strings.TrimSpace(adapter.DisplayName)
 		modelID := strings.TrimSpace(adapter.ModelID)
+		displayName := strings.TrimSpace(adapter.DisplayName)
 		tooltipData := strings.TrimSpace(adapter.TooltipData)
-		if channelID == "" || modelID == "" {
+		if modelID == "" {
 			continue
 		}
 		modelDisplayName := displayName
@@ -661,10 +665,10 @@ func buildAvailableModelEntries(adapters []legacyruntime.ModelAdapterConfig) []m
 			"degradationStatus":                  "DEGRADATION_STATUS_UNSPECIFIED",
 			"inputboxShortModelName":             displayName,
 			"isRecommendedForBackgroundComposer": false,
-			"name":                               channelID,
+			"name":                               modelID,
 			"namedModelSectionIndex":             1,
 			"parameterDefinitions":               buildThinkingEffortParameterDefinitions(adapter.Type),
-			"serverModelName":                    channelID,
+			"serverModelName":                    modelID,
 			"supportsAgent":                      true,
 			"supportsImages":                     true,
 			"supportsMaxMode":                    false,
@@ -679,7 +683,7 @@ func buildAvailableModelEntries(adapters []legacyruntime.ModelAdapterConfig) []m
 			"tooltipDataForMaxMode": map[string]any{
 				"markdownContent": tooltipData,
 			},
-			"variants": buildThinkingEffortVariants(adapter.Type, channelID, modelDisplayName, tooltipData, defaultThinkingEffort),
+			"variants": buildThinkingEffortVariants(adapter.Type, modelID, modelDisplayName, tooltipData, defaultThinkingEffort),
 		})
 	}
 	return output
@@ -708,9 +712,9 @@ func buildThinkingEffortParameterDefinitions(adapterType string) []map[string]an
 	}}
 }
 
-func buildThinkingEffortVariants(adapterType string, channelID string, modelDisplayName string, tooltipData string, defaultThinkingEffort string) []map[string]any {
+func buildThinkingEffortVariants(adapterType string, modelID string, modelDisplayName string, tooltipData string, defaultThinkingEffort string) []map[string]any {
 	values := orderThinkingEffortValues(thinkingEffortValuesForAdapter(adapterType), defaultThinkingEffort)
-	channelID = strings.TrimSpace(channelID)
+	modelID = strings.TrimSpace(modelID)
 	modelDisplayName = strings.TrimSpace(modelDisplayName)
 	variants := make([]map[string]any, 0, len(values))
 	for _, value := range values {
@@ -726,8 +730,11 @@ func buildThinkingEffortVariants(adapterType string, channelID string, modelDisp
 		if normalizeAvailableModelThinkingEffort(value, true, "") != "disabled" {
 			variant["tagline"] = effortDisplayName
 		}
-		if channelID != "" {
-			variant["variantStringRepresentation"] = channelID + ":" + value
+		if modelID != "" {
+			// F-01：variantStringRepresentation 用逻辑 modelID（非渠道 ID），使 UI 按
+			// variant 选中后回传 `<modelID>:<effort>`，splitRuntimeThinkingEffortVariantString
+			// 拆出 modelID → resolver 第 3 层命中同 modelID 全部候选。
+			variant["variantStringRepresentation"] = modelID + ":" + value
 		}
 		if strings.TrimSpace(tooltipData) != "" {
 			variant["tooltipData"] = map[string]any{"markdownContent": tooltipData}
@@ -817,25 +824,55 @@ func thinkingEffortDisplayName(value string) string {
 	}
 }
 
-// collectModelAdapterRefs 返回已启用 adapter 的渠道 ID 列表，用于 UI 模型目录与默认选择。
+// collectModelAdapterRefs 返回已启用 adapter 的**逻辑 model ID** 列表，用于 UI 模型目录与默认选择。
+//
+// F-01（2026-07-29）：此前返回渠道 ID（adapter.ID），Cursor UI 据此展示并回传，
+// 导致 ResolveAdapterIndexes 第 1 层精确 ID 匹配命中唯一 adapter、第 3 层
+// providerModelID fallback 永不触发——同 modelID 多 provider 的候选链恒为 1，
+// B2 failover 在正常 UI 选模链不可达。现改暴露逻辑 model ID：UI 回传 modelID
+// 后 resolver 第 3 层命中所有同 modelID 的 enabled adapter 组成候选链，failover 生效。
+//
+// 按 Priority 升序遍历、按 modelID 去重：defaultModel/fallbackModels 里同一 modelID
+// 只出现一次（重复无意义——选中任一都激活该 modelID 全部候选链）。
 //
 // F-08：必须过滤 Enabled==false 的 adapter——否则 disabled adapter 仍会出现在
 // AvailableModels / GetDefaultModel 的模型列表与 defaultModel 字段里，UI 可选中
 // 一个运行时 resolver 拒绝的模型，或把第一项 disabled adapter 当默认。此处与
 // config/resolver.go 的 SelectChannelsForModel 保持同一过滤口径（enabled 才进候选链）。
 func collectModelAdapterRefs(adapters []legacyruntime.ModelAdapterConfig) []string {
-	output := make([]string, 0, len(adapters))
-	for _, adapter := range adapters {
+	ordered := orderAdaptersByPriority(adapters)
+	output := make([]string, 0, len(ordered))
+	seen := make(map[string]struct{}, len(ordered))
+	for _, adapter := range ordered {
 		if !adapter.Enabled {
 			continue
 		}
-		channelID := strings.TrimSpace(adapter.ID)
-		if channelID == "" {
+		modelID := strings.TrimSpace(adapter.ModelID)
+		if modelID == "" {
 			continue
 		}
-		output = append(output, channelID)
+		if _, dup := seen[modelID]; dup {
+			continue
+		}
+		seen[modelID] = struct{}{}
+		output = append(output, modelID)
 	}
 	return output
+}
+
+// orderAdaptersByPriority 按 Priority 升序稳定排序 adapters 的副本（数字小的优先），
+// 与 config/resolver.go 候选链排序口径一致。默认模型与 UI 顺序都据此，保证 UI 默认选中
+// 的就是候选链主候选（最高优先级 adapter 所属的 modelID）。
+func orderAdaptersByPriority(adapters []legacyruntime.ModelAdapterConfig) []legacyruntime.ModelAdapterConfig {
+	if len(adapters) == 0 {
+		return nil
+	}
+	ordered := make([]legacyruntime.ModelAdapterConfig, len(adapters))
+	copy(ordered, adapters)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].Priority < ordered[j].Priority
+	})
+	return ordered
 }
 
 func resolveBootstrapStatsigAuthID(reqCtx *RequestContext) string {
