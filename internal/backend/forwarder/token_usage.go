@@ -413,13 +413,24 @@ func normalizeUsageTurnStatus(status string) string {
 	return strings.TrimSpace(status)
 }
 
+// eventIDSep 是 EventID / artifact session key 中 requestID 与 modelCallID、turn 前缀与子段的分隔符。
+// 用 \x1f（ASCII Unit Separator）而非 "::"：客户端 requestID 经 NormalizeRequestID
+// 仅 TrimSpace 不清洗 "::"（见 protocol.NormalizeRequestID），若 requestID 本身含 "::"，
+// 与 "::" 分隔符拼接会跨 requestID 碰撞——requestID="a::b" 与 requestID="a"+modelCallID="b"
+// 拼出的 EventID 都是 "a::b"，LookupEvent 的 requestID+"::" 前缀匹配会把两者误聚合到一条，
+// 导致 turn 计费串账（N-38）。控制字符 \x1f 不会出现在合法 requestID/modelCallID 中，
+// 从根上消除碰撞。token_usage.go 的 usageEventID/turnUsageEventID、usage_store.go 的
+// lookupUsageEventInDoc 前缀、artifacts.go 的 artifactSessionKey/ClearActiveArtifactsByRequest
+// 共用此分隔符保持一致。
+const eventIDSep = "\x1f"
+
 func turnUsageEventID(conversationID string, turnSeq int64, requestID string) string {
 	conversationID = strings.TrimSpace(conversationID)
 	requestID = strings.TrimSpace(requestID)
 	if conversationID != "" && turnSeq > 0 {
-		return fmt.Sprintf("turn::%s::%d", conversationID, turnSeq)
+		return "turn" + eventIDSep + conversationID + eventIDSep + fmt.Sprintf("%d", turnSeq)
 	}
-	return "turn::" + requestID
+	return "turn" + eventIDSep + requestID
 }
 
 func usageEventID(requestID string, modelCallID string) string {
@@ -428,7 +439,7 @@ func usageEventID(requestID string, modelCallID string) string {
 	if modelCallID == "" || modelCallID == requestID {
 		return requestID
 	}
-	return requestID + "::" + modelCallID
+	return requestID + eventIDSep + modelCallID
 }
 
 func clampInt64ToUint32(value int64) uint32 {

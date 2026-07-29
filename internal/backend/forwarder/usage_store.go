@@ -265,8 +265,8 @@ func (store *UsageFileStore) LookupEvent(needle string) (usageFileEvent, bool, e
 
 // lookupUsageEventInDoc 在已加载的内存文档上做事件聚合，避免 LookupEvent + UpsertEvent
 // 各自全量读+unmarshal（N-28）。语义与原 LookupEvent 完全一致：精确匹配 needle 或
-// 前缀匹配 needle+"::" 的事件聚合到一条。先精确直查 EventIndex（O(1) 热路径），
-// 未命中再前缀扫描；前缀扫描无可避免（聚合语义要求收集所有 needle:: 子事件）。
+// 前缀匹配 needle+sep（sep=\x1f，见 eventIDSep）的事件聚合到一条。先精确直查
+// EventIndex（O(1) 热路径），未命中再前缀扫描；前缀扫描无可避免（聚合语义要求收集所有子事件）。
 func lookupUsageEventInDoc(doc usageFileDocument, needle string) (usageFileEvent, bool, error) {
 	trimmed := strings.TrimSpace(needle)
 	if trimmed == "" {
@@ -299,9 +299,10 @@ func lookupUsageEventInDoc(doc usageFileDocument, needle string) (usageFileEvent
 		aggregate.TotalTokens = nonNegativeInt64(event.TotalTokens)
 		aggregate.UsagePresent = event.UsagePresent
 	}
-	// 前缀匹配：收集所有 needle:: 子事件。精确命中后仍需扫描——一个 requestID 可能
+	// 前缀匹配：收集所有 needle+sep 子事件。精确命中后仍需扫描——一个 requestID 可能
 	// 对应多条 modelCallID 子事件（B2 failover 链各候选），必须全部聚合。
-	prefix := trimmed + "::"
+	// N-38：分隔符用 \x1f（usageEventIDSep）而非 "::"，消除 requestID 含 "::" 时的跨 ID 碰撞。
+	prefix := trimmed + eventIDSep
 	for _, event := range events {
 		eventID := strings.TrimSpace(event.EventID)
 		if eventID == trimmed {

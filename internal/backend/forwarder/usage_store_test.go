@@ -448,20 +448,22 @@ func TestUpsertTurnFinalizedAggregatesInOneTransaction(t *testing.T) {
 	store := NewUsageFileStore(dir)
 	at := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
 	// 两条同 requestID 前缀的 provider_call 子事件（B2 failover 链各候选）。
+	// EventID 经 usageEventID 构造以复用真实分隔符（N-38 后为 \x1f），
+	// 不硬编码分隔符，保证分隔符变更时测试跟随而非误判。
 	if err := store.UpsertEvent(usageFileEvent{
-		EventID: "req-1::call-A", Kind: usageEventKindProvider, At: at,
+		EventID: usageEventID("req-1", "call-A"), Kind: usageEventKindProvider, At: at,
 		InputTokens: 1000, OutputTokens: 200, ModelID: "gpt-5", ModelName: "GPT-5", Provider: "openai",
 	}); err != nil {
 		t.Fatalf("UpsertEvent call-A: %v", err)
 	}
 	if err := store.UpsertEvent(usageFileEvent{
-		EventID: "req-1::call-B", Kind: usageEventKindProvider, At: at.Add(time.Second),
+		EventID: usageEventID("req-1", "call-B"), Kind: usageEventKindProvider, At: at.Add(time.Second),
 		InputTokens: 500, OutputTokens: 100, ModelID: "gpt-5", ModelName: "GPT-5", Provider: "openai",
 	}); err != nil {
 		t.Fatalf("UpsertEvent call-B: %v", err)
 	}
 
-	turnEventID := "turn::conv-1::1"
+	turnEventID := turnUsageEventID("conv-1", 1, "req-1")
 	if err := store.UpsertTurnFinalized(usageFileEvent{
 		EventID: turnEventID,
 		Kind:    usageEventKindTurn,
@@ -488,6 +490,50 @@ func TestUpsertTurnFinalizedAggregatesInOneTransaction(t *testing.T) {
 	}
 	if turn.Kind != usageEventKindTurn {
 		t.Errorf("turn Kind = %q, want %q", turn.Kind, usageEventKindTurn)
+	}
+}
+
+// TestLookupEventNoCrossIDCollisionWithColonRequestID 覆盖 N-38：
+// requestID 本身含 "::" 时不得与 "requestID + modelCallID" 拼出的 EventID 串账。
+// 旧实现用 "::" 拼接 + "::" 前缀匹配：requestID="a::b" 的精确事件与
+// requestID="a" 的子事件（EventID="a::b"）会碰撞聚合到一条。
+// N-38 改用 \x1f 分隔符后二者互不干扰。
+func TestLookupEventNoCrossIDCollisionWithColonRequestID(t *testing.T) {
+	dir := t.TempDir()
+	store := NewUsageFileStore(dir)
+	at := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+
+	// requestID="a" 的一条子事件（modelCallID="b"）。
+	if err := store.UpsertEvent(usageFileEvent{
+		EventID: usageEventID("a", "b"), Kind: usageEventKindProvider, At: at,
+		InputTokens: 111,
+	}); err != nil {
+		t.Fatalf("UpsertEvent a/b: %v", err)
+	}
+	// requestID 恰好含 "::" 的另一路独立事件（自成一条 exact 事件）。
+	if err := store.UpsertEvent(usageFileEvent{
+		EventID: usageEventID("a::b", ""), Kind: usageEventKindProvider, At: at.Add(time.Second),
+		InputTokens: 999,
+	}); err != nil {
+		t.Fatalf("UpsertEvent a::b: %v", err)
+	}
+
+	// 查 requestID="a"：只应聚合 a/b 子事件（111），不得吞掉 a::b 的 999。
+	aggA, ok, err := store.LookupEvent("a")
+	if err != nil || !ok {
+		t.Fatalf("LookupEvent a: ok=%v err=%v", ok, err)
+	}
+	if aggA.InputTokens != 111 {
+		t.Errorf("N-38: LookupEvent(a) input = %d, want 111 (must not absorb a::b)", aggA.InputTokens)
+	}
+
+	// 查 requestID="a::b"：只应命中自身 exact 事件（999），不得吞掉 a/b 的 111。
+	aggColon, ok, err := store.LookupEvent("a::b")
+	if err != nil || !ok {
+		t.Fatalf("LookupEvent a::b: ok=%v err=%v", ok, err)
+	}
+	if aggColon.InputTokens != 999 {
+		t.Errorf("N-38: LookupEvent(a::b) input = %d, want 999 (must not absorb a/b)", aggColon.InputTokens)
 	}
 }
 

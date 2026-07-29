@@ -159,7 +159,7 @@ func (recorder *artifactRecorder) ClearActiveArtifactsByRequest(requestID string
 	if normalizedRequestID == "" {
 		return
 	}
-	prefix := normalizedRequestID + "::"
+	prefix := normalizedRequestID + eventIDSep
 	recorder.mu.Lock()
 	for key := range recorder.sessions {
 		if strings.HasPrefix(key, prefix) {
@@ -198,7 +198,9 @@ func (recorder *artifactRecorder) ensureSession(requestID string, modelCallID st
 }
 
 func artifactSessionKey(requestID string, modelCallID string) string {
-	return strings.TrimSpace(requestID) + "::" + strings.TrimSpace(modelCallID)
+	// N-38：分隔符用 \x1f（eventIDSep）而非 "::"，与 usage EventID 一致，
+	// 消除 requestID 含 "::" 时 ClearActiveArtifactsByRequest 前缀匹配跨 requestID 误清。
+	return strings.TrimSpace(requestID) + eventIDSep + strings.TrimSpace(modelCallID)
 }
 
 func (recorder *artifactRecorder) resolveConversationContext(requestID string) (string, int64) {

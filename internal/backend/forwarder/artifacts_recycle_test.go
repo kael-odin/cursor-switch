@@ -119,7 +119,7 @@ func sessionCountForRequest(recorder *artifactRecorder, requestID string) int {
 	}
 	recorder.mu.Lock()
 	defer recorder.mu.Unlock()
-	prefix := requestID + "::"
+	prefix := requestID + eventIDSep
 	count := 0
 	for key := range recorder.sessions {
 		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
