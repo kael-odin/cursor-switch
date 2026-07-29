@@ -109,7 +109,14 @@ func (router *Router) Stream(ctx context.Context, req StreamRequest, sink func(M
 		adapter, aerr := router.adapterFor(resolved.Provider)
 		if aerr != nil {
 			// provider 类型不支持：构造错误，不可重试（换候选也是同类型问题）。
-			// 这是配置/路由层错误，不是 provider 故障，不计熔断。
+			// 这是配置/路由层错误。审计 N-01：仍需释放 half-open 探测名额——
+			// 否则 permit.UsedHalfOpenPermit 为 true 时 halfOpenInFlight 卡在 1
+			// 永不释放，渠道永久卡死 HalfOpen 只能人工 Reset。调 RecordFailure
+			// 同时释放名额并把 HalfOpen 回退到 Open 重新计时（配置错误每次都会
+			// 失败，回 Open 冷却比反复探测失败更合理）。
+			if permit.UsedHalfOpenPermit {
+				cb.RecordFailure(permit.UsedHalfOpenPermit)
+			}
 			lastErr = aerr
 			if sinkStarted {
 				return lastErr
