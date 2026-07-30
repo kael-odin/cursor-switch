@@ -49,10 +49,33 @@ func NewHTTPClient(timeout time.Duration) *http.Client {
 // NewHTTPClientNoRedirect 与 NewHTTPClient 相同，但不自动跟随 3xx 重定向；
 // 首个响应（含 Location / Set-Cookie）原样返回。用于恢复 Cursor 真实凭证的官方控制面转发，
 // 避免服务端跟随重定向把凭证带到未校验的目标。
+//
+// 注意：http.Client.Timeout 是端到端超时（含读取响应体）。控制面接口是短响应，
+// 30s 足够；但流式接口（run_sse/bidi_append 的 SSE/Connect 流）响应体可能持续数分钟，
+// 端到端 30s 到点会强制 cancel 把流截断。流式场景必须用 NewHTTPClientNoRedirectStream。
 func NewHTTPClientNoRedirect(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport: NewTransport(nil),
 		Timeout:   timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// NewHTTPClientNoRedirectStream 是流式专用的 NoRedirect 客户端：
+//   - Timeout=0：不设端到端超时。SSE/Connect 流响应体可长时间持续（推理数十秒到数分钟），
+//     端到端超时会在到点时强制 cancel，把正在进行的流截断。请求生命周期改由调用方 ctx 控制。
+//   - Transport 设 ResponseHeaderTimeout：仅约束「等首字节响应头」的阶段，防止上游挂起时
+//     无限等待建连后的响应头。首字节到达后进入流式读取，不再受 transport 级超时约束。
+//   - DialContext / TLSHandshakeTimeout 由克隆的默认 transport 继承，建连阶段仍被约束。
+//   - 仍不跟随重定向，与 NewHTTPClientNoRedirect 一致，防 3xx 把凭证带到未校验目标。
+func NewHTTPClientNoRedirectStream(headerTimeout time.Duration) *http.Client {
+	transport := NewTransport(nil)
+	transport.ResponseHeaderTimeout = headerTimeout
+	return &http.Client{
+		Transport: transport,
+		Timeout:   0,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

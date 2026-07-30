@@ -5,6 +5,7 @@ import ModelConfig from "@/views/ModelConfig.vue";
 import ModelEditor from "@/views/ModelEditor.vue";
 import PricingPanel from "@/views/PricingPanel.vue";
 import UsageDashboard from "@/views/UsageDashboard.vue";
+import Config from "@/views/Config.vue";
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -36,6 +37,14 @@ const router = createRouter({
       path: "/usage-dashboard",
       component: UsageDashboard,
       meta: { showIcon: false, title: "使用统计", directlyClose: true },
+    },
+    {
+      // 高级配置（运行模式/Tab补全地址/路由面覆盖/Web工具/界面语言等）。
+      // Config.vue 原是孤儿文件，2.0.7 的 Web 工具增强 UI 在其中但无入口可达；
+      // 此路由 + window.go 的 OpenConfigWebviewWindow 让其恢复可达。
+      path: "/config",
+      component: Config,
+      meta: { showIcon: false, title: "高级配置", directlyClose: true },
     },
   ],
 });

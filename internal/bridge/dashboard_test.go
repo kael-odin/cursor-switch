@@ -173,3 +173,84 @@ func TestRealTotalTokensFromDailyByModel(t *testing.T) {
 		t.Errorf("by_model aggregate realTotalTokens=%d want 1640", got)
 	}
 }
+
+// TestComputeDailyCostAllMissIsApproximate 验证 P1-4：by_model 存在但全部未命中定价时，
+// 精度标记应为 false（近似），提示用户当日有用量但定价未配——不再用 $0.00 伪装成精确。
+func TestComputeDailyCostAllMissIsApproximate(t *testing.T) {
+	// 定价表只有 gpt-5，但 by_model 用的是未配价的 unknown-model。
+	pricing := PricingSnapshot{
+		DefaultCostMultiplier: 1,
+		Models: []TokenPricing{
+			{ModelID: "gpt-5", InputPerMillion: 1, OutputPerMillion: 10, InputTokenSemantics: string(config.InputSemanticsFresh)},
+		},
+	}
+	rawByModel := `{
+		"date":"2026-07-26",
+		"by_model": {
+			"unknown-model": {"model_id":"unknown-model","input_tokens":1000,"output_tokens":500}
+		}
+	}`
+	var d historymetrics.UsageDashboardRawDaily
+	if err := json.Unmarshal([]byte(rawByModel), &d); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	total, precise := computeDailyCost(d, pricing, nil, 1, nil)
+	// 全 miss → 成本 0。
+	if total != 0 {
+		t.Fatalf("all-miss cost should be 0, got $%.4f", total)
+	}
+	// 全 miss → 应标近似（precise=false），不再伪装精确。
+	if precise {
+		t.Fatalf("all-miss day should be approximate (precise=false), got precise=true")
+	}
+
+	// 对照：命中定价的日应标精确。
+	rawHit := `{
+		"date":"2026-07-26",
+		"by_model": {
+			"gpt-5": {"model_id":"gpt-5","input_tokens":1000,"output_tokens":500}
+		}
+	}`
+	var dHit historymetrics.UsageDashboardRawDaily
+	if err := json.Unmarshal([]byte(rawHit), &dHit); err != nil {
+		t.Fatalf("unmarshal hit: %v", err)
+	}
+	_, preciseHit := computeDailyCost(dHit, pricing, nil, 1, nil)
+	if !preciseHit {
+		t.Fatalf("day with matched pricing should be precise (precise=true), got false")
+	}
+}
+
+// TestComputeDailyCostAppliesMultiplierByName 验证 P1-2 在 daily 路径：by_model 的 model_id 是哈希，
+// per-adapter 倍率通过 nameByID 提供的 model_name 命中并应用。
+func TestComputeDailyCostAppliesMultiplierByName(t *testing.T) {
+	pricing := PricingSnapshot{
+		DefaultCostMultiplier: 1,
+		Models: []TokenPricing{
+			{ModelID: "gpt-5.6-sol", InputPerMillion: 5, OutputPerMillion: 30, InputTokenSemantics: string(config.InputSemanticsFresh)},
+		},
+	}
+	// nameByID 把哈希 model_id 映射到真名（模拟 buildModelNameByID）。
+	nameByID := map[string]string{"57693a3f4c14f02b": "gpt-5.6-sol"}
+	// adapter 倍率按真名建（双键索引后 name 能命中）。
+	multipliers := map[string]float64{"gpt-5.6-sol": 3}
+	rawByModel := `{
+		"date":"2026-07-26",
+		"by_model": {
+			"57693a3f4c14f02b": {"model_id":"57693a3f4c14f02b","input_tokens":1000000,"output_tokens":1000000}
+		}
+	}`
+	var d historymetrics.UsageDashboardRawDaily
+	if err := json.Unmarshal([]byte(rawByModel), &d); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	total, precise := computeDailyCost(d, pricing, multipliers, 1, nameByID)
+	// 基础 1M*$5 + 1M*$30 = $35，倍率 3 → $105，且命中定价精确。
+	if total < 104.99 || total > 105.01 {
+		t.Fatalf("expected ~$105.00 (35 * 3), got $%.4f", total)
+	}
+	if !precise {
+		t.Fatalf("matched pricing should be precise, got approximate")
+	}
+}

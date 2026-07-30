@@ -19,6 +19,11 @@ const (
 	// 使用的超时。Host 在 rebuildLocked 注入的普通客户端用 30s，此处对齐，避免官方控制面转发
 	// 因无超时而永久挂起。
 	upstreamRedirectClientTimeout = 30 * time.Second
+
+	// upstreamStreamHeaderTimeout 是流式 CredentialOriginalCursor 客户端（run_sse/bidi_append
+	// 切 upstream）的「响应头等待」超时。流式响应体本身不受超时约束（推理可数分钟），仅约束
+	// 首字节响应头到达前的等待，防止上游挂起时无限阻塞。30s 足以覆盖建连后到首字节的正常延迟。
+	upstreamStreamHeaderTimeout = 30 * time.Second
 )
 
 type SystemSettingService interface {
@@ -71,6 +76,9 @@ type ForwardOptions struct {
 	PatchHeaders func(headers http.Header)
 	// Credential 指定出站凭证策略。默认 CredentialNone。
 	Credential CredentialPolicy
+	// Stream 标记流式响应（SSE / Connect 流）。CredentialOriginalCursor + Stream 时
+	// 改用无端到端超时的流式 NoRedirect 客户端，防 http.Client.Timeout 截断长流。
+	Stream bool
 }
 
 type ForwardMeta struct {

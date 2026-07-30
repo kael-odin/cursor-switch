@@ -13,6 +13,7 @@ import {
   openLogsDirectory,
   openModelConfig,
   openModelEditor,
+  openConfigWebview,
   saveUserConfig,
   startProxyService,
   stopProxyService,
@@ -214,14 +215,24 @@ function normalizeWebFetchHostAllowlist(raw) {
   }
   return cleaned;
 }
-// 推理面（run_sse/bidi_append/ai_service）默认 byok local，不暴露在此——它们强制本地是
-// 项目目标。此处只列「云端一体化服务」类，对应审计优先级 1：可按需透传到用户本人 cursor
-// 账号（牺牲隐私换召回质量）。value 为路由名（后端 host.go 的 server.Name）。
+// 推理面（run_sse/bidi_append/ai_service）默认 byok local，但可按需切 upstream 走用户本人
+// Cursor 账号——让 BugBot 等「调度云端 + 推理本地」端到端断裂的能力整体走官方（按订阅计费）。
+// value 为路由名（后端 host.go 的 server.Name）。
 export const PER_NAMESPACE_ROUTES = [
+  {
+    name: "run_sse",
+    label: "Agent 推理 (RunSSE)",
+    hint: "Composer/Apply/Agent 主推理。默认 byok 本地（省钱）；设直连走本人 Cursor 账号（让 BugBot 等端到端可用，按订阅计费）。",
+  },
+  {
+    name: "bidi_append",
+    label: "Agent 推理 (BidiAppend)",
+    hint: "Bidi 流式推理追加。同 RunSSE，默认 byok 本地；设直连走本人 Cursor 账号。",
+  },
   {
     name: "cpp_service",
     label: "Tab 补全 / Git 提交消息",
-    hint: "Cursor 专有小模型端点。默认走 Tab server 中转；可设为直连走本人 Cursor 账号。",
+    hint: "Cursor 专有小模型端点兜底路由。补全的实际地址/凭证由上方「Tab 补全服务地址」+「留空时带本人凭证」开关控制，此处的本地/直连仅影响兜底目标，通常保持跟随全局。",
   },
   {
     name: "file_sync",
@@ -688,6 +699,9 @@ export function normalizeConfig(source) {
       // F-02: tabServerBaseURL carry-through——前端不解释，仅 round-trip。
       // 后端 merge 忠实写 patch 值，所以前端必须携带，否则每次保存会清空 tab 地址。
       tabServerBaseURL: asString(routing.tabServerBaseURL),
+      // Tab 补全「留空带凭证走官方」开关 round-trip——前端不解释语义，仅透传布尔。
+      // 后端 tabServerUpstreamProcedure 据此决定留空时是否带本机 Cursor 凭证。
+      tabUseCursorCredentials: asBoolean(routing.tabUseCursorCredentials),
       // 审计第二部分「优先级 2」per-namespace 路由覆盖 round-trip——前端不解释语义，
       // 仅清洗（local/upstream 合法值）并原样回传。后端 merge 整块覆盖。
       perNamespace: normalizePerNamespace(routing.perNamespace),
@@ -774,6 +788,7 @@ function applyConfigToState(config, { modelAdaptersOnly = false } = {}) {
   appState.configProxyListenAddr = normalized.proxyListenAddr;
   appState.routingMode = normalized.routing.mode;
   appState.tabServerBaseURL = normalized.routing.tabServerBaseURL || "";
+  appState.tabUseCursorCredentials = !!normalized.routing.tabUseCursorCredentials;
   appState.perNamespace = normalized.routing.perNamespace;
   appState.includeCacheWriteInHitRate = normalized.homeMetrics.includeCacheWriteInHitRate;
   appState.webSearchProvider = normalized.webTools.webSearchProvider || "";
@@ -1025,6 +1040,7 @@ export const appState = reactive({
   configProxyListenAddr: cachedConfig.proxyListenAddr,
   routingMode: cachedConfig.routing.mode,
   tabServerBaseURL: cachedConfig.routing.tabServerBaseURL || "",
+  tabUseCursorCredentials: !!cachedConfig.routing.tabUseCursorCredentials,
   perNamespace: cachedConfig.routing.perNamespace,
   includeCacheWriteInHitRate: cachedConfig.homeMetrics.includeCacheWriteInHitRate,
   // 审计「行为偏离-3」：WebSearch provider/key + WebFetch host 白名单。
@@ -1296,6 +1312,7 @@ export async function persistUserConfig() {
     routing: {
       mode: appState.routingMode,
       tabServerBaseURL: appState.tabServerBaseURL || "",
+      tabUseCursorCredentials: !!appState.tabUseCursorCredentials,
       perNamespace: normalizePerNamespace(appState.perNamespace),
     },
     homeMetrics: {
@@ -1335,6 +1352,7 @@ export async function saveRoutingMode(mode) {
     routing: {
       mode: normalizeRouteMode(mode),
       tabServerBaseURL: currentConfig.routing?.tabServerBaseURL || "",
+      tabUseCursorCredentials: !!currentConfig.routing?.tabUseCursorCredentials,
       perNamespace: normalizePerNamespace(currentConfig.routing?.perNamespace),
     },
   });
@@ -1360,6 +1378,7 @@ export async function savePerNamespaceRoute(routeName, mode) {
     routing: {
       mode: currentConfig.routing?.mode || "local",
       tabServerBaseURL: currentConfig.routing?.tabServerBaseURL || "",
+      tabUseCursorCredentials: !!currentConfig.routing?.tabUseCursorCredentials,
       perNamespace: next,
     },
   });
@@ -1370,7 +1389,8 @@ export async function savePerNamespaceRoute(routeName, mode) {
 }
 
 // saveTabServerBaseURL 设置 tab 补全/git 消息流量的上游地址（H1）。
-// 空字符串 = 禁用第三方 tab server 重定向，透传官方 api2.cursor.sh（走用户自己的 Cursor 账号）。
+// 空字符串 = 禁用第三方 tab server 重定向，回退官方 api2.cursor.sh 透传——是否带本机 Cursor
+// 凭证由 TabUseCursorCredentials 开关控制（默认不带→401 不可用；带→消耗账号补全额度）。
 export async function saveTabServerBaseURL(value) {
   const currentConfig = await loadPersistedUserConfig();
   const previousValue = appState.tabServerBaseURL;
@@ -1381,11 +1401,35 @@ export async function saveTabServerBaseURL(value) {
     routing: {
       mode: currentConfig.routing?.mode || "local",
       tabServerBaseURL: nextValue,
+      tabUseCursorCredentials: !!currentConfig.routing?.tabUseCursorCredentials,
       perNamespace: normalizePerNamespace(currentConfig.routing?.perNamespace),
     },
   });
   if (!result.ok) {
     appState.tabServerBaseURL = previousValue;
+  }
+  return result;
+}
+
+// saveTabUseCursorCredentials 设置 Tab 补全「留空时带本人 Cursor 凭证走官方」开关。
+// 仅在 TabServerBaseURL 留空（目标=官方 cursor.sh）时生效；填了自建 tab server 时后端忽略此开关
+// 并强制不带本机凭证。开启后消耗本人 Cursor 账号补全额度（免费账号高频补全可能耗尽）。
+export async function saveTabUseCursorCredentials(value) {
+  const currentConfig = await loadPersistedUserConfig();
+  const previous = appState.tabUseCursorCredentials;
+  const next = !!value;
+  appState.tabUseCursorCredentials = next;
+  const result = await persistConfigPayload({
+    ...currentConfig,
+    routing: {
+      mode: currentConfig.routing?.mode || "local",
+      tabServerBaseURL: currentConfig.routing?.tabServerBaseURL || "",
+      tabUseCursorCredentials: next,
+      perNamespace: normalizePerNamespace(currentConfig.routing?.perNamespace),
+    },
+  });
+  if (!result.ok) {
+    appState.tabUseCursorCredentials = previous;
   }
   return result;
 }
@@ -1713,6 +1757,12 @@ export async function openLocalLogsDirectory() {
 
 export async function openConfigWindow() {
   await openConfig();
+}
+
+// 打开「高级配置」Webview 窗口（渲染 Config.vue：运行模式/Tab补全地址/
+// 路由面覆盖/Web工具/界面语言等）。区别于 openConfigWindow（打开设置目录）。
+export async function openConfigWebviewWindow() {
+  await openConfigWebview();
 }
 
 export async function openModelConfigWindow() {

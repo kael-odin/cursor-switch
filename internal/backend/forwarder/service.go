@@ -858,6 +858,7 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 		stream.mu.Lock()
 		stream.ProviderActive = false
 		stream.ProviderCancel = nil
+		stream.ProviderContext = nil // #1:随 cancel 一起回收
 		stream.UpdatedAt = time.Now().UTC()
 		hasPendingCompaction := stream.PendingCompaction != nil
 		status := stream.Status
@@ -889,6 +890,7 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 	stream.mu.Lock()
 	stream.ProviderActive = true
 	stream.ProviderCancel = cancel
+	stream.ProviderContext = ctx // #1:供生图 goroutine 派生可取消 ctx，客户端 cancel 会级联中断在途生图 HTTP
 	stream.UpdatedAt = time.Now().UTC()
 	stream.mu.Unlock()
 	service.setTurnPhase(stream, TurnPhaseProviderRunning)
@@ -1114,19 +1116,26 @@ func (service *Service) runProviderStream(stream *ActiveStream, token uint64, ct
 			Done:  true,
 			Err:   err,
 		},
-	}); postErr != nil && !errors.Is(postErr, errProviderLoopInterrupted) {
-		service.debug.LogProvider(context.Background(), request.RequestID, request.ConversationID, "provider_completion_post_error", map[string]any{
-			"model_call_id":  strings.TrimSpace(request.ModelCallID),
-			"provider_token": token,
-			"error":          postErr.Error(),
-		})
-		log.Printf(
-			"forwarder provider completion post failed request_id=%s model_call_id=%s provider_token=%d err=%v",
-			strings.TrimSpace(request.RequestID),
-			strings.TrimSpace(request.ModelCallID),
-			token,
-			postErr,
-		)
+	}); postErr != nil {
+		if !errors.Is(postErr, errProviderLoopInterrupted) {
+			service.debug.LogProvider(context.Background(), request.RequestID, request.ConversationID, "provider_completion_post_error", map[string]any{
+				"model_call_id":  strings.TrimSpace(request.ModelCallID),
+				"provider_token": token,
+				"error":          postErr.Error(),
+			})
+			log.Printf(
+				"forwarder provider completion post failed request_id=%s model_call_id=%s provider_token=%d err=%v",
+				strings.TrimSpace(request.RequestID),
+				strings.TrimSpace(request.ModelCallID),
+				token,
+				postErr,
+			)
+		}
+		// P1-10:无论 postErr 是普通错误还是 errProviderLoopInterrupted，都兜底确认流进终态。
+		// errProviderLoopInterrupted 表示 actor 已收口（done 关闭），通常意味着 cancel 已置终态；
+		// 但若 actor 退出时 status 未被推进到终态（provider 循环被中断但 stream 仍 streaming），
+		// 不兜底则流永久驻留 broker + ProviderActive=true → 内存泄漏 + 重连订阅者等不到 endstream。
+		// failStreamIfNonTerminal 在真终态时 no-op，无副作用。
 		_ = service.failStreamIfNonTerminal(stream, "unknown", postErr)
 	}
 	if err != nil {

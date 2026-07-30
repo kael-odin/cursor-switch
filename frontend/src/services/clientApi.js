@@ -171,6 +171,12 @@ export function openPricing() {
   );
 }
 
+export function openConfigWebview() {
+  return withApiLogging("OpenConfigWebviewWindow", undefined, () =>
+    Call.ByName(`${WINDOW_SERVICE_NAME}.OpenConfigWebviewWindow`),
+  );
+}
+
 export function openModelEditor(index, adapterJSON) {
   return withApiLogging("OpenModelEditorWindow", { index, adapterJSON }, () =>
     OpenModelEditorWindow(index, adapterJSON),

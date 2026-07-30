@@ -323,7 +323,11 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 			server.ConnectUnary(),
 			server.Local(server.HTTPHandlerAction(agentModule.LocalBidiHandler)),
 			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
-				Name: "bidi_append",
+				Name:       "bidi_append",
+				Credential: upstream.CredentialOriginalCursor,
+				// BidiAppend 属推理面，响应可能为长流式；切 upstream 时用流式 NoRedirect 客户端，
+				// 避免 http.Client.Timeout 端到端 30s 到点把流截断（与 run_sse 一致）。
+				Stream: true,
 			})),
 		),
 		server.POST(legacyRunSSEProcedure,
@@ -331,7 +335,12 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 			server.ConnectStream(),
 			server.Local(server.HTTPHandlerAction(agentModule.LocalRunSSE)),
 			server.Upstream(upstream.DirectAction(routeDeps, upstream.CompatRouteConfig{
-				Name: "run_sse",
+				Name:       "run_sse",
+				Credential: upstream.CredentialOriginalCursor,
+				// run_sse 是 SSE/Connect 流式推理，响应体可持续数分钟；切 upstream 必须用流式
+				// NoRedirect 客户端（Timeout=0 + transport 级 ResponseHeaderTimeout），否则端到端
+				// 30s 超时到点会强制 cancel 截断长推理流。
+				Stream: true,
 			})),
 		),
 		server.POST("/aiserver.v1.AiService/ServerTime",
@@ -409,17 +418,17 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 		officialProcedure("/aiserver.v1.AnalyticsService/GetFirstWindowStatsigDecision", "first_window_statsig_decision", server.ConnectUnary(), routeDeps),
 		officialProcedure("/oauth/token", "oauth_token", server.HTTP(), routeDeps),
 		officialProcedure("/aiserver.v1.AuthService/GetEmail", "auth_service_get_email", server.ConnectUnary(), routeDeps),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/StreamCpp", "ai_stream_cpp", server.ConnectStream(), routeDeps, host.configs),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/StreamNextCursorPrediction", "ai_stream_next_cursor_prediction", server.ConnectStream(), routeDeps, host.configs),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/GetCppEditClassification", "ai_get_cpp_edit_classification", server.ConnectUnary(), routeDeps, host.configs),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/RefreshTabContext", "ai_refresh_tab_context", server.ConnectUnary(), routeDeps, host.configs),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppConfig", "ai_cpp_config", server.ConnectUnary(), routeDeps, host.configs),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppEditHistoryStatus", "ai_cpp_edit_history_status", server.ConnectUnary(), routeDeps, host.configs),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppAppend", "ai_cpp_append", server.ConnectUnary(), routeDeps, host.configs),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppEditHistoryAppend", "ai_cpp_edit_history_append", server.ConnectUnary(), routeDeps, host.configs),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/ReportAiCodeChangeMetrics", "ai_report_ai_code_change_metrics", server.ConnectUnary(), routeDeps, host.configs),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/WriteGitCommitMessage", "ai_write_git_commit_message", server.ConnectUnary(), routeDeps, host.configs),
-		tabServerUpstreamProcedure("/aiserver.v1.AiService/WriteGitBranchName", "ai_write_git_branch_name", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/StreamCpp", "ai_stream_cpp", true, server.ConnectStream(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/StreamNextCursorPrediction", "ai_stream_next_cursor_prediction", true, server.ConnectStream(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/GetCppEditClassification", "ai_get_cpp_edit_classification", false, server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/RefreshTabContext", "ai_refresh_tab_context", false, server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppConfig", "ai_cpp_config", false, server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppEditHistoryStatus", "ai_cpp_edit_history_status", false, server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppAppend", "ai_cpp_append", false, server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/CppEditHistoryAppend", "ai_cpp_edit_history_append", false, server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/ReportAiCodeChangeMetrics", "ai_report_ai_code_change_metrics", false, server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/WriteGitCommitMessage", "ai_write_git_commit_message", false, server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.AiService/WriteGitBranchName", "ai_write_git_branch_name", false, server.ConnectUnary(), routeDeps, host.configs),
 		repositoryServiceProcedure(forwarder.RepositoryServiceFastRepoInitHandshakeV2Procedure, "repository_fast_repo_init_handshake_v2", server.ConnectUnary(), agentModule, routeDeps),
 		repositoryServiceProcedure(forwarder.RepositoryServiceFastRepoInitHandshakeProcedure, "repository_fast_repo_init_handshake", server.ConnectUnary(), agentModule, routeDeps),
 		repositoryServiceProcedure(forwarder.RepositoryServiceFastRepoSyncCompleteProcedure, "repository_fast_repo_sync_complete", server.ConnectUnary(), agentModule, routeDeps),
@@ -447,8 +456,8 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 				Name: "ai_service",
 			})),
 		),
-		tabServerUpstreamProcedure("/aiserver.v1.CppService/AvailableModels", "cpp_available_models", server.ConnectUnary(), routeDeps, host.configs),
-		tabServerUpstreamProcedure("/aiserver.v1.CppService/RecordCppFate", "cpp_record_cpp_fate", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.CppService/AvailableModels", "cpp_available_models", false, server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.CppService/RecordCppFate", "cpp_record_cpp_fate", false, server.ConnectUnary(), routeDeps, host.configs),
 		server.Any("/aiserver.v1.CppService/*",
 			server.Name("cpp_service"),
 			server.HTTP(),
@@ -460,10 +469,10 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 				Name: "cpp_service",
 			})),
 		),
-		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSSyncFile", "file_sync_sync_file", server.ConnectUnary(), routeDeps, host.configs),
-		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSIsEnabledForUser", "file_sync_is_enabled_for_user", server.ConnectUnary(), routeDeps, host.configs),
-		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSConfig", "file_sync_config", server.ConnectUnary(), routeDeps, host.configs),
-		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSUploadFile", "file_sync_upload_file", server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSSyncFile", "file_sync_sync_file", false, server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSIsEnabledForUser", "file_sync_is_enabled_for_user", false, server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSConfig", "file_sync_config", false, server.ConnectUnary(), routeDeps, host.configs),
+		tabServerUpstreamProcedure("/aiserver.v1.FileSyncService/FSUploadFile", "file_sync_upload_file", false, server.ConnectUnary(), routeDeps, host.configs),
 		server.Any("/aiserver.v1.FileSyncService/*",
 			server.Name("file_sync"),
 			server.HTTP(),
@@ -645,13 +654,13 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 		officialAnyProcedure("/aiserver.v1.HealthService/*", "official_health_service", server.HTTP(), routeDeps),
 		officialAnyProcedure("/aiserver.v1.MetricsService/*", "official_metrics_service", server.HTTP(), routeDeps),
 		officialAnyProcedure("/aiserver.v1.BackgroundComposerService/*", "official_background_composer_service", server.HTTP(), routeDeps),
-		// N-35 架构说明（Bugbot 端到端断裂，已知限制）：
-		// BackgroundComposerService/*（Bugbot 调度/通知/PR 集成）已整体透传到用户本人
-		// Cursor 账号（CredentialOriginalCursor）。但 Bugbot 触发的推理走 RunSSE/BidiAppend，
-		// 该推理面强制本地 byok（项目核心目标，刻意不暴露 upstream 切换——见 PerNamespace 注释）。
-		// 故 Bugbot 的调度面云端、推理面本地，端到端无法在本地拼出完整的云端一体化体验。
-		// 若要把 Bugbot 推理也整体透传到用户 Cursor 账号，需放开推理面 upstream——与项目
-		// byok 定位冲突，属阶段三架构决策，未排期。当前以"调度透传 + 推理本地"为已知限制。
+		// N-35 架构说明（Bugbot 端到端，方向 3 已放开推理面 upstream）：
+		// BackgroundComposerService/*（Bugbot 调度/通知/PR 集成）整体透传到用户本人 Cursor 账号
+		// （CredentialOriginalCursor）。Bugbot 触发的推理走 RunSSE/BidiAppend，其 Upstream 现已带
+		// CredentialOriginalCursor：用户可在高级配置「按路由面覆盖」把 run_sse/bidi_append 切
+		// 「直连 Cursor」，推理即带真实凭证透传到用户 Cursor 账号，Bugbot 调度面+推理面端到端打通。
+		// 默认仍 byok local（省钱），仅在用户显式切换时才走官方（按订阅计费）——BYOK 与官方账号灵活并存。
+		// Local handler 完全不动；切 upstream 走 ForwardToUpstream 原样流式透传，凭证严格校验目标 *.cursor.sh:443。
 	)
 
 	return nil
@@ -721,10 +730,20 @@ func uploadServiceProcedure(pattern string, name string, protocol server.RouteOp
 	)
 }
 
-func tabServerUpstreamProcedure(pattern string, name string, protocol server.RouteOption, deps upstream.Dependencies, configs *serverconfig.Manager) server.Option {
-	direct := upstream.DirectAction(deps, upstream.CompatRouteConfig{Name: name})
+func tabServerUpstreamProcedure(pattern string, name string, stream bool, protocol server.RouteOption, deps upstream.Dependencies, configs *serverconfig.Manager) server.Option {
+	// 在构造 action 前定下凭证策略：留空（目标=官方 cursor.sh）+ 开关开 → 带真实 Cursor 凭证
+	// （补全可用，消耗账号补全额度）；填了自建 tab server → 强制 CredentialNone（防本机 Cursor token
+	// 送到第三方 server）。流式路由（StreamCpp/StreamNextCursorPrediction）带凭证切官方时同样
+	// 要避免 30s 端到端超时截断 → Stream:true 走流式 NoRedirect 客户端（已落地）。
+	credential := resolveTabCredentialPolicy(configs)
+	direct := upstream.DirectAction(deps, upstream.CompatRouteConfig{
+		Name:       name,
+		Credential: credential,
+		Stream:     stream,
+	})
 	action := func(ctx *server.Context) error {
-		// H1: tab server 地址由 config 控制。空 = 禁用第三方重定向，回退官方 api2.cursor.sh 透传。
+		// H1: tab server 地址由 config 控制。空 = 禁用第三方重定向，回退官方 api2.cursor.sh 透传
+		// （是否带凭证由 TabUseCursorCredentials 控制，已在上面 resolveTabCredentialPolicy 决定）。
 		baseURLStr := ""
 		if configs != nil {
 			baseURLStr = strings.TrimSpace(configs.Current().Routing.TabServerBaseURL)
@@ -742,6 +761,25 @@ func tabServerUpstreamProcedure(pattern string, name string, protocol server.Rou
 		server.Local(action),
 		server.Upstream(action),
 	)
+}
+
+// resolveTabCredentialPolicy 决定 Tab 补全/git 消息路由的出站凭证策略。
+// 仅当 TabServerBaseURL 留空（目标=官方 api2.cursor.sh）且 TabUseCursorCredentials=true 时，
+// 返回 CredentialOriginalCursor（带本机真实 Cursor 凭证，补全可用、消耗账号额度）；
+// 否则返回 CredentialNone——填了自建 tab server 时由 server 端账号回源，本机凭证绝不外泄。
+// 抽成独立函数便于单测 credential 选择逻辑，不依赖闭包/HTTP 请求构造。
+func resolveTabCredentialPolicy(configs *serverconfig.Manager) upstream.CredentialPolicy {
+	if configs == nil {
+		return upstream.CredentialNone
+	}
+	routing := configs.Current().Routing
+	if strings.TrimSpace(routing.TabServerBaseURL) != "" {
+		return upstream.CredentialNone
+	}
+	if !routing.TabUseCursorCredentials {
+		return upstream.CredentialNone
+	}
+	return upstream.CredentialOriginalCursor
 }
 
 // resolveTabUpstreamURL 把请求 URL 的 scheme/host 替换为 tab server 地址，保留 path/query。

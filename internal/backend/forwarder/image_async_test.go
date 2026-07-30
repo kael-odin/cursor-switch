@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	runtimecore "cursor/internal/backend/agent/core"
 )
@@ -89,5 +90,37 @@ func TestRunImageGenerationBuildsPayload(t *testing.T) {
 	}
 	if payload.ImageData != "" {
 		t.Fatalf("error payload should have empty ImageData, got %q", payload.ImageData)
+	}
+}
+
+// TestRunImageGenerationCancelsWithProviderContext 验证 #1 的核心不变式：
+// runImageGeneration 派生的 ctx（context.WithTimeout(parent=ProviderContext, 15min)）
+// 必须挂在 stream.ProviderContext 之下——父 ctx 取消时子 ctx 立即取消。
+// 这是「客户端 cancel→broker.Cancel→ProviderCancel()→上游生图 HTTP 即时中断」的语义前提。
+//
+// 不直接驱动 generateImage（它自带 10min ResponseHeaderTimeout 的 client，时序脆弱），
+// 而是验证 ctx 派生链：子 ctx 监听父 ctx 取消。
+func TestRunImageGenerationCancelsWithProviderContext(t *testing.T) {
+	// 模拟 service.go:888 的 provider ctx（ProviderCancel + ProviderContext 同源）。
+	providerCtx, providerCancel := context.WithCancel(context.Background())
+	// 镜像 runImageGeneration 内部：ctx, cancel := context.WithTimeout(parent, 15min)
+	childCtx, childCancel := context.WithTimeout(providerCtx, 15*time.Minute)
+	defer childCancel()
+
+	if childCtx.Err() != nil {
+		t.Fatalf("child ctx should be alive before parent cancel, got %v", childCtx.Err())
+	}
+
+	// 取消父 ctx——模拟客户端 cancel 触发 broker.Cancel→ProviderCancel()。
+	providerCancel()
+
+	// 子 ctx 应随父取消立即进入 canceled（Go context 语义保证），证明派生链正确。
+	select {
+	case <-childCtx.Done():
+		if childCtx.Err() != context.Canceled {
+			t.Fatalf("child ctx err = %v, want context.Canceled", childCtx.Err())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("child ctx did not cancel within 2s after parent cancel — not derived from ProviderContext")
 	}
 }

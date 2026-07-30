@@ -365,6 +365,7 @@ func (service *Service) failActiveStream(stream *ActiveStream, conversationID st
 	cancel := stream.ProviderCancel
 	stream.ProviderActive = false
 	stream.ProviderCancel = nil
+	stream.ProviderContext = nil // #1:随 cancel 一起回收
 	stream.PendingProviderAction = providerActionNone
 	stream.UpdatedAt = time.Now().UTC()
 	stream.mu.Unlock()

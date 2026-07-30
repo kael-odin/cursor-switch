@@ -4,6 +4,7 @@ import Card from "@/components/ui/Card.vue";
 import Input from "@/components/ui/Input.vue";
 import LocaleSelect from "@/components/LocaleSelect.vue";
 import Select from "@/components/ui/Select.vue";
+import Switch from "@/components/ui/Switch.vue";
 import { showModal } from "@/composables/useModal";
 import {
   appState,
@@ -16,6 +17,7 @@ import {
   savePerNamespaceRoute,
   saveRoutingMode,
   saveTabServerBaseURL,
+  saveTabUseCursorCredentials,
   saveWebSearchProvider,
   saveWebSearchAPIKey,
   saveWebFetchHostAllowlist,
@@ -26,6 +28,7 @@ import { getCursorAccountStatus, testWebTools } from "@/services/clientApi";
 
 const routeModeOptions = ROUTE_MODE_OPTIONS;
 const tabServerSaving = ref(false);
+const tabCredSaving = ref(false);
 
 // per-namespace 路由覆盖的可选项：auto = 跟随全局（不覆盖）。
 const NAMESPACE_MODE_OPTIONS = [
@@ -117,6 +120,26 @@ async function handleSaveTabServerBaseURL() {
     });
   } finally {
     tabServerSaving.value = false;
+  }
+}
+
+// Tab 补全「留空时带本人 Cursor 凭证走官方」开关。仅留空（走官方 api2.cursor.sh）时生效；
+// 填了自建 tab server 时由 server 端账号回源，此开关无意义。开启后补全消耗本人 Cursor 账号额度。
+async function handleSaveTabUseCursorCredentials(next) {
+  tabCredSaving.value = true;
+  const previous = appState.tabUseCursorCredentials;
+  appState.tabUseCursorCredentials = !!next;
+  try {
+    const result = await saveTabUseCursorCredentials(next);
+    if (!result.ok) {
+      appState.tabUseCursorCredentials = previous;
+      await showActionError("保存失败", result.error);
+    }
+  } catch (error) {
+    appState.tabUseCursorCredentials = previous;
+    await showActionError("保存失败", toUserError(error));
+  } finally {
+    tabCredSaving.value = false;
   }
 }
 
@@ -331,10 +354,10 @@ onMounted(async () => {
               <span class="rounded bg-amber-500/15 px-1.5 py-0.5 text-xs font-medium text-amber-300 ring-1 ring-amber-500/30">依赖官方账号</span>
             </div>
             <div class="text-sm text-[#a3a3a3]">
-              控制 Tab 代码补全 / Git Commit / 分支名生成等流量的上游地址。留空 = 走官方 Cursor 上游（用你自己的 Cursor 账号额度）；填自建 cursor-tab-server 地址可回源自己的账号
+              控制 Tab 代码补全 / Git Commit / 分支名生成等流量的上游地址。留空 = 走官方 Cursor 上游；填自建 cursor-tab-server 地址可回源自己的账号
             </div>
             <div class="mt-1 text-xs text-[#737373]">
-              此能力为 BYOK 的例外：补全流量不经你的 BYOK key，仍走官方 Cursor 账号，无法用自有 provider 替代。
+              此能力为 BYOK 的例外：补全流量不经你的 BYOK key，无法用自有 provider 替代。留空走官方时，默认不带凭证会被官方拒绝（401）；需开启下方「留空时带本人 Cursor 凭证」开关补全才可用——开启后消耗你 Cursor 账号的补全额度。
             </div>
           </div>
           <Button
@@ -356,6 +379,22 @@ onMounted(async () => {
           v-model="appState.tabServerBaseURL"
           placeholder="留空 = 走官方 api2.cursor.sh；例如 https://tab.example.com"
         />
+        <!-- 留空（走官方）时显示「带本人 Cursor 凭证」开关：默认关=不带凭证官方 401 不可用；
+             开=带真实凭证补全可用但消耗账号补全额度。填了自建 tab server 时此开关不显示
+             （由 server 端账号回源，本机凭证绝不外泄）。 -->
+        <div v-if="tabDependsOnLocalCursorAccount" class="flex items-center justify-between gap-3 rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] p-3">
+          <div class="min-w-0">
+            <div class="text-sm font-medium text-[#e5e5e5]">留空时带本人 Cursor 凭证走官方</div>
+            <div class="text-xs text-[#737373]">开启后 Tab 补全 / Git 消息带你的真实 Cursor 凭证透传官方，补全可用；消耗你账号的补全额度（免费账号高频补全可能耗尽）。关闭则留空转发不带凭证，官方会拒绝（401）。</div>
+          </div>
+          <Switch
+            :enabled="!!appState.tabUseCursorCredentials"
+            :busy="tabCredSaving"
+            enabled-text="带凭证"
+            disabled-text="不带凭证"
+            @change="handleSaveTabUseCursorCredentials"
+          />
+        </div>
         <div v-if="tabServerTestResult" class="text-xs" :class="tabServerTestResult.startsWith('✓') ? 'text-emerald-300' : 'text-red-300'">
           {{ tabServerTestResult }}
         </div>
@@ -415,7 +454,7 @@ onMounted(async () => {
           </div>
         </div>
         <p class="text-xs text-[#737373]">
-          推理面（RunSSE / BidiAppend）始终走本地 byok，不在此覆盖——强制本地是项目目标。仅「云端一体化服务」可按需透传到本人 Cursor 账号（代码/文档会经 Cursor 云）。
+          推理面（RunSSE / BidiAppend）默认本地 byok 省钱；按需可切「直连 Cursor」走本人 Cursor 账号——让 BugBot 等「调度云端 + 推理本地」断裂的能力端到端可用（按订阅计费）。其余「云端一体化服务」同理可按需透传。
         </p>
       </div>
     </Card>

@@ -139,6 +139,58 @@ func TestPricingCandidatesPlaceholder(t *testing.T) {
 		}
 	}
 }
+
+// TestPricingMatchDisplayNameSpaces 验证 P1-display：displayName 带空格（如 "GPT-5.6 Sol"）
+// 经 cleanModelIDForPricing + normalizePricingModelID 空格→横线归一后能命中 seed "gpt-5.6-sol"。
+//
+// 背景：resolveRequestedModelName 取 modelDetails.displayName（带空格），旧归一只 ToLower+TrimSpace，
+// 派生不出横线分隔的 seed 真名 → name miss → id miss → 成本归零。两端口径都加空格→横线后即命中。
+func TestPricingMatchDisplayNameSpaces(t *testing.T) {
+	cfg := &PricingConfig{Models: pricingModelSeed}
+
+	// "GPT-5.6 Sol"（带空格）应命中 seed gpt-5.6-sol。
+	got := cfg.FindModelPricing("GPT-5.6 Sol")
+	if got == nil {
+		t.Fatalf("FindModelPricing(\"GPT-5.6 Sol\") = nil, 期望命中 gpt-5.6-sol")
+	}
+	if got.ModelID != "gpt-5.6-sol" {
+		t.Errorf("FindModelPricing(\"GPT-5.6 Sol\") = %q, 期望 gpt-5.6-sol", got.ModelID)
+	}
+
+	// 多空格/前后空格也应归一命中。
+	if got := cfg.FindModelPricing("  GPT-5.6  Sol  "); got == nil || got.ModelID != "gpt-5.6-sol" {
+		gotID := ""
+		if got != nil {
+			gotID = got.ModelID
+		}
+		t.Errorf("FindModelPricing(\"  GPT-5.6  Sol  \") = %q, 期望 gpt-5.6-sol", gotID)
+	}
+
+	// 对照：横线形态直接命中（无回归）。
+	if got := cfg.FindModelPricing("gpt-5.6-sol"); got == nil || got.ModelID != "gpt-5.6-sol" {
+		gotID := ""
+		if got != nil {
+			gotID = got.ModelID
+		}
+		t.Errorf("FindModelPricing(\"gpt-5.6-sol\") = %q, 期望 gpt-5.6-sol（横线形态无回归）", gotID)
+	}
+}
+
+// TestNormalizePricingModelIDSpaces 验证归一化函数空格→横线，且对无空格 seed 无副作用（no-op）。
+func TestNormalizePricingModelIDSpaces(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"GPT-5.6 Sol", "gpt-5.6-sol"},
+		{"  GPT-5.6  Sol  ", "gpt-5.6-sol"},
+		{"gpt-5.6-sol", "gpt-5.6-sol"}, // 无空格 no-op
+		{"Claude-Opus-4-7", "claude-opus-4-7"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := normalizePricingModelID(c.in); got != c.want {
+			t.Errorf("normalizePricingModelID(%q) = %q, 期望 %q", c.in, got, c.want)
+		}
+	}
+}
 // 这是成本计算的核心：避免缓存部分被重复计费。
 func TestBillableInputTokens(t *testing.T) {
 	// legacy：input 含 cache_read，减 cache_read

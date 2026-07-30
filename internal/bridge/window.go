@@ -28,6 +28,7 @@ type WindowService struct {
 	modelConfigWindow *application.WebviewWindow
 	modelEditorWindow *application.WebviewWindow
 	pricingWindow     *application.WebviewWindow
+	configWindow      *application.WebviewWindow
 	editorCtx         *modelEditorContext
 	mu                sync.RWMutex
 }
@@ -295,6 +296,71 @@ func (s *WindowService) GetModelEditorContext() map[string]any {
 		"index":       s.editorCtx.Index,
 		"adapterJSON": s.editorCtx.AdapterJSON,
 	}
+}
+
+// OpenConfigWebviewWindow 打开「高级配置」独立窗口，渲染 Config.vue。
+// 注意：与 OpenConfigWindow（打开设置目录）是两回事——后者用系统文件管理器
+// 打开设置文件夹；本方法打开的是 Webview 窗口，承载 Config.vue 里那 7 张配置卡
+// （含 Web 工具/Tab补全地址/路由面覆盖/界面语言等，原本是孤儿文件无入口可达）。
+// 若窗口已存在则聚焦。
+func (s *WindowService) OpenConfigWebviewWindow() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.app == nil {
+		return
+	}
+
+	if s.configWindow != nil {
+		s.configWindow.Show()
+		s.configWindow.Focus()
+		return
+	}
+
+	win := s.app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Title:               "高级配置",
+		Width:               980,
+		Height:              700,
+		MinWidth:            820,
+		MinHeight:           560,
+		DisableResize:       false,
+		Frameless:           goruntime.GOOS == "windows",
+		URL:                 "/#/config",
+		Hidden:              false,
+		HideOnEscape:        false,
+		MinimiseButtonState: application.ButtonEnabled,
+		MaximiseButtonState: application.ButtonEnabled,
+		CloseButtonState:    application.ButtonEnabled,
+		BackgroundColour:    application.RGBA{Red: 25, Green: 25, Blue: 25, Alpha: 255},
+		Mac: application.MacWindow{
+			Backdrop:      application.MacBackdropLiquidGlass,
+			DisableShadow: false,
+			TitleBar: application.MacTitleBar{
+				AppearsTransparent:   true,
+				Hide:                 false,
+				HideTitle:            true,
+				FullSizeContent:      true,
+				UseToolbar:           false,
+				HideToolbarSeparator: true,
+			},
+			WebviewPreferences: application.MacWebviewPreferences{
+				FullscreenEnabled:                   u.True,
+				TextInteractionEnabled:              u.True,
+				AllowsBackForwardNavigationGestures: u.False,
+			},
+		},
+		Windows: application.WindowsWindow{
+			HiddenOnTaskbar: false,
+		},
+	})
+
+	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.configWindow = nil
+	})
+
+	s.configWindow = win
 }
 
 // OpenHistoryWindow 用于处理与 OpenHistoryWindow 相关的逻辑。

@@ -63,3 +63,31 @@ func TestRecordTurnFinalizedSnapshotCarriesModelID(t *testing.T) {
 		t.Errorf("turn event Kind = %q, want %q", turnEvent.Kind, usageEventKindTurn)
 	}
 }
+
+// TestPromptTokensTotalExcludesCacheWrite 验证 P1-3：promptTokensTotal 不应计入 cacheWrite。
+//
+// 背景：cacheWrite（cache_creation）是本轮写缓存产生的新增缓存，并非「已占用上下文」。
+// 旧实现 promptTokensTotal = input + cacheRead + cacheWrite，被写进 TokenDetailsUsedTokens
+// 和 autoCompaction 占用判定，高估占用 → 过早触发 autoCompaction。
+// 正确口径：已占用 = input + cacheRead（命中读复用部分）。
+func TestPromptTokensTotalExcludesCacheWrite(t *testing.T) {
+	snap := turnUsageSnapshot{
+		InputTokens:      1000,
+		CacheReadTokens:  2000,
+		CacheWriteTokens: 500,
+	}
+	// 期望 input + cacheRead = 3000，不含 cacheWrite(500)。
+	if got := snap.promptTokensTotal(); got != 3000 {
+		t.Errorf("promptTokensTotal = %d, want 3000 (input+cacheRead, excluding cacheWrite)", got)
+	}
+	// requestTokensTotal = promptTokensTotal + output，同样不含 cacheWrite。
+	if got := snap.requestTokensTotal(); got != 3000 {
+		t.Errorf("requestTokensTotal = %d, want 3000", got)
+	}
+
+	// cacheWrite 单独存在（input=cacheRead=0）时，占用应为 0（cacheWrite 不是已占用上下文）。
+	snapOnlyWrite := turnUsageSnapshot{CacheWriteTokens: 500}
+	if got := snapOnlyWrite.promptTokensTotal(); got != 0 {
+		t.Errorf("promptTokensTotal with only cacheWrite = %d, want 0", got)
+	}
+}

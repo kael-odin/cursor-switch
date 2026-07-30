@@ -451,6 +451,7 @@ func (broker *StreamBroker) Cancel(requestID string, terminalMessage string) err
 	if stream.ProviderCancel != nil {
 		stream.ProviderCancel()
 		stream.ProviderCancel = nil
+		stream.ProviderContext = nil // #1:随 cancel 一起回收
 	}
 	stream.ProviderActive = false
 	stream.Status = StreamStatusCanceled

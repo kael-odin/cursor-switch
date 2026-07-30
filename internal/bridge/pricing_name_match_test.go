@@ -99,3 +99,100 @@ func TestBuildModelNameByID(t *testing.T) {
 		t.Fatal("hash3 has empty name, should not be in map")
 	}
 }
+
+// TestFindMultiplierDualKey 验证 P1-2：per-adapter 倍率先按 model_name 命中、再回退 model_id。
+//
+// 背景：loadAdapterMultipliers 双键索引（ModelID + DisplayName）。查表点用的是 usage.ModelID
+//（通道/适配器哈希），与 adapter.ModelID 对不上。findMultiplier 应能用 model_name（=DisplayName 真名）
+// 命中倍率，避免 CostMultiplier 静默失效回落默认倍率。
+func TestFindMultiplierDualKey(t *testing.T) {
+	// adapter: ModelID=gpt-5.6-sol, DisplayName="GPT-5.6 Sol", CostMultiplier=2.5
+	// 双键索引后 map = {"gpt-5.6-sol":2.5, "gpt-5.6 sol":2.5}（DisplayName 归一为小写带空格原样）
+	multipliers := map[string]float64{
+		"gpt-5.6-sol": 2.5,
+		"gpt-5.6 sol": 2.5, // DisplayName 小写（loadAdapterMultipliers 不做空格→横线，仅 ToLower+TrimSpace）
+	}
+
+	// 1) model_name 命中（DisplayName 形态）：哈希 model_id 对不上，靠 name 命中 2.5。
+	got := findMultiplier(multipliers, "57693a3f4c14f02b", "gpt-5.6 sol")
+	if got != 2.5 {
+		t.Fatalf("name match should yield 2.5, got %v", got)
+	}
+
+	// 2) model_id 命中（真名形态）：无 name 时回退 id。
+	got = findMultiplier(multipliers, "gpt-5.6-sol", "")
+	if got != 2.5 {
+		t.Fatalf("id fallback should yield 2.5, got %v", got)
+	}
+
+	// 3) 全 miss → 返回 0（调用方回退 defaultMultiplier）。
+	got = findMultiplier(multipliers, "unknown-hash", "unknown-name")
+	if got != 0 {
+		t.Fatalf("full miss should yield 0, got %v", got)
+	}
+
+	// 4) name 优先于 id（两者都能命中时取 name）。
+	multipliers2 := map[string]float64{
+		"by-id":   1.5,
+		"by-name": 3.5,
+	}
+	got = findMultiplier(multipliers2, "by-id", "by-name")
+	if got != 3.5 {
+		t.Fatalf("name should take precedence over id, want 3.5 got %v", got)
+	}
+}
+
+// TestFindMultiplierRejectsInvalid 验证 findMultiplier 对 NaN/Inf/<=0 的防御（回落 0）。
+func TestFindMultiplierRejectsInvalid(t *testing.T) {
+	multipliers := map[string]float64{
+		"zero": 0,
+		"neg":  -1,
+	}
+	if got := findMultiplier(multipliers, "zero", ""); got != 0 {
+		t.Fatalf("zero multiplier should be ignored, got %v", got)
+	}
+	if got := findMultiplier(multipliers, "neg", ""); got != 0 {
+		t.Fatalf("negative multiplier should be ignored, got %v", got)
+	}
+}
+
+// TestFindPriceForModelDisplayNameSpaces 验证 P1-display：displayName 带空格（如 "GPT-5.6 Sol"）
+// 经 cleanModelIDForPricing + normalizePricingModelID 空格→横线归一后能命中 seed "gpt-5.6-sol"。
+//
+// 背景：resolveRequestedModelName 取 modelDetails.displayName（带空格），旧归一只 ToLower+TrimSpace
+// 派生不出 "gpt-5.6-sol" → name miss → id miss → 成本归零。空格→横线后两端口径一致即命中。
+func TestFindPriceForModelDisplayNameSpaces(t *testing.T) {
+	models := []TokenPricing{
+		{ModelID: "gpt-5.6-sol", InputPerMillion: 5, OutputPerMillion: 30, InputTokenSemantics: string(config.InputSemanticsFresh)},
+	}
+	// displayName "GPT-5.6 Sol"（带空格）应命中 gpt-5.6-sol 的 $5/$30。
+	got := findPriceForModel(models, "57693a3f4c14f02b", "GPT-5.6 Sol")
+	if got.InputPerMillion != 5 || got.OutputPerMillion != 30 {
+		t.Fatalf("display name with spaces should match gpt-5.6-sol (5/30), got input=%v output=%v",
+			got.InputPerMillion, got.OutputPerMillion)
+	}
+}
+
+// TestComputeCostByModelAppliesAdapterMultiplierByName 验证 P1-2：by_model 聚合（model_id=哈希）
+// 时 per-adapter 倍率能通过 model_name 命中并应用到成本。
+func TestComputeCostByModelAppliesAdapterMultiplierByName(t *testing.T) {
+	pricing := PricingSnapshot{
+		DefaultCostMultiplier: 1,
+		Models: []TokenPricing{
+			{ModelID: "gpt-5.6-sol", InputPerMillion: 5, OutputPerMillion: 30, InputTokenSemantics: string(config.InputSemanticsFresh)},
+		},
+	}
+	// adapter DisplayName="gpt-5.6-sol"（真名），CostMultiplier=3。双键索引后 name 能命中。
+	multipliers := map[string]float64{"gpt-5.6-sol": 3}
+	byModel := []historymetrics.ModelUsage{
+		{ModelID: "57693a3f4c14f02b", ModelName: "gpt-5.6-sol", InputTokens: 1_000_000, OutputTokens: 1_000_000},
+	}
+	costs, total := computeCostByModel(byModel, pricing, multipliers)
+	// 基础成本 1M*$5 + 1M*$30 = $35，倍率 3 → $105。
+	if total < 104.99 || total > 105.01 {
+		t.Fatalf("expected ~$105.00 (35 * multiplier 3), got $%.4f", total)
+	}
+	if len(costs) != 1 || costs[0].CostMultiplier != 3 {
+		t.Fatalf("expected CostMultiplier=3 applied via name match, got costs=%+v", costs)
+	}
+}

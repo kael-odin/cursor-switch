@@ -290,10 +290,13 @@ func normalizePricingConfig(input PricingConfig) PricingConfig {
 	return output
 }
 
-// normalizePricingModelID 归一化 model id 用于查找匹配：小写、去空白。
+// normalizePricingModelID 归一化 model id 用于查找匹配：小写、空白转横线。
 // 比对时用归一化后的 id，使 "Claude-Opus-4-7" 与 "claude-opus-4-7" 命中同一价目。
+// 空白转横线：displayName 常带空格（如 "GPT-5.6 Sol"），归一到 "gpt-5.6-sol" 才能命中
+// seed 表里的横线分隔真名——与 cleanModelIDForPricing 同步，保证 query 端与 seed 端口径一致。
+// 用 Fields 而非 ReplaceAll(" ","-")：连续空白折叠成单个横线，避免 "GPT-5.6  Sol" → "gpt-5.6--sol" 产生空段。
 func normalizePricingModelID(id string) string {
-	return strings.ToLower(strings.TrimSpace(id))
+	return strings.ToLower(strings.Join(strings.Fields(id), "-"))
 }
 
 // pricingNamespaceMarkers 是已知 provider 命名空间前缀（openai./anthropic./google./...）。
@@ -412,9 +415,11 @@ func modelPricingCandidates(modelID string) []string {
 //   - 取最后一个 "/" 后的部分（去 provider 路径前缀）
 //   - 取第一个 ":" 前的部分（去 openrouter ":free" 等变体标记）
 //   - "@" → "-"（bedrock cross-region 注入点等）
-//   - 小写、去空白
+//   - 空白 → "-"（displayName 带空格如 "GPT-5.6 Sol" 归一到 "gpt-5.6-sol"，与 seed 端 normalizePricingModelID 同步；
+//     用 Fields 折叠连续空白为单个横线，避免 "GPT-5.6  Sol" → "gpt-5.6--sol" 产生空段）
+//   - 小写
 func cleanModelIDForPricing(modelID string) string {
-	s := strings.TrimSpace(strings.ToLower(modelID))
+	s := strings.ToLower(strings.Join(strings.Fields(modelID), "-"))
 	if s == "" {
 		return ""
 	}

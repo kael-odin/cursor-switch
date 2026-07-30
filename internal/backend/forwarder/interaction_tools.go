@@ -331,10 +331,11 @@ func (service *Service) handleGenerateImageToolInvocation(stream *ActiveStream, 
 		stream.PendingImages = make(map[string]pendingImage)
 	}
 	stream.PendingImages[imageID] = pending
+	providerCtx := stream.ProviderContext // #1:持锁快照，供 goroutine 派生可取消 ctx；ctx 是不可变接口，快照后读安全
 	stream.UpdatedAt = time.Now().UTC()
 	stream.mu.Unlock()
-	// channel/refs/requestID/description 均为值类型捕获，goroutine 不再触碰 stream 共享态。
-	go service.runImageGeneration(requestID, pending, channel.BaseURL, channel.APIKey, channel.ImageModelID, description, refs)
+	// channel/refs/requestID/description/providerCtx 均为值类型捕获，goroutine 不再触碰 stream 共享态。
+	go service.runImageGeneration(requestID, pending, channel.BaseURL, channel.APIKey, channel.ImageModelID, description, refs, providerCtx)
 	return nil
 }
 
@@ -345,10 +346,17 @@ func (service *Service) handleGenerateImageToolInvocation(stream *ActiveStream, 
 // intent 投递。dispatchInboundIntent 会 postStreamCommandWait 进 actor mailbox，由 actor 串行处理
 // （handleImageResult），从而无竞争地写历史 + 推进 turn。stream 若已取消/终结，streamForIntent
 // 返回 no-op，回投自动丢弃，pending 随 stream 回收，无泄漏。
-func (service *Service) runImageGeneration(requestID string, pending pendingImage, baseURL, apiKey, model, prompt string, refs []imageReference) {
+func (service *Service) runImageGeneration(requestID string, pending pendingImage, baseURL, apiKey, model, prompt string, refs []imageReference, providerCtx context.Context) {
 	// 生图慢（部分上游正常 120s+）。整体超时用 ctx 看门狗兜底，绝不靠 http.Client.Timeout 砍正常慢请求。
 	// 15 分钟：覆盖最慢的图生图（含上传 + 渲染），同时真死 hung 会被砍掉释放 goroutine，不泄漏。
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	// #1:parent 取自 stream.ProviderContext——客户端 cancel（broker.Cancel→ProviderCancel()）会级联取消本 ctx，
+	// 即时中断在途生图/图生图 HTTP，不再空跑 15min 白耗上游额度。ProviderContext 可能为 nil（生图在 provider
+	// 尚未启动时触发的极端场景），回退 context.Background() 保旧行为（仅 15min 看门狗）。
+	parent := providerCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 15*time.Minute)
 	defer cancel()
 	var imageData string
 	var imgErr error
@@ -540,7 +548,8 @@ func snapshotCurrentTurnSelectedImages(stream *ActiveStream) []imageReference {
 
 // extractCurrentTurnSelectedImages 从 UserMessage 的 SelectedContext.SelectedImages 提取 inline data，
 // 构造 []imageReference 供图生图直取。在 normalizeUserMessageForStorage 之前调用——此时 inline data
-// 仍在内存。复用 guardSelectedImages 的 data 获取与 F-30 上限（单图 4MB / 总 16MB / 最多 6 张），
+// 仍在内存。复用 guardSelectedImages 的 data 获取与 F-30 上限（单图 10MB / 总 32MB / 最多 6 张，
+// 对齐 Claude 官方 Vision 约束），超限走缩放重编码（长边≤2000px）而非裸截断，
 // 避免落盘外发任意本地文件。filename 由 mime 推扩展名（缺失回退 .png），供 multipart 文件名用。
 func extractCurrentTurnSelectedImages(userMessage *agentv1.UserMessage) []imageReference {
 	if userMessage == nil {
@@ -582,17 +591,38 @@ func extractCurrentTurnSelectedImages(userMessage *agentv1.UserMessage) []imageR
 		if len(data) == 0 {
 			continue // 仅含 path 无 inline data——F-30 不读文件系统，跳过
 		}
+		mimeType := image.GetMimeType()
 		if len(data) > promptGuardSelectedImageMaxBytes {
-			data = data[:promptGuardSelectedImageMaxBytes]
+			// 超单图字节上限：缩放重编码（长边≤2000px）而非裸字节截断——裸截断会损坏二进制完整性。
+			// 仅在字节超限时缩放，避免对范围内参考图无谓降采样。
+			rescaled, newMIME, _, err := rescaleImageIfNeeded(data, mimeType, promptGuardSelectedImageMaxBytes, imageRescaleMaxEdge)
+			if err == nil && rescaled != nil {
+				data = rescaled
+				if newMIME != "" {
+					mimeType = newMIME // 缩放可能 webp/gif→png/jpeg，同步更新 MIME 供下游嗅探
+				}
+			} else {
+				log.Printf("forwarder selected_image rescale failed bytes=%d err=%v — dropping image", len(data), err)
+				continue // 缩放/解码失败整张丢弃，绝不裸截断或外发损坏数据
+			}
 		}
 		if remaining <= 0 {
 			break
 		}
 		if len(data) > remaining {
-			data = data[:remaining]
+			// 超总量预算：再缩放一次（按剩余字节为上限）。仍超则丢弃该张 + log。
+			rescaled, newMIME, _, err := rescaleImageIfNeeded(data, mimeType, remaining, imageRescaleMaxEdge)
+			if err == nil && rescaled != nil && len(rescaled) <= remaining {
+				data = rescaled
+				if newMIME != "" {
+					mimeType = newMIME
+				}
+			} else {
+				log.Printf("forwarder selected_image over total budget bytes=%d remaining=%d err=%v — dropping image", len(data), remaining, err)
+				continue
+			}
 		}
 		remaining -= len(data)
-		mimeType := image.GetMimeType()
 		refs = append(refs, imageReference{
 			filename: imageFilenameForMIME(mimeType, data),
 			mimeType: mimeType,

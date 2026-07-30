@@ -371,6 +371,7 @@ func (service *Service) startPendingCompactionSummary(stream *ActiveStream, plan
 	stream.CurrentModelCallID = summaryModelCallID
 	stream.ProviderActive = true
 	stream.ProviderCancel = cancel
+	stream.ProviderContext = ctx // #1:与 cancel 同生命周期，供此期间触发的生图 goroutine 共享取消信号
 	stream.PendingProviderAction = providerActionNone
 	stream.PendingCompaction.SummaryModelCallID = summaryModelCallID
 	plan.SummaryModelCallID = summaryModelCallID
@@ -425,6 +426,7 @@ func (service *Service) handleCompactionEvent(stream *ActiveStream, payload *str
 	status := stream.Status
 	stream.ProviderActive = false
 	stream.ProviderCancel = nil
+	stream.ProviderContext = nil // #1:随 cancel 一起回收
 	stream.PendingProviderAction = providerActionNone
 	stream.PendingCompaction = nil
 	stream.UpdatedAt = time.Now().UTC()
@@ -494,6 +496,7 @@ func (service *Service) finishCompactionWithError(stream *ActiveStream, cancel c
 	stream.mu.Lock()
 	stream.ProviderActive = false
 	stream.ProviderCancel = nil
+	stream.ProviderContext = nil // #1:随 cancel 一起回收
 	stream.PendingCompaction = nil
 	stream.UpdatedAt = time.Now().UTC()
 	stream.mu.Unlock()

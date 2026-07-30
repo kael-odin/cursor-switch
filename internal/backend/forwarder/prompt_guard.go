@@ -2,6 +2,7 @@ package forwarder
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -32,11 +33,15 @@ const (
 	promptGuardRealtimeTextChars        = 12000
 	promptGuardCompiledMessageChars     = 120000
 	// F-30：SelectedImage 只接受内联 Data，服务端绝不读 Path。
-	// 单图 4MB（base64 前的字节上限，覆盖主流截图/拍照），总量 16MB，最多 6 张。
-	// 超限或仅含 path 无内联 data 的条目直接丢弃，避免任意本地文件被读后外发给 provider。
+	// 单图 10MB、请求总量 32MB——对齐 Claude 官方 Vision 约束（单图 10MB、请求总 32MB）。
+	// 见 https://platform.claude.com/docs/en/docs/build-with-claude/vision （Request limits）。
+	// OpenAI /v1/images/edits 单图 <50MB，10MB 亦满足。
+	// 超限走「解码→缩放→重编码」（长边≤2000px），而非裸字节截断——二进制中间切片会损坏
+	// PNG/JPEG 完整性致上游解码失败。缩放失败或解码失败则整张丢弃，避免任意本地文件被读后外发。
+	// 最多 6 张（Claude 20 图内无更严限制，6 张保守合理）。
 	promptGuardSelectedImageMaxCount    = 6
-	promptGuardSelectedImageMaxBytes    = 4 * 1024 * 1024
-	promptGuardSelectedImagesTotalBytes = 16 * 1024 * 1024
+	promptGuardSelectedImageMaxBytes    = 10 * 1024 * 1024
+	promptGuardSelectedImagesTotalBytes = 32 * 1024 * 1024
 )
 
 func normalizeUserMessageForStorage(userMessage *agentv1.UserMessage) *agentv1.UserMessage {
@@ -147,13 +152,28 @@ func guardSelectedImages(images []*agentv1.SelectedImage) []*agentv1.SelectedIma
 			continue
 		}
 		if len(data) > promptGuardSelectedImageMaxBytes {
-			data = data[:promptGuardSelectedImageMaxBytes]
+			// 超单图字节上限：缩放重编码（长边≤2000px）而非裸字节截断——裸截断会损坏二进制完整性。
+			// 仅在字节超限时缩放，避免对范围内视觉上下文图无谓降采样（保画质）。
+			rescaled, _, _, err := rescaleImageIfNeeded(data, "", promptGuardSelectedImageMaxBytes, imageRescaleMaxEdge)
+			if err == nil && rescaled != nil {
+				data = rescaled
+			} else {
+				log.Printf("forwarder selected_image rescale failed bytes=%d err=%v — dropping image", len(data), err)
+				continue // 缩放/解码失败整张丢弃，绝不裸截断或外发损坏数据
+			}
 		}
 		if remaining <= 0 {
 			break
 		}
 		if len(data) > remaining {
-			data = data[:remaining]
+			// 超总量预算：再缩放一次（按剩余字节为上限）。仍超则丢弃该张 + log。
+			rescaled, _, _, err := rescaleImageIfNeeded(data, "", remaining, imageRescaleMaxEdge)
+			if err == nil && rescaled != nil && len(rescaled) <= remaining {
+				data = rescaled
+			} else {
+				log.Printf("forwarder selected_image over total budget bytes=%d remaining=%d err=%v — dropping image", len(data), remaining, err)
+				continue
+			}
 		}
 		remaining -= len(data)
 		cloned, ok := proto.Clone(image).(*agentv1.SelectedImage)

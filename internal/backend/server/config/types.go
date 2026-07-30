@@ -72,10 +72,18 @@ type ModelAdapterConfig struct {
 type RoutingConfig struct {
 	Mode string `json:"mode" yaml:"mode"`
 	// TabServerBaseURL 控制 tab 补全/git 消息流量的上游地址（H1）。
-	// 空 = 禁用第三方 tab server 重定向，回退到官方 api2.cursor.sh 透传（走用户自己的 Cursor 账号）。
-	// 非空 = 把 StreamCpp/CppConfig/WriteGitCommitMessage 等流量导向该地址。
-	// 历史默认值 "https://tab.leokun.cn" 是上游作者的共享池；用户可填自建 cursor-tab-server 地址或留空。
+	// 空 = 禁用第三方 tab server 重定向，回退到官方 api2.cursor.sh 透传——是否带用户 Cursor 凭证
+	// 由 TabUseCursorCredentials 控制（默认不带→官方 401 不可用；带→消耗账号补全额度）。
+	// 非空 = 把 StreamCpp/CppConfig/WriteGitCommitMessage 等流量导向该地址（自建 cursor-tab-server，
+	// 由 server 端账号回源，不消耗本机账号）。
+	// 历史默认值 "https://tab.leokun.cn" 是上游作者的共享池；用户可填自建地址或留空。
 	TabServerBaseURL string `json:"tabServerBaseURL" yaml:"tabServerBaseURL"`
+	// TabUseCursorCredentials 控制 Tab 补全/git 消息「留空（走官方 api2.cursor.sh）」时是否
+	// 带用户真实 Cursor 凭证。默认 false = 留空转发不带凭证（官方 401，补全不可用，零消耗额度）；
+	// true = 留空时带凭证，本机 Cursor 账号补全可用（消耗账号补全额度，免费账号高频补全可能耗尽）。
+	// 仅在 TabServerBaseURL 留空（目标=官方 cursor.sh）时生效；填了自建 tab server 时此开关
+	// 被忽略并强制不带本机凭证（防 Cursor token 泄漏给第三方 server）。
+	TabUseCursorCredentials bool `json:"tabUseCursorCredentials,omitempty" yaml:"tabUseCursorCredentials,omitempty"`
 	// PerNamespace 是按路由名（namespace）的模式覆盖，审计第二部分「优先级 2」能力损失优化。
 	// 全局 Mode 是粗粒度开关（要么全 byok 本地，要么全直连 cursor）；PerNamespace 让单个路由面
 	// 独立选择 local（byok 本地重建）/ upstream（透传到用户本人 cursor 账号），不改变其它面。
@@ -162,6 +170,9 @@ func NormalizeConfig(input Config) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// TabUseCursorCredentials 布尔直传，无需清洗；填了 tab server 时后端 tabServerUpstreamProcedure
+	// 会忽略此开关并强制不带本机凭证。
+	output.Routing.TabUseCursorCredentials = input.Routing.TabUseCursorCredentials
 	output.Routing.PerNamespace = normalizePerNamespace(input.Routing.PerNamespace)
 	output.WebTools = normalizeWebToolsConfig(input.WebTools)
 	adapters, err := NormalizeModelAdapterConfigs(input.ModelAdapters)
@@ -306,6 +317,8 @@ func mergeUserPatchInto(dst *Config, patch Config) {
 	dst.ProxyListenAddr = patch.ProxyListenAddr
 	dst.Routing.Mode = patch.Routing.Mode
 	dst.Routing.TabServerBaseURL = patch.Routing.TabServerBaseURL
+	// TabUseCursorCredentials：布尔整体替换（与 Mode/TabServerBaseURL 一致）。
+	dst.Routing.TabUseCursorCredentials = patch.Routing.TabUseCursorCredentials
 	// PerNamespace：前端管理的整块覆盖（与 Mode/TabServerBaseURL 一致）。
 	// patch.Routing.PerNamespace 为 nil 时不动 dst（前端 payload 未带此字段则保留旧值）。
 	// 非 nil（含空 map）覆盖，随后 NormalizeConfig 会清洗/归一。

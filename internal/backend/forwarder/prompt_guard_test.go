@@ -2,6 +2,7 @@ package forwarder
 
 import (
 	"bytes"
+	"image"
 	"testing"
 
 	"cursor/gen/agentv1"
@@ -59,27 +60,53 @@ func TestGuardSelectedImageCountLimit(t *testing.T) {
 	}
 }
 
-// TestGuardSelectedImageSizeLimit 验证单图字节上限——超限被截断到上限。
+// TestGuardSelectedImageSizeLimit 验证单图字节上限——超 10MB 走缩放重编码（长边≤2000px），
+// 输出仍是合法可解码图且 < maxBytes，而非裸字节截断。
 func TestGuardSelectedImageSizeLimit(t *testing.T) {
-	oversized := bytes.Repeat([]byte{0x41}, promptGuardSelectedImageMaxBytes+1024)
+	// 构造一张真实可解码且 > 10MB 的 PNG：高熵像素（逐像素变化）使 PNG 无法有效压缩。
+	// 3000x3000 RGBA = 36MB 原始，高熵 PNG 编码后远超 10MB。
+	oversized := encodeNoisyPNG(t, 3000, 3000)
+	if len(oversized) <= promptGuardSelectedImageMaxBytes {
+		t.Fatalf("test fixture too small: %d bytes, need > %d", len(oversized), promptGuardSelectedImageMaxBytes)
+	}
 	got := guardSelectedImages([]*agentv1.SelectedImage{newImageWithPathAndData("", oversized)})
 	if len(got) != 1 {
 		t.Fatalf("expected 1 image, got %d", len(got))
 	}
-	if len(got[0].GetData()) != promptGuardSelectedImageMaxBytes {
-		t.Errorf("expected truncated to %d bytes, got %d", promptGuardSelectedImageMaxBytes, len(got[0].GetData()))
+	data := got[0].GetData()
+	if len(data) == 0 {
+		t.Fatalf("expected non-empty image data")
+	}
+	if len(data) >= len(oversized) {
+		t.Errorf("rescaled bytes %d should be smaller than original %d", len(data), len(oversized))
+	}
+	if len(data) > promptGuardSelectedImageMaxBytes {
+		t.Errorf("rescaled bytes %d must be <= maxBytes %d", len(data), promptGuardSelectedImageMaxBytes)
+	}
+	// 缩放后必须是合法可解码图（裸截断会损坏二进制，解码必失败）。
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Errorf("rescaled image must be decodable, got err: %v (raw truncation would break it)", err)
+	}
+	// 缩放后长边 ≤ 2000。
+	if img != nil {
+		b := img.Bounds()
+		if b.Dx() > imageRescaleMaxEdge || b.Dy() > imageRescaleMaxEdge {
+			t.Errorf("long edge must be <= %d after rescale, got %dx%d", imageRescaleMaxEdge, b.Dx(), b.Dy())
+		}
 	}
 }
 
-// TestGuardSelectedImagesTotalBudget 验证总量预算——多张大图不超过总量。
+// TestGuardSelectedImagesTotalBudget 验证总量预算——多张超 10MB 大图缩放后总量不超过 32MB。
 func TestGuardSelectedImagesTotalBudget(t *testing.T) {
-	single := bytes.Repeat([]byte{0x42}, promptGuardSelectedImageMaxBytes) // 4MB
+	// 每张 >10MB 的高熵 PNG（3000x3000），缩放后变 2000x2000 级别（远小于 10MB）。
+	// 用 4 张验证总量预算（4×缩放后 << 32MB）。
+	single := encodeNoisyPNG(t, 3000, 3000)
 	images := []*agentv1.SelectedImage{
 		newImageWithPathAndData("", single),
 		newImageWithPathAndData("", single),
 		newImageWithPathAndData("", single),
-		newImageWithPathAndData("", single), // 4×4MB=16MB，正好达到上限
-		newImageWithPathAndData("", single), // 第 5 张会超总量——应被截断或丢弃
+		newImageWithPathAndData("", single),
 	}
 	got := guardSelectedImages(images)
 	total := 0

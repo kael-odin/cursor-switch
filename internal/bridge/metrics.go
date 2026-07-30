@@ -297,7 +297,8 @@ func (service *MetricsService) loadPricing() PricingSnapshot {
 	return toPricingSnapshot(cfg.Pricing)
 }
 
-// loadAdapterMultipliers 读取 per-adapter 成本倍率（按归一化 modelId 索引）。
+// loadAdapterMultipliers 读取 per-adapter 成本倍率。双键索引：按归一化 ModelID 和 DisplayName 都建一份，
+// 让查表点既能用 model_id 也能用 model_name（=DisplayName 真名）命中——与 findPriceForModel 口径对齐。
 // 仅返回显式设置了 CostMultiplier 的适配器。
 func (service *MetricsService) loadAdapterMultipliers() map[string]float64 {
 	cfg := service.loadConfig()
@@ -312,7 +313,15 @@ func (service *MetricsService) loadAdapterMultipliers() map[string]float64 {
 		if parsed <= 0 {
 			continue
 		}
-		out[strings.ToLower(strings.TrimSpace(a.ModelID))] = parsed
+		idKey := strings.ToLower(strings.TrimSpace(a.ModelID))
+		if idKey != "" {
+			out[idKey] = parsed
+		}
+		// P1-2：DisplayName 作为第二键，供查表点按 model_name 命中（adapter 的 DisplayName 即模型真名）。
+		nameKey := strings.ToLower(strings.TrimSpace(a.DisplayName))
+		if nameKey != "" && nameKey != idKey {
+			out[nameKey] = parsed
+		}
 	}
 	return out
 }
@@ -365,8 +374,9 @@ func computeCostByModel(byModel []historymetrics.ModelUsage, pricing PricingSnap
 	for _, usage := range byModel {
 		price := findPriceForModel(pricing.Models, usage.ModelID, usage.ModelName)
 		multiplier := defaultMultiplier
-		// per-adapter 倍率同样拒绝 NaN/Inf/<=0（loadAdapterMultipliers 已过滤，这里防御性二次校验）。
-		if am, ok := adapterMultipliers[strings.ToLower(strings.TrimSpace(usage.ModelID))]; ok && am > 0 && !math.IsNaN(am) && !math.IsInf(am, 0) {
+		// P1-2：per-adapter 倍率按 model_name 优先、model_id 兜底查（与 findPriceForModel 同构），
+		// 避免哈希 model_id 对不上 adapter.ModelID 导致 CostMultiplier 静默失效。
+		if am := findMultiplier(adapterMultipliers, usage.ModelID, usage.ModelName); am > 0 {
 			multiplier = am
 		}
 		cost := ModelCost{
@@ -401,6 +411,28 @@ func findPriceForModel(models []TokenPricing, modelID, modelName string) TokenPr
 		}
 	}
 	return findPrice(models, modelID)
+}
+
+// findMultiplier 与 findPriceForModel 同构：per-adapter 倍率也先按模型真名（model_name）查，
+// 再回退 model_id。
+//
+// 背景（P1-2）：loadAdapterMultipliers 历史上只按 adapter.ModelID 建倍率表，而查表点用的是
+// usage.ModelID（通道/适配器哈希），与 adapter.ModelID 对不上 → 用户设的 CostMultiplier 静默失效，
+// 回落默认倍率。现在 loadAdapterMultipliers 双键索引（ModelID + DisplayName），这里先按 model_name
+//（=adapter 的 DisplayName 真名）查，命中不了再用 model_id 兜底，与定价查表口径一致。
+// 返回 0 表示无 per-adapter 倍率，调用方回退 defaultMultiplier。
+func findMultiplier(adapterMultipliers map[string]float64, modelID, modelName string) float64 {
+	if name := strings.ToLower(strings.TrimSpace(modelName)); name != "" {
+		if am, ok := adapterMultipliers[name]; ok && am > 0 && !math.IsNaN(am) && !math.IsInf(am, 0) {
+			return am
+		}
+	}
+	if id := strings.ToLower(strings.TrimSpace(modelID)); id != "" {
+		if am, ok := adapterMultipliers[id]; ok && am > 0 && !math.IsNaN(am) && !math.IsInf(am, 0) {
+			return am
+		}
+	}
+	return 0
 }
 
 // findPrice 按候选匹配查定价（移植 cc-switch model_pricing_candidates），

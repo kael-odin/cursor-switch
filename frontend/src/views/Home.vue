@@ -9,6 +9,7 @@ import {
   appState,
   appViewState,
   openConfigWindow,
+  openConfigWebviewWindow,
   openModelConfigWindow,
   saveRoutingMode,
   syncHomeMetrics,
@@ -52,6 +53,14 @@ async function handleRefreshMetrics() {
 async function handleOpenConfig() {
   try {
     await openConfigWindow();
+  } catch (error) {
+    await showActionError("打开失败", toUserError(error));
+  }
+}
+
+async function handleOpenAdvancedConfig() {
+  try {
+    await openConfigWebviewWindow();
   } catch (error) {
     await showActionError("打开失败", toUserError(error));
   }
@@ -123,10 +132,11 @@ async function handleDirectModeChange(enabled) {
       <div class="flex items-center justify-between gap-4">
         <div>
           <h2 class="text-base font-medium text-white">本地配置</h2>
-          <div class="text-sm text-[#a3a3a3]">打开设置目录，或单独管理模型配置</div>
+          <div class="text-sm text-[#a3a3a3]">打开设置目录，或单独管理模型配置 / 高级配置</div>
         </div>
         <div class="center-row gap-2">
           <Button variant="default" @click="handleOpenConfig">设置文件夹</Button>
+          <Button variant="default" @click="handleOpenAdvancedConfig">高级配置</Button>
           <Button variant="primary" @click="handleOpenModelConfig">模型配置</Button>
         </div>
       </div>

@@ -36,9 +36,11 @@ func (snapshot turnUsageSnapshot) cacheUsageComplete() bool {
 }
 
 func (snapshot turnUsageSnapshot) promptTokensTotal() int64 {
-	return nonNegativeInt64(snapshot.InputTokens) +
-		nonNegativeInt64(snapshot.CacheReadTokens) +
-		nonNegativeInt64(snapshot.CacheWriteTokens)
+	// P1-3：cacheWrite（cache_creation）是本轮写缓存产生的新增缓存，并非「已占用上下文」，
+	// 不计入 UsedTokens / autoCompaction 占用判定。已占用上下文 = input + cacheRead（命中读复用的部分）。
+	// 旧实现把 cacheWrite 也算入，会高估占用 → 过早触发 autoCompaction。
+	// 注意：成本计算层不走这里（走 realTotalTokensForModel，那里 cacheWrite 仍单独按 cache 价计费），互不影响。
+	return nonNegativeInt64(snapshot.InputTokens) + nonNegativeInt64(snapshot.CacheReadTokens)
 }
 
 func (snapshot turnUsageSnapshot) requestTokensTotal() int64 {

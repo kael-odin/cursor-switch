@@ -246,7 +246,7 @@ func buildDashboardModelStats(byModel []historymetrics.UsageDashboardRawModelAgg
 	for _, m := range byModel {
 		price := findPriceForModel(pricing.Models, m.ModelID, m.ModelName)
 		multiplier := defaultMultiplier
-		if am, ok := adapterMultipliers[strings.ToLower(strings.TrimSpace(m.ModelID))]; ok && am > 0 {
+		if am := findMultiplier(adapterMultipliers, m.ModelID, m.ModelName); am > 0 {
 			multiplier = am
 		}
 		stat := UsageDashboardModelStat{
@@ -339,9 +339,10 @@ func computeDailyCost(d historymetrics.UsageDashboardRawDaily, pricing PricingSn
 	var total float64
 	anyMatched := false
 	for _, dm := range d.ByModel {
-		price := findPriceForModel(pricing.Models, dm.ModelID, nameByID[dm.ModelID])
+		modelName := nameByID[dm.ModelID]
+		price := findPriceForModel(pricing.Models, dm.ModelID, modelName)
 		multiplier := defaultMultiplier
-		if am, ok := adapterMultipliers[strings.ToLower(strings.TrimSpace(dm.ModelID))]; ok && am > 0 {
+		if am := findMultiplier(adapterMultipliers, dm.ModelID, modelName); am > 0 {
 			multiplier = am
 		}
 		input := float64(billableInputTokens(dm.InputTokens, dm.CacheReadTokens, dm.CacheWriteTokens, price.InputTokenSemantics)) / 1_000_000 * price.InputPerMillion
@@ -349,11 +350,15 @@ func computeDailyCost(d historymetrics.UsageDashboardRawDaily, pricing PricingSn
 		cacheRead := float64(dm.CacheReadTokens) / 1_000_000 * price.CacheReadPerMillion
 		cacheWrite := float64(dm.CacheWriteTokens) / 1_000_000 * price.CacheWritePerMillion
 		total += (input + output + cacheRead + cacheWrite) * multiplier
-		anyMatched = true
+		// P1-4：仅当该模型命中定价（有价目）才记 anyMatched。全部 miss（有用量但无价目）
+		// 时不应标精确——否则显示 $0.00 伪装成精确，用户误以为当天没花钱。
+		if price.InputPerMillion > 0 || price.OutputPerMillion > 0 || price.Disabled {
+			anyMatched = true
+		}
 	}
-	// by_model 存在但全部未命中定价时，仍标记为精确（按 0 计），不回退近似——
-	// 因为 token 已精确归属，只是无价目；近似反而会引入虚假成本。
-	return total, anyMatched || len(d.ByModel) > 0
+	// by_model 存在但全部未命中定价时，标记近似（CostApproximate=true）提示用户定价未配；
+	// 命中任一价目才算精确。token 仍精确归属，成本按命中的价目算（全 miss 则 0）。
+	return total, anyMatched
 }
 
 // estimateDailyCost 用全局默认倍率 + 所有已配定价的简单均价近似日成本。
@@ -399,7 +404,7 @@ func buildDashboardEvents(events []historymetrics.UsageDashboardRawEvent, pricin
 	for _, e := range events {
 		price := findPriceForModel(pricing.Models, e.ModelID, e.ModelName)
 		multiplier := defaultMultiplier
-		if am, ok := adapterMultipliers[strings.ToLower(strings.TrimSpace(e.ModelID))]; ok && am > 0 {
+		if am := findMultiplier(adapterMultipliers, e.ModelID, e.ModelName); am > 0 {
 			multiplier = am
 		}
 		inputCost := float64(billableInputTokens(e.InputTokens, e.CacheReadTokens, e.CacheWriteTokens, price.InputTokenSemantics)) / 1_000_000 * price.InputPerMillion

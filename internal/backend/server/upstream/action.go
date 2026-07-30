@@ -27,6 +27,11 @@ type CompatRouteConfig struct {
 	// CredentialOriginalCursor 恢复真实 Cursor 登录态（仅原始 HTTPS *.cursor.sh 生效），
 	// 供 marketplace / 账号 / customize 等官方控制面接口透传登录态。
 	Credential CredentialPolicy
+	// Stream 标记该路由是流式响应（SSE / Connect 流，响应体可持续数分钟）。
+	// 为 true 时，CredentialOriginalCursor 路径改用无端到端超时的流式 NoRedirect 客户端，
+	// 避免 http.Client.Timeout 在到点时把正在进行的流截断（run_sse/bidi_append 切 upstream 时必填）。
+	// 非流式控制面接口不受影响，仍用带 30s 超时的 NewHTTPClientNoRedirect。
+	Stream bool
 }
 
 func DirectAction(deps Dependencies, cfg CompatRouteConfig) server.HandlerFunc {
@@ -36,7 +41,7 @@ func DirectAction(deps Dependencies, cfg CompatRouteConfig) server.HandlerFunc {
 			return err
 		}
 		_ = route
-		_, err = ForwardToUpstream(reqCtx, ForwardOptions{Credential: cfg.Credential})
+		_, err = ForwardToUpstream(reqCtx, ForwardOptions{Credential: cfg.Credential, Stream: cfg.Stream})
 		return err
 	}
 }

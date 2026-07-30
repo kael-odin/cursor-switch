@@ -72,11 +72,14 @@ func TestRoutingTabServerBaseURLNormalized(t *testing.T) {
 	}
 }
 
-// newTestHost 构造一个指向临时配置目录的 Host，用于 F-35 并发测试。
+// newTestHost 构造一个指向临时配置目录的 Host，用于 F-35 并发测试 / Tab 凭证测试。
+// Windows 上 os.UserHomeDir() 读 USERPROFILE 而非 HOME（appdata 用它），必须同时重定向两者，
+// 否则测试配置会写进真实 ~/.cursor-local-assistant-v2/ 污染运行环境（见 appdata/migrate_test.go）。
 func newTestHost(t *testing.T) *Host {
 	t.Helper()
 	tmp := t.TempDir()
-	t.Setenv("HOME", tmp) // appdata.RootDir 从 HOME 推导
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
 	if err := appdata.EnsureAssistantHome(); err != nil {
 		t.Fatalf("EnsureAssistantHome: %v", err)
 	}

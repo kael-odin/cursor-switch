@@ -133,6 +133,7 @@ type ActiveStream struct {
 	CurrentModelCallID                          string
 	ProviderActive                              bool
 	ProviderCancel                              func()
+	ProviderContext                             context.Context // #1:供生图 goroutine 派生可取消 ctx，与 ProviderCancel 同生命周期
 	ProviderPassCount                           int
 	ToolInvocationCount                         int
 	ActorMailbox                                chan streamCommandEnvelope

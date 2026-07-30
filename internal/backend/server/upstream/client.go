@@ -100,13 +100,21 @@ func buildUpstreamRequest(reqCtx *RequestContext, body []byte, options ForwardOp
 	// 防止服务端 3xx 把 Authorization/Cookie/x-cursor-checksum 带到未校验的目标。
 	// 此前为 `if reqCtx.Deps.HTTPClient == nil` 才走 NoRedirect 分支，但 Host 在 rebuildLocked
 	// 中无条件注入了 netproxy.NewHTTPClient（会跟随重定向），导致该分支恒不可达、策略被覆盖（F-09）。
-	// 现改为：CredentialOriginalCursor 无条件走 NoRedirect，与注入与否解耦；timeout 对齐 Host 注入值。
+	// 现改为：CredentialOriginalCursor 无条件走 NoRedirect，与注入与否解耦。
+	//
+	// 流式（Stream=true，run_sse/bidi_append）须用 NewHTTPClientNoRedirectStream：http.Client.Timeout
+	// 是端到端超时（含读取响应体），30s 到点会强制 cancel 把正在进行的 SSE/Connect 流截断。
+	// 流式客户端改用 Timeout=0（无端到端超时，请求生命周期由调用方 ctx 控制）+ transport 级
+	// ResponseHeaderTimeout（仅约束首字节响应头，防挂起）。非流式控制面接口仍用带 30s 超时的版本。
 	var upstreamClient HTTPClient
-	if options.Credential == CredentialOriginalCursor {
+	switch {
+	case options.Credential == CredentialOriginalCursor && options.Stream:
+		upstreamClient = netproxy.NewHTTPClientNoRedirectStream(upstreamStreamHeaderTimeout)
+	case options.Credential == CredentialOriginalCursor:
 		upstreamClient = netproxy.NewHTTPClientNoRedirect(upstreamRedirectClientTimeout)
-	} else if reqCtx.Deps.HTTPClient != nil {
+	case reqCtx.Deps.HTTPClient != nil:
 		upstreamClient = reqCtx.Deps.HTTPClient
-	} else {
+	default:
 		upstreamClient = netproxy.NewHTTPClient(upstreamRedirectClientTimeout)
 	}
 
