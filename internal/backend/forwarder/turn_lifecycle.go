@@ -83,7 +83,7 @@ func pendingBridgeCount(stream *ActiveStream) int {
 	}
 	stream.mu.Lock()
 	defer stream.mu.Unlock()
-	return len(stream.PendingExecs) + len(stream.PendingInteractions)
+	return len(stream.PendingExecs) + len(stream.PendingInteractions) + len(stream.PendingImages)
 }
 
 func (service *Service) finishDeferredTurnAfterInteraction(stream *ActiveStream, pending runtimecore.PendingInteraction) error {

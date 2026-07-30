@@ -56,6 +56,12 @@ const openAIEndpointOptions = [
   { label: "自定义路径(请输入完整请求地址)", value: OPENAI_ENDPOINT_CUSTOM, icon: "icon-[mdi--pencil-outline]" },
 ];
 
+const roleOptions = [
+  { label: "chat — 仅聊天", value: "chat", icon: "icon-[mdi--chat-outline]" },
+  { label: "image — 仅生图", value: "image", icon: "icon-[mdi--image-edit-outline]" },
+  { label: "both — 聊天 + 生图", value: "both", icon: "icon-[mdi--image-multiple-outline]" },
+];
+
 const editorIndex = ref(-1);
 const draft = reactive(createEmptyModelAdapter());
 const errorMessage = ref("");
@@ -93,7 +99,6 @@ const maxCompletionTokensInput = createOptionalPositiveIntegerModel("maxCompleti
 const anthropicMaxTokensInput = createOptionalPositiveIntegerModel("anthropicMaxTokens");
 const contextWindowTokensInput = createOptionalPositiveIntegerModel("contextWindowTokens");
 const priorityInput = createIntegerModel("priority");
-const weightInput = createIntegerModel("weight");
 const interfacePlaceholder = computed(() =>
   draft.type === "anthropic" ? "例如：https://api.anthropic.com" : "例如：https://api.openai.com/v1",
 );
@@ -142,6 +147,9 @@ function ensureAnthropicThinkingEffort() {
 
 const fieldTips = {
   displayName: "仅用于界面展示，便于你区分不同模型。可随便起名，不影响实际请求。",
+  providerLabel: "类型是协议选择器，仅 openai/anthropic 两种。这里是使用统计展示的品牌标签，留空则回退类型。比如接 deepseek 走 openai 协议：类型=openai、标签=deepseek，使用统计就归到 deepseek 而非 openai。",
+  imageModelID: "生图时调用的模型（如 gpt-image-2），留空则回退 ModelID。GenerateImage 工具用此模型打 {baseURL}/v1/images/generations。同一 adapter 既能 chat（ModelID）又能生图（Image 模型）——比如 gpt-5.6-sol adapter 填 imageModelID=gpt-image-2 即可生图。",
+  role: "用途：chat=仅聊天（ModelID 必填）；image=仅生图（Image 模型必填，ModelID 可空——独立生图 adapter，不参与聊天路由）；both=既能聊天又能生图（ModelID 与 Image 模型各自必填）。填错位置生图会失败——生图模型请填到「Image 模型」而非 ModelID。",
   modelID: "请求实际发送给服务端的模型名称，必须和 provider 上一致，例如 gpt-4.1 或 claude-sonnet。点上方「获取模型列表」可直接拉取可选值。",
   baseURL: "模型服务的 API 根地址，通常为兼容 OpenAI 或 Anthropic 的接口入口。例如 https://api.openai.com 或 https://api.anthropic.com。",
   apiKey: "调用该模型服务需要使用的访问密钥（形如 sk-xxx）。仅存在本地，不会上传。",
@@ -156,7 +164,6 @@ const fieldTips = {
   anthropicThinkingEffort: "Anthropic adaptive thinking 的思考强度。请求会固定使用新版 thinking.type=adaptive。越高模型「想」得越久，回答质量通常更好但更慢。",
   tooltipData: "模型列表 hover 时显示的备注说明，写给自己看的备忘。",
   priority: "故障转移候选链的排序优先级：数字小的优先。同 modelID 的多个 enabled 适配器按 Priority 升序组成主→备候选链，主候选失败（连接错误/5xx/429/流超时）且尚未输出内容时自动切到下一个。默认 0。",
-  weight: "预留给 WeightedRoundRobin 轮转策略的字段，本期 Failover 策略不使用。默认 0。",
   enabled: "关闭后该适配器保留配置但不参与路由（不进候选链）。可用于临时摘除某个 provider 而不删除其配置。",
 };
 
@@ -484,6 +491,19 @@ onMounted(async () => {
         <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
           <label class="flex flex-col gap-1">
             <span class="center-row justify-start gap-1.5 text-sm text-[#d4d4d4]">
+              <Tooltip :content="fieldTips.providerLabel" />
+              <span>Provider 标签</span>
+            </span>
+            <input
+              v-model="draft.providerLabel"
+              type="text"
+              placeholder="deepseek / qwen / glm（留空则用类型）"
+              class="h-9 rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
+            />
+          </label>
+
+          <label class="flex flex-col gap-1">
+            <span class="center-row justify-start gap-1.5 text-sm text-[#d4d4d4]">
               <Tooltip :content="fieldTips.displayName" />
               <span>显示名称</span>
             </span>
@@ -516,6 +536,30 @@ onMounted(async () => {
                 {{ fetchModelsLoading ? "获取中…" : "获取模型列表" }}
               </Button>
             </div>
+          </label>
+
+          <label class="flex flex-col gap-1">
+            <span class="center-row justify-start gap-1.5 text-sm text-[#d4d4d4]">
+              <Tooltip :content="fieldTips.imageModelID" />
+              <span>Image 模型</span>
+            </span>
+            <input
+              v-model="draft.imageModelID"
+              type="text"
+              placeholder="gpt-image-2（留空则用 ModelID）"
+              class="h-9 rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
+            />
+          </label>
+
+          <label class="flex flex-col gap-1">
+            <span class="center-row justify-start gap-1.5 text-sm text-[#d4d4d4]">
+              <Tooltip :content="fieldTips.role" />
+              <span>用途 (Role)</span>
+            </span>
+            <Select
+              v-model="draft.role"
+              :options="roleOptions"
+            />
           </label>
 
           <div
@@ -848,19 +892,6 @@ onMounted(async () => {
                 type="text"
                 inputmode="numeric"
                 placeholder="0（数字小的优先）"
-                class="h-9 rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
-              />
-            </label>
-            <label class="flex flex-col gap-1">
-              <span class="center-row justify-start gap-1.5 text-sm text-[#d4d4d4]">
-                <Tooltip :content="fieldTips.weight" />
-                <span>权重（预留）</span>
-              </span>
-              <input
-                v-model="weightInput"
-                type="text"
-                inputmode="numeric"
-                placeholder="0（轮转策略预留）"
                 class="h-9 rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
               />
             </label>

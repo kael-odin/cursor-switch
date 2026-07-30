@@ -1,9 +1,11 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
 import { useRouter } from "vue-router";
 import Button from "@/components/ui/Button.vue";
 import EChart from "@/components/charts/EChart.vue";
-import { getUsageDashboard } from "@/services/clientApi";
+import { getUsageDashboard, resetUsageStats } from "@/services/clientApi";
+import { showModal } from "@/composables/useModal";
+import { toUserError } from "@/state/appState";
 
 const router = useRouter();
 function backHome() {
@@ -16,6 +18,10 @@ const errorMsg = ref("");
 const autoRefresh = ref(true);
 const refreshInterval = ref(30); // 秒
 let timer = null;
+// 错误退避：连续失败时把轮询间隔放大到 3×，避免不可见时无意义高频打后端；成功后归位。
+// 与 visibilitychange 暂停叠加：隐藏时不轮询，可见时若一直失败则退避降频。
+let backoffMultiplier = 1;
+let visibilityHandler = null;
 
 // 日期范围：today / 7d / 30d / all。作用于趋势图与请求日志。
 const dateRange = ref("all");
@@ -25,31 +31,84 @@ const eventPageSize = 20;
 
 async function refresh() {
   loading.value = true;
-  errorMsg.value = "";
   try {
     dashboard.value = await getUsageDashboard();
+    errorMsg.value = "";
+    backoffMultiplier = 1; // 成功，退避归位
   } catch (e) {
     errorMsg.value = `加载统计失败: ${e?.message ?? e}`;
+    backoffMultiplier = 3; // 失败，下次轮询降频到 3×
   } finally {
     loading.value = false;
+  }
+}
+
+// 清零统计：双重确认（先确认是否清零，再确认知道不可逆）后调用后端 ResetUsageStats。
+// 重置成功后立即重新拉取 dashboard 刷新界面（全部归零）。
+const resetting = ref(false);
+async function handleResetStats() {
+  if (resetting.value) return;
+  const ok = await showModal({
+    title: "清零使用统计",
+    content:
+      "将永久删除所有累计的使用统计：总成本、token 消耗、请求日志、模型与 Provider 聚合全部清零。\n此操作不可撤销，无法恢复。\n\n确认要清零吗？",
+    confirmText: "确认清零",
+    cancelText: "取消",
+  });
+  if (!ok) return;
+  resetting.value = true;
+  try {
+    await resetUsageStats();
+    await refresh();
+    await showModal({
+      title: "已完成",
+      content: "使用统计已清零。",
+      showCancel: false,
+    });
+  } catch (e) {
+    await showModal({
+      title: "清零失败",
+      content: toUserError(e),
+      showCancel: false,
+    });
+  } finally {
+    resetting.value = false;
   }
 }
 
 onMounted(async () => {
   await refresh();
   startTimer();
+  // P2-8 同款：窗口隐藏（最小化到托盘等）时暂停后台轮询，避免不可见的 Wails RPC；
+  // 重新可见时立即同步一次再恢复轮询——与 MainLayout proxyState 轮询一致。
+  if (typeof document !== "undefined") {
+    visibilityHandler = () => {
+      if (document.hidden) {
+        stopTimer();
+      } else {
+        void refresh().catch(() => {});
+        startTimer();
+      }
+    };
+    document.addEventListener("visibilitychange", visibilityHandler);
+  }
 });
 
-// N-37: 路由切走时清理 setInterval，避免向已卸载组件赋值与不可见轮询。
+// N-37: 路由切走时清理 setInterval + visibilitychange，避免向已卸载组件赋值与不可见轮询。
 // 参照 ModelConfig.vue 的 onBeforeUnmount(stopBatchTesting) 模式。
 onBeforeUnmount(() => {
   stopTimer();
+  if (visibilityHandler && typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", visibilityHandler);
+    visibilityHandler = null;
+  }
 });
 
 function startTimer() {
   stopTimer();
   if (!autoRefresh.value) return;
-  const ms = Math.max(5, Number(refreshInterval.value) || 30) * 1000;
+  const base = Math.max(5, Number(refreshInterval.value) || 30) * 1000;
+  const ms = base * backoffMultiplier;
   timer = window.setInterval(refresh, ms);
 }
 function stopTimer() {
@@ -59,6 +118,7 @@ function stopTimer() {
   }
 }
 function onIntervalChange() {
+  backoffMultiplier = 1; // 用户手动改了间隔，重置退避
   startTimer();
 }
 function toggleAutoRefresh() {
@@ -131,6 +191,13 @@ function goEventPage(delta) {
   if (next < 1 || next > eventTotalPages.value) return;
   eventPage.value = next;
 }
+
+// 日期范围收窄导致总页数缩小时，把当前页夹回合法区间，避免空白页。
+watchEffect(() => {
+  if (eventPage.value > eventTotalPages.value) {
+    eventPage.value = eventTotalPages.value;
+  }
+});
 
 function fmtNum(n) {
   const v = Number(n) || 0;
@@ -250,6 +317,15 @@ function seriesArea(name, data, color) {
           <Button variant="text" :disabled="loading" @click="refresh">
             {{ loading ? "刷新中…" : "刷新" }}
           </Button>
+          <Button
+            variant="text"
+            class="!text-red-400 hover:!text-red-300"
+            :disabled="resetting || loading"
+            :title="'清零所有累计使用统计（不可恢复）'"
+            @click="handleResetStats"
+          >
+            {{ resetting ? "清零中…" : "清零统计" }}
+          </Button>
         </div>
       </div>
 
@@ -340,7 +416,7 @@ function seriesArea(name, data, color) {
         </p>
         <div v-if="!byModel.length" class="py-4 text-center text-[#737373]">暂无数据</div>
         <div v-else class="overflow-x-auto rounded-lg border border-[#2a2a2a]">
-          <table class="w-full text-xs">
+          <table class="w-full text-xs" aria-label="模型统计">
             <thead class="bg-[#222] text-[#a3a3a3]">
               <tr>
                 <th class="px-3 py-2 text-left font-medium">模型</th>
@@ -376,7 +452,7 @@ function seriesArea(name, data, color) {
         <h2 class="mb-3 text-base font-medium text-[#e5e5e5]">Provider 统计</h2>
         <div v-if="!byProvider.length" class="py-4 text-center text-[#737373]">暂无数据</div>
         <div v-else class="overflow-x-auto rounded-lg border border-[#2a2a2a]">
-          <table class="w-full text-xs">
+          <table class="w-full text-xs" aria-label="Provider 统计">
             <thead class="bg-[#222] text-[#a3a3a3]">
               <tr>
                 <th class="px-3 py-2 text-left font-medium">Provider</th>
@@ -412,7 +488,7 @@ function seriesArea(name, data, color) {
         <div v-if="!recentEvents.length" class="py-4 text-center text-[#737373]">该范围内暂无数据</div>
         <div v-else>
           <div class="max-h-96 overflow-y-auto rounded-lg border border-[#2a2a2a]">
-            <table class="w-full text-xs">
+            <table class="w-full text-xs" aria-label="请求日志">
               <thead class="sticky top-0 bg-[#222] text-[#a3a3a3]">
                 <tr>
                   <th class="px-3 py-2 text-left font-medium">时间</th>
@@ -451,7 +527,7 @@ function seriesArea(name, data, color) {
           </div>
           <!-- 分页 -->
           <div class="mt-2 flex items-center justify-between text-xs text-[#737373]">
-            <span>每页 {{ eventPageSize }} 条，第 {{ eventPage }} / {{ eventTotalPages }} 页</span>
+            <span>共 {{ recentEvents.length }} 条，每页 {{ eventPageSize }} 条，第 {{ eventPage }} / {{ eventTotalPages }} 页</span>
             <div class="flex items-center gap-2">
               <button
                 class="rounded border border-[#3f3f3f] px-2 py-0.5 disabled:opacity-40"

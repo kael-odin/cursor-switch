@@ -28,6 +28,7 @@ const APP_STATE_STORAGE_KEY = "cursor-switch:runtime-state:v2";
 const GENERIC_SERVICE_ERROR = "服务错误";
 const SUPPORTED_MODEL_ADAPTER_TYPES = new Set(["openai", "anthropic"]);
 const SUPPORTED_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const ADAPTER_ROLES = new Set(["chat", "image", "both"]);
 const SUPPORTED_ANTHROPIC_THINKING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 export const ANTHROPIC_THINKING_EFFORT_DEFAULT = "xhigh";
 export const OPENAI_ENDPOINT_RESPONSES = "/v1/responses";
@@ -363,10 +364,13 @@ export function createEmptyModelAdapter() {
     id: "",
     displayName: "",
     type: "openai",
+    providerLabel: "",
     baseURL: "",
     apiKey: "",
     tooltipData: "备注",
     modelID: "",
+    imageModelID: "",
+    role: "chat",
     reasoningEffort: "medium",
     openAIEndpoint: OPENAI_ENDPOINT_RESPONSES,
     openAIExtraParamsEnabled: false,
@@ -469,14 +473,19 @@ export function normalizeModelAdapter(source) {
   const anthropicExtraParamsJSON = normalizedType === "anthropic"
     ? asString(raw.anthropicExtraParamsJSON ?? raw.anthropic_extra_params_json) || EXTRA_PARAMS_DEFAULT_JSON
     : "";
+  const normalizedRole = asString(raw.role).toLowerCase();
+  const role = ADAPTER_ROLES.has(normalizedRole) ? normalizedRole : "chat";
   return {
     id: asString(raw.id),
     displayName: asString(raw.displayName || raw.name),
     type: SUPPORTED_MODEL_ADAPTER_TYPES.has(normalizedType) ? normalizedType : "",
+    providerLabel: asString(raw.providerLabel),
     baseURL: normalizeBaseURL(raw.baseURL || raw.url),
     apiKey: asString(raw.apiKey || raw.key),
     tooltipData: asString(raw.tooltipData),
     modelID: asString(raw.modelID),
+    imageModelID: asString(raw.imageModelID),
+    role,
     reasoningEffort: SUPPORTED_REASONING_EFFORTS.has(normalizedReasoningEffort)
       ? normalizedReasoningEffort
       : "medium",
@@ -538,8 +547,23 @@ export function validateModelAdapters(source) {
     if (!adapter.tooltipData) {
       return `${prefix} 的悬停提示不能为空`;
     }
-    if (!adapter.modelID) {
-      return `${prefix} 的模型标识不能为空`;
+    // Role 感知的模型标识校验，与后端 normalizeAdapterRole/types.go:227 对齐：
+    //   chat  → ModelID 必填；
+    //   image → ModelID 可空（后端兜底成 ImageModelID），但 ImageModelID 必填（纯生图 adapter）；
+    //   both  → ModelID 与 ImageModelID 各自必填。
+    // 否则纯 image adapter（只填 imageModelID）会被前端拦死，与后端能力矛盾。
+    const role = adapter.role || "chat";
+    if (role === "image") {
+      if (!adapter.imageModelID) {
+        return `${prefix} 的用途为「仅生图」时，Image 模型不能为空`;
+      }
+    } else {
+      if (!adapter.modelID) {
+        return `${prefix} 的模型标识不能为空`;
+      }
+      if (role === "both" && !adapter.imageModelID) {
+        return `${prefix} 的用途为「聊天 + 生图」时，Image 模型不能为空`;
+      }
     }
     if (adapter.type === "openai" && !SUPPORTED_REASONING_EFFORTS.has(adapter.reasoningEffort)) {
       return `${prefix} 的推理强度仅支持 low、medium、high、xhigh、max`;
@@ -622,6 +646,8 @@ function createEmptyHomeMetrics() {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     cacheHitRate: null,
+    estimatedCostUSD: null,
+    costByModel: [],
   };
 }
 
@@ -694,6 +720,12 @@ function asNullableRate(value) {
 function normalizeHomeMetrics(source) {
   const raw = source && typeof source === "object" ? source : {};
   const providerCallsTotal = asPositiveInteger(raw.providerCallsTotal ?? raw.turnsTotal);
+  // estimatedCostUSD / costByModel：后端 GetHomeMetricsSummary 已按模型 findPrice 匹配真实价算好。
+  // 旧实现在此丢弃这两个字段，导致首屏「价值估算」卡拿不到后端真值而归零。这里透传。
+  const estimatedCostUSD =
+    typeof raw.estimatedCostUSD === "number" && Number.isFinite(raw.estimatedCostUSD)
+      ? raw.estimatedCostUSD
+      : null;
   return {
     turnsTotal: providerCallsTotal,
     validTurnsTotal: providerCallsTotal,
@@ -703,6 +735,8 @@ function normalizeHomeMetrics(source) {
     cacheReadTokens: asPositiveInteger(raw.cacheReadTokens),
     cacheWriteTokens: asPositiveInteger(raw.cacheWriteTokens),
     cacheHitRate: asNullableRate(raw.cacheHitRate),
+    estimatedCostUSD,
+    costByModel: Array.isArray(raw.costByModel) ? raw.costByModel : [],
   };
 }
 

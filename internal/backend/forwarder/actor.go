@@ -53,6 +53,7 @@ const (
 	streamCommandExecResult        streamCommandKind = "exec_result"
 	streamCommandExecControl       streamCommandKind = "exec_control"
 	streamCommandInteractionResult streamCommandKind = "interaction_result"
+	streamCommandImageResult       streamCommandKind = "image_result"
 	streamCommandProviderEvent     streamCommandKind = "provider_event"
 	streamCommandTimerFired        streamCommandKind = "timer_fired"
 	streamCommandCompactionEvent   streamCommandKind = "compaction_event"
@@ -120,6 +121,8 @@ func commandKindForIntent(intent InboundIntent) (streamCommandKind, error) {
 		return streamCommandExecControl, nil
 	case "interaction_result":
 		return streamCommandInteractionResult, nil
+	case "image_result":
+		return streamCommandImageResult, nil
 	default:
 		return "", fmt.Errorf("unsupported inbound intent: %s", intent.Kind)
 	}
@@ -325,6 +328,8 @@ func (service *Service) handleStreamCommand(stream *ActiveStream, command stream
 		return service.handleExecControl(command.Intent)
 	case streamCommandInteractionResult:
 		return service.handleInteractionResult(command.Intent)
+	case streamCommandImageResult:
+		return service.handleImageResult(command.Intent)
 	case streamCommandProviderEvent:
 		return service.handleProviderEvent(stream, command.Provider)
 	case streamCommandTimerFired:

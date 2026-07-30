@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -25,6 +26,21 @@ type ModelAdapterConfig struct {
 	ID                          string `json:"id,omitempty" yaml:"-"`
 	DisplayName                 string `json:"displayName" yaml:"displayName"`
 	Type                        string `json:"type" yaml:"type"`
+	// ProviderLabel 是该适配器在使用统计里展示的 provider 标签（如 deepseek/qwen/glm）。
+	// 空则回退到 Type（openai/anthropic）。type 是协议选择器（wire 协议），label 是品牌标签，
+	// 二者独立——接 deepseek 走 openai 协议时 type=openai、providerLabel=deepseek，
+	// 使用统计的 by-provider 表按 label 归类而非全归到 openai。
+	ProviderLabel               string `json:"providerLabel,omitempty" yaml:"providerLabel,omitempty"`
+	// ImageModelID 是该适配器用于图像生成的模型标识（如 gpt-image-2）。
+	// 空则回退 ModelID。GenerateImage 工具调用时用此模型打 {baseURL}/v1/images/generations。
+	// 与 ModelID（chat 模型）独立——同一 adapter 既能 chat（ModelID）又能生图（ImageModelID）。
+	ImageModelID                string `json:"imageModelID,omitempty" yaml:"imageModelID,omitempty"`
+	// Role 标识该 adapter 用途：chat（仅聊天，默认）、image（仅生图）、both（既能 chat 又能生图）。
+	// Role==image 的 adapter 可独立配置（不依赖任何 chat adapter 的 ModelID 命中）——
+	// resolveImageChannel 找不到挂了 ImageModelID 的 chat adapter 时，按 Role==image/both 兜底取它。
+	// 为兼容旧配置，Role==image 且 ModelID 为空但 ImageModelID 非空时，normalize 把 ModelID 兜底成 ImageModelID，
+	// 绕过 ModelID 必填校验；否则 Role 默认 chat，ModelID 必填（现状不变）。
+	Role                        string `json:"role,omitempty" yaml:"role,omitempty"`
 	BaseURL                     string `json:"baseURL" yaml:"baseURL"`
 	APIKey                      string `json:"apiKey" yaml:"apiKey"`
 	TooltipData                 string `json:"tooltipData" yaml:"tooltipData"`
@@ -142,7 +158,10 @@ func NormalizeConfig(input Config) (Config, error) {
 	if output.Routing.Mode == "" {
 		output.Routing.Mode = DefaultRoutingMode
 	}
-	output.Routing.TabServerBaseURL = strings.TrimSpace(input.Routing.TabServerBaseURL)
+	output.Routing.TabServerBaseURL, err = normalizeTabServerBaseURL(input.Routing.TabServerBaseURL)
+	if err != nil {
+		return Config{}, err
+	}
 	output.Routing.PerNamespace = normalizePerNamespace(input.Routing.PerNamespace)
 	output.WebTools = normalizeWebToolsConfig(input.WebTools)
 	adapters, err := NormalizeModelAdapterConfigs(input.ModelAdapters)
@@ -169,6 +188,9 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 		next := ModelAdapterConfig{
 			DisplayName:          strings.TrimSpace(item.DisplayName),
 			Type:                 nextType,
+			ProviderLabel:        strings.TrimSpace(item.ProviderLabel),
+			ImageModelID:         strings.TrimSpace(item.ImageModelID),
+			Role:                 normalizeAdapterRole(item.Role),
 			BaseURL:              baseURL,
 			APIKey:               strings.TrimSpace(item.APIKey),
 			TooltipData:          strings.TrimSpace(item.TooltipData),
@@ -200,6 +222,11 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 			next.Enabled = item.Enabled
 		}
 		next.Weight = item.Weight
+		// 纯 image adapter（Role==image 且 ModelID 空）允许用 ImageModelID 兜底 ModelID，
+		// 绕过 ModelID 必填——这类 adapter 只服务生图，不参与 chat 路由。
+		if next.Role == "image" && strings.TrimSpace(next.ModelID) == "" && strings.TrimSpace(next.ImageModelID) != "" {
+			next.ModelID = strings.TrimSpace(next.ImageModelID)
+		}
 		switch {
 		case next.DisplayName == "":
 			return nil, errors.New("模型适配器 displayName 不能为空")
@@ -209,6 +236,8 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 			return nil, errors.New("模型适配器 apiKey 不能为空")
 		case next.TooltipData == "":
 			return nil, errors.New("模型适配器 tooltipData 不能为空")
+		case next.Role == "image" && strings.TrimSpace(next.ImageModelID) == "":
+			return nil, errors.New("role=image 的模型适配器 imageModelID 不能为空")
 		case next.ModelID == "":
 			return nil, errors.New("模型适配器 modelID 不能为空")
 		case next.Type == "openai" && next.ReasoningEffort == "":
@@ -437,6 +466,20 @@ func normalizeModelAdapterType(value string) string {
 	}
 }
 
+// normalizeAdapterRole 限定 adapter Role 为 chat/image/both，空/非法默认 chat（现状行为）。
+// chat：仅聊天（ModelID 必填）；image：仅生图（ImageModelID 必填，ModelID 可空→兜底成 ImageModelID）；
+// both：既能 chat 又能生图（ModelID 与 ImageModelID 各自必填）。
+func normalizeAdapterRole(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "image":
+		return "image"
+	case "both":
+		return "both"
+	default:
+		return "chat"
+	}
+}
+
 func normalizeRoutingMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "local":
@@ -509,4 +552,26 @@ func normalizeWebToolsConfig(input WebToolsConfig) WebToolsConfig {
 		WebSearchAPIKey:       strings.TrimSpace(input.WebSearchAPIKey),
 		WebFetchHostAllowlist: allowlist,
 	}
+}
+
+// normalizeTabServerBaseURL 归一 Tab 服务端 URL：去空白，空则放行（表示用内置默认）。
+// 非空时必须能 url.Parse 且 scheme 为 http/https、host 非空——否则报错让用户修正，
+// 不静默清空（静默清空会让错配的 tab 服务对前端表现为“用了默认”，难排查）。
+func normalizeTabServerBaseURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("tabServerBaseURL 无效: %w", err)
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", fmt.Errorf("tabServerBaseURL 必须以 http:// 或 https:// 开头，得到 %q", trimmed)
+	}
+	if strings.TrimSpace(parsed.Host) == "" {
+		return "", fmt.Errorf("tabServerBaseURL 缺少 host: %q", trimmed)
+	}
+	return trimmed, nil
 }

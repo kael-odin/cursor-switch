@@ -71,6 +71,9 @@ func (broker *StreamBroker) OpenStream(requestID string, conversationID string, 
 		if existing.PendingInteractions == nil {
 			existing.PendingInteractions = make(map[string]runtimecore.PendingInteraction)
 		}
+		if existing.PendingImages == nil {
+			existing.PendingImages = make(map[string]pendingImage)
+		}
 		if existing.PartialToolCallIDs == nil {
 			existing.PartialToolCallIDs = make(map[string]struct{})
 		}
@@ -107,6 +110,7 @@ func (broker *StreamBroker) OpenStream(requestID string, conversationID string, 
 		Subscribers:                 make(map[string]*StreamSubscriber),
 		PendingExecs:                make(map[string]runtimecore.PendingExec),
 		PendingInteractions:         make(map[string]runtimecore.PendingInteraction),
+		PendingImages:               make(map[string]pendingImage),
 		PartialToolCallIDs:          make(map[string]struct{}),
 		PatchEditQueues:             make(map[string][]queuedPatchEditOperation),
 		MCPToolServers:              make(map[string]string),

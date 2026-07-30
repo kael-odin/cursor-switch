@@ -162,6 +162,11 @@ type ActiveStream struct {
 	CheckpointConversation      *ConversationFile
 	PendingExecs                map[string]runtimecore.PendingExec
 	PendingInteractions         map[string]runtimecore.PendingInteraction
+	PendingImages               map[string]pendingImage
+	// CurrentTurnSelectedImages 是本轮用户上传图的 inline data 快照（图生图无 reference_image_paths 时直取，
+	// 守 F-30 不落盘）。在 handleRunIntent 入站、normalizeUserMessageForStorage 之前从 UserMessage 提取，
+	// 供后续 handleGenerateImageToolInvocation 直接取用。仅反映本轮；跨轮引用走 reference_image_paths。
+	CurrentTurnSelectedImages   []imageReference
 	PartialToolCallIDs          map[string]struct{}
 	PatchEditQueues             map[string][]queuedPatchEditOperation
 	MCPToolServers              map[string]string
@@ -417,9 +422,38 @@ type InboundIntent struct {
 	ExecClientControlMessage *agentv1.ExecClientControlMessage
 	InteractionResponse      *agentv1.InteractionResponse
 	KVClientMessage          *agentv1.KvClientMessage
+	ImageResult              *imageResultPayload
 	CancelReason             string
 	IgnoredReason            string
 	Prewarm                  bool
+}
+
+// pendingImage 是一次异步生图在 stream actor 上登记的上下文，供生图 goroutine 回投后还原 tool_result。
+// 与 PendingExecs/PendingInteractions 同构：actor 派 goroutine 后立即返回，goroutine 跑完生图
+// 通过 dispatchInboundIntent({Kind:"image_result"}) 把结果回投到 mailbox，由 actor 串行处理。
+// 不经过 exec/interaction 桥——image gen 无客户端 round-trip，是「actor 派 goroutine → 直接回投」的最简形态。
+type pendingImage struct {
+	ImageID                  string // 回投 key（用 invocation.ToolCallID 派生，唯一即可）
+	ToolCallID               string
+	ToolName                 string // "GenerateImage"
+	ModelCallID              string
+	ArgsJSON                 []byte // 已 sanitize 的历史 args（encodeGenerateImageArgsForHistory）
+	ReasoningContent         string
+	ReasoningSignature       string
+	ReasoningSignatureSource string
+	FilePath                 string // carrier.FilePath，成功时回传
+	ProviderPass             int
+	OpenedAt                 time.Time
+}
+
+// imageResultPayload 是生图 goroutine 回投给 actor 的结果。成功时 ImageData 非空（base64，无 data: 前缀）；
+// 失败时 Err 非空（友好错误）。actor 侧 handleImageResult 据此重建 tool_call 并走 5 步尾。
+type imageResultPayload struct {
+	ImageID    string
+	ToolCallID string
+	FilePath   string
+	ImageData  string
+	Err        string
 }
 
 // normalizeMode 对外部传入的 mode 做最小归一化，但不再静默降级。

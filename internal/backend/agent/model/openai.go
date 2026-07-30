@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -532,7 +533,7 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 		return sink(ModelEvent{
 			Kind:              ModelEventKindTurnFinished,
 			OccurredAt:        time.Now().UTC(),
-			Provider:          "openai",
+			Provider:          effectiveProvider(req),
 			Model:             currentModel,
 			InputTokens:       inputTokens,
 			OutputTokens:      outputTokens,
@@ -700,6 +701,15 @@ func (adapter *OpenAIAdapter) streamChatCompletions(ctx context.Context, req Str
 
 		var chunk openAIChunk
 		if err := json.Unmarshal([]byte(payloadLine), &chunk); err != nil {
+			// 上游（部分第三方中转/gpt-5.6-terra 实测）流式中途 TCP reset 会留下一条残缺的
+			// data: JSON 行，bufio.Scanner 把它当最后一行交上来，Unmarshal 报 unexpected end
+			// of JSON input。若此时已向下游发过有效事件（emittedAny），按 P1-2 同语义：视作
+			// 流提前 EOF，跳过残缺行、走下面 flush+正常收尾，避免把整轮（含图生图尚未调用的工具）
+			// 一起 fail 掉。零事件时仍 fail（保留 F-20 截断判定 + failover 能力）。
+			if emittedAny {
+				log.Printf("openai chat stream: skipping malformed tail payload after emitted content (err=%v) req=%s", err, req.RequestID)
+				break
+			}
 			return fail(err)
 		}
 		if strings.TrimSpace(chunk.Type) == "error" || chunk.Error != nil {
@@ -1075,7 +1085,7 @@ func (adapter *OpenAIAdapter) streamResponses(ctx context.Context, req StreamReq
 		return sink(ModelEvent{
 			Kind:              ModelEventKindTurnFinished,
 			OccurredAt:        time.Now().UTC(),
-			Provider:          "openai",
+			Provider:          effectiveProvider(req),
 			Model:             currentModel,
 			InputTokens:       inputTokens,
 			OutputTokens:      outputTokens,
@@ -1439,6 +1449,14 @@ func (adapter *OpenAIAdapter) streamResponses(ctx context.Context, req StreamReq
 
 		var event openAIResponsesStreamEvent
 		if err := json.Unmarshal([]byte(payloadLine), &event); err != nil {
+			// 同 chat stream 的残缺尾行容错：上游 TCP reset 留下半截 data: JSON，
+			// 已发过有效 text/tool 事件时视作提前 EOF，跳过残缺行走 flush+正常收尾，
+			// 不让一次 JSON 解析失败杀掉整轮（图生图实测场景：gpt-5.6-terra 流 4min 后 reset）。
+			// 零事件仍 fail（保留 F-20 截断判定 + failover）。
+			if emittedText || emittedToolInvocation {
+				log.Printf("openai responses stream: skipping malformed tail payload after emitted content (err=%v) req=%s", err, req.RequestID)
+				break
+			}
 			return fail(err)
 		}
 		if event.Response != nil {

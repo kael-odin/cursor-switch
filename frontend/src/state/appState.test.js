@@ -30,6 +30,7 @@ const {
   normalizeModelAdapter,
   normalizeModelAdapters,
   normalizeConfig,
+  validateModelAdapters,
   ANTHROPIC_THINKING_EFFORT_DEFAULT,
   OPENAI_ENDPOINT_RESPONSES,
 } = await import("@/state/appState");
@@ -157,5 +158,39 @@ describe("normalizeConfig", () => {
     // modelAdapters 的 baseURL 已归一（去尾斜杠），二次归一应稳定。
     expect(twice.modelAdapters[0].baseURL).toBe("https://a.com");
     expect(twice.routing).toEqual(once.routing);
+  });
+});
+
+// validateModelAdapters 的 Role 感知校验——与后端 normalizeAdapterRole/types.go:227 对齐。
+// 纯 image adapter（只填 imageModelID）必须能保存，不能被前端拦死。
+describe("validateModelAdapters (role-aware)", () => {
+  const base = {
+    displayName: "X",
+    type: "openai",
+    baseURL: "https://a.com",
+    apiKey: "sk",
+    tooltipData: "t",
+    openAIEndpoint: "/v1/responses",
+  };
+
+  it("chat 角色：ModelID 必填", () => {
+    const err = validateModelAdapters([{ ...base, role: "chat", modelID: "", imageModelID: "" }]);
+    expect(err).toMatch(/模型标识不能为空/);
+  });
+
+  it("image 角色：ModelID 可空，但 Image 模型必填（纯生图 adapter 能存下来）", () => {
+    expect(validateModelAdapters([{ ...base, role: "image", modelID: "", imageModelID: "gpt-image-2" }])).toBe("");
+    const err = validateModelAdapters([{ ...base, role: "image", modelID: "", imageModelID: "" }]);
+    expect(err).toMatch(/Image 模型不能为空/);
+  });
+
+  it("both 角色：ModelID 与 Image 模型各自必填", () => {
+    expect(validateModelAdapters([{ ...base, role: "both", modelID: "gpt-5", imageModelID: "gpt-image-2" }])).toBe("");
+    expect(
+      validateModelAdapters([{ ...base, role: "both", modelID: "gpt-5", imageModelID: "" }]),
+    ).toMatch(/Image 模型不能为空/);
+    expect(
+      validateModelAdapters([{ ...base, role: "both", modelID: "", imageModelID: "gpt-image-2" }]),
+    ).toMatch(/模型标识不能为空/);
   });
 });

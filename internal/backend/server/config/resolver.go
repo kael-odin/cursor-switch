@@ -89,6 +89,46 @@ func resolveModelAdapterChannels(adapters []ModelAdapterConfig, requestedModel s
 	return channels, nil
 }
 
+// resolveImageAdapterChannels 是 SelectChannelForImage 的纯函数核心：筛 Role==image||both 且 enabled 的
+// adapter，按 Priority 升序稳定排序，取首个构造 ResolvedChannel。供 resolveImageChannel 兜底命中独立 image adapter。
+func resolveImageAdapterChannels(adapters []ModelAdapterConfig) (*legacyruntime.ResolvedChannel, error) {
+	type indexed struct {
+		idx      int
+		priority int
+	}
+	enabled := make([]indexed, 0, len(adapters))
+	for i, adapter := range adapters {
+		if adapter.Enabled != nil && !*adapter.Enabled {
+			continue
+		}
+		role := strings.TrimSpace(adapter.Role)
+		if role != "image" && role != "both" {
+			continue
+		}
+		enabled = append(enabled, indexed{idx: i, priority: adapter.Priority})
+	}
+	if len(enabled) == 0 {
+		return nil, legacyruntime.ErrChannelNotAvailable
+	}
+	sort.SliceStable(enabled, func(i, j int) bool {
+		return enabled[i].priority < enabled[j].priority
+	})
+	return buildResolvedChannel(adapters[enabled[0].idx]), nil
+}
+
+// SelectChannelForImage 返回全局 image adapter（Role==image/both，按 Priority 升序取首个 enabled）。
+// 供 resolveImageChannel 在未命中挂 ImageModelID 的 chat adapter 时兜底——让纯 image adapter 独立服务生图。
+func (manager *Manager) SelectChannelForImage(_ context.Context) (*legacyruntime.ResolvedChannel, error) {
+	if manager == nil {
+		return nil, legacyruntime.ErrChannelNotAvailable
+	}
+	adapters, err := NormalizeModelAdapterConfigs(manager.Current().ModelAdapters)
+	if err != nil {
+		return nil, err
+	}
+	return resolveImageAdapterChannels(adapters)
+}
+
 // buildResolvedChannel 把单个 ModelAdapterConfig 构造为 ResolvedChannel（resolver 与 FixedChannelService 共享语义）。
 func buildResolvedChannel(matched ModelAdapterConfig) *legacyruntime.ResolvedChannel {
 	resolved := &legacyruntime.ResolvedChannel{
@@ -97,6 +137,9 @@ func buildResolvedChannel(matched ModelAdapterConfig) *legacyruntime.ResolvedCha
 		GroupName:                   "local",
 		Code:                        strings.TrimSpace(matched.ID),
 		Provider:                    strings.TrimSpace(matched.Type),
+		ProviderLabel:               strings.TrimSpace(matched.ProviderLabel),
+		ImageModelID:                strings.TrimSpace(matched.ImageModelID),
+		Role:                        strings.TrimSpace(matched.Role),
 		BaseURL:                     strings.TrimSpace(matched.BaseURL),
 		APIKey:                      strings.TrimSpace(matched.APIKey),
 		Model:                       strings.TrimSpace(matched.ModelID),

@@ -3,9 +3,8 @@ import CacheHitRateChart from "@/components/charts/CacheHitRateChart.vue";
 import Switch from "@/components/ui/Switch.vue";
 import Tooltip from "@/components/ui/Tooltip.vue";
 import { appState, saveIncludeCacheWriteInHitRate } from "@/state/appState";
-import { getTokenPricing } from "@/services/clientApi";
 import { formatCompactInteger, formatInteger } from "@/utils/numberFormat";
-import { computed, onMounted, ref } from "vue";
+import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 
 const emit = defineEmits(["refresh"]);
@@ -20,25 +19,10 @@ function goToUsageDashboard() {
   router.push("/usage-dashboard");
 }
 
-// 定价从后端 MetricsService.GetTokenPricing 获取；首次渲染前用本地兜底值避免空白。
-const tokenPricing = ref({
-  input: 5,
-  output: 25,
-  cacheRead: 0.5,
-  cacheWrite: 6.25,
-  modelLabel: "Claude Opus 4.7",
-});
-
-onMounted(async () => {
-  try {
-    const pricing = await getTokenPricing();
-    if (pricing && typeof pricing === "object") {
-      tokenPricing.value = pricing;
-    }
-  } catch {
-    // 兜底值已就绪，静默降级。
-  }
-});
+// 价值估算直接用后端 GetHomeMetricsSummary.estimatedCostUSD——后端已按模型 findPrice
+// 匹配真实价（如 gpt-5.6-sol $5/$30）× 倍率算好，含 costByModel 明细。
+// 旧实现调已废弃的 GetTokenPricing()（返回定价表第一条或兜底 Opus 价）再前端自己乘
+// 全局 token，既不按实际模型算，字段名还对不齐导致归零。改用后端真值。
 
 const props = defineProps({
   metrics: {
@@ -87,10 +71,6 @@ function calculateRate(numerator, denominator) {
     return null;
   }
   return top / bottom;
-}
-
-function priceTokens(tokens, pricePerMillion) {
-  return (normalizeNumber(tokens) / 1_000_000) * pricePerMillion;
 }
 
 function formatUSD(value) {
@@ -147,18 +127,45 @@ const completionTokensTotal = computed(() => {
   return Math.max(0, requestTokensTotal - promptTokensTotal);
 });
 
-const estimatedTokenCost = computed(() => {
-  const input = priceTokens(inputTokensTotal.value, tokenPricing.value.input);
-  const output = priceTokens(completionTokensTotal.value, tokenPricing.value.output);
-  const cacheRead = priceTokens(cacheReadTokensTotal.value, tokenPricing.value.cacheRead);
-  const cacheWrite = priceTokens(cacheWriteTokensTotal.value, tokenPricing.value.cacheWrite);
-  return {
-    input,
-    output,
-    cacheRead,
-    cacheWrite,
-    total: input + output + cacheRead + cacheWrite,
-  };
+// 后端真值：estimatedCostUSD 是按模型 findPrice 匹配真实价 × 倍率的总成本。
+// null = 后端尚未算出（无定价/无用量），显示 $0.00。
+const estimatedCostTotal = computed(() => {
+  const v = props.metrics?.estimatedCostUSD;
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+});
+
+// 缓存读写成本：从 costByModel 明细累加（后端已按模型价算好各项）。
+const cacheReadWriteCost = computed(() => {
+  const byModel = Array.isArray(props.metrics?.costByModel)
+    ? props.metrics.costByModel
+    : [];
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  for (const m of byModel) {
+    cacheRead += Number(m?.cacheReadCost) || 0;
+    cacheWrite += Number(m?.cacheWriteCost) || 0;
+  }
+  return cacheRead + cacheWrite;
+});
+
+// 按 token 占比最高的模型，用于 tooltip 标注主导模型。
+const primaryModelLabel = computed(() => {
+  const byModel = Array.isArray(props.metrics?.costByModel)
+    ? props.metrics.costByModel
+    : [];
+  let best = null;
+  let bestTokens = -1;
+  for (const m of byModel) {
+    const tokens =
+      (Number(m?.inputTokens) || 0) +
+      (Number(m?.outputTokens) || 0) +
+      (Number(m?.cacheReadTokens) || 0);
+    if (tokens > bestTokens) {
+      bestTokens = tokens;
+      best = m;
+    }
+  }
+  return best?.modelName || best?.modelId || "";
 });
 
 const cacheTooltipContent = computed(() => {
@@ -198,19 +205,18 @@ const tokensTooltipContent = computed(() =>
   ].join("\n"),
 );
 
-const costTooltipContent = computed(() =>
-  [
-    `按 ${tokenPricing.value.modelLabel} 价格估算。`,
+const costTooltipContent = computed(() => {
+  const lines = [
+    "按各模型实际定价（findPrice 候选匹配）× 倍率估算，与使用统计仪表盘同口径。",
+    `主导模型：${primaryModelLabel.value || "暂无"}`,
     `缓存统计策略：${selectedCacheRateModeLabel.value}（${formatRateLabel(selectedCacheHitRate.value)}）`,
     "",
-    `普通输入：${formatMetricValue(inputTokensTotal.value)} × $${tokenPricing.value.input}/1M = ${formatUSD(estimatedTokenCost.value.input)}`,
-    `模型输出：${formatMetricValue(completionTokensTotal.value)} × $${tokenPricing.value.output}/1M = ${formatUSD(estimatedTokenCost.value.output)}`,
-    `缓存读取：${formatMetricValue(cacheReadTokensTotal.value)} × $${tokenPricing.value.cacheRead}/1M = ${formatUSD(estimatedTokenCost.value.cacheRead)}`,
-    `缓存写入：${formatMetricValue(cacheWriteTokensTotal.value)} × $${tokenPricing.value.cacheWrite}/1M = ${formatUSD(estimatedTokenCost.value.cacheWrite)}`,
+    `缓存读写合计：${formatUSD(cacheReadWriteCost.value)}`,
     "",
-    `合计：${formatUSD(estimatedTokenCost.value.total)}`,
-  ].join("\n"),
-);
+    `合计：${formatUSD(estimatedCostTotal.value)}`,
+  ];
+  return lines.join("\n");
+});
 
 async function toggleIncludeCacheWriteInHitRate(value) {
   const nextValue = Boolean(value);
@@ -365,14 +371,14 @@ async function toggleIncludeCacheWriteInHitRate(value) {
             <div
               class="truncate text-[30px] leading-none text-white"
               style="font-family: var(--font-num)"
-              :title="formatUSD(estimatedTokenCost.total)"
+              :title="formatUSD(estimatedCostTotal)"
             >
-              {{ formatUSD(estimatedTokenCost.total) }}
+              {{ formatUSD(estimatedCostTotal) }}
             </div>
             <div class="mt-3 text-xs leading-5 text-[#8c8c8c]">
               缓存读写
-              <span :title="formatUSD(estimatedTokenCost.cacheRead + estimatedTokenCost.cacheWrite)">
-                {{ formatUSD(estimatedTokenCost.cacheRead + estimatedTokenCost.cacheWrite) }}
+              <span :title="formatUSD(cacheReadWriteCost)">
+                {{ formatUSD(cacheReadWriteCost) }}
               </span>
             </div>
           </div>

@@ -506,6 +506,9 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 
 // handleRunIntent 处理 run/prewarm 类 intent，负责建会话、写 turn 和拉起 provider。
 func (service *Service) handleRunIntent(intent InboundIntent) error {
+	// 图生图直取 inline：在 normalizeUserMessageForStorage 之前快照本轮用户上传图的 inline data。
+	// normalize 后 UserMessage 进存储、inline data 仍在但需反解；此刻直接读内存最省。守 F-30 不落盘。
+	currentTurnSelectedImages := extractCurrentTurnSelectedImages(intent.UserMessage)
 	intent.UserMessage = normalizeUserMessageForStorage(intent.UserMessage)
 	if !intent.Prewarm {
 		service.cancelOtherConversationActors(
@@ -584,6 +587,7 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 	stream.PendingCompaction = nil
 	stream.PendingExecs = make(map[string]runtimecore.PendingExec)
 	stream.PendingInteractions = make(map[string]runtimecore.PendingInteraction)
+	stream.CurrentTurnSelectedImages = currentTurnSelectedImages
 	stream.RecentCompletedExecs = make(map[uint32]time.Time)
 	stream.BackgroundShells = make(map[string]*BackgroundShellState)
 	stream.BackgroundShellsByMessageID = make(map[uint32]string)

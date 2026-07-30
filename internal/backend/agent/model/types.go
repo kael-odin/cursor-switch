@@ -77,7 +77,11 @@ type StreamRequest struct {
 	// ThinkingEffort 表示客户端在本轮运行时选择的思考强度覆盖。
 	ThinkingEffort string
 	// Provider 表示目标 provider 类型，例如 openai 或 anthropic。
+	// 这是协议选择器（wire 协议），仅 openai/anthropic 两种。
 	Provider string
+	// ProviderLabel 是使用统计展示用的品牌标签（如 deepseek/qwen/glm），空则回退 Provider。
+	// 与 Provider（协议）独立——接 deepseek 走 openai 协议时 Provider=openai、ProviderLabel=deepseek。
+	ProviderLabel string
 	// BaseURL 表示请求应发送到的 provider 基础地址。
 	BaseURL string
 	// APIKey 表示 provider 鉴权凭据。

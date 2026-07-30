@@ -140,7 +140,10 @@ func (service *MetricsService) GetUsageDashboard() (UsageDashboard, error) {
 
 	byModel := buildDashboardModelStats(raw.ByModel, pricing, adapterMultipliers, defaultMultiplier)
 	byProvider := aggregateDashboardByProvider(byModel)
-	daily := buildDashboardDaily(raw.Daily, pricing, adapterMultipliers, defaultMultiplier)
+	// nameByID 从顶层 by_model 聚合构造 model_id→model_name 映射，供 daily.by_model 补名——
+	// daily 维度只存 model_id（哈希），无 model_name；不补名则成本引擎拿哈希匹配定价表全部 miss → 零价。
+	nameByID := buildModelNameByID(raw.ByModel)
+	daily := buildDashboardDaily(raw.Daily, pricing, adapterMultipliers, defaultMultiplier, nameByID)
 	events := buildDashboardEvents(raw.RecentEvents, pricing, adapterMultipliers, defaultMultiplier)
 
 	totals := UsageDashboardTotals{
@@ -197,14 +200,30 @@ func sumModelRealTokens(stats []UsageDashboardModelStat) int64 {
 }
 
 // realTotalTokensFromDailyByModel 按日 by_model 聚合真实消耗 token。
+// buildModelNameByID 从顶层 by_model 聚合构造 model_id→model_name 映射。
+// daily.by_model 维度只存 model_id（哈希），无 model_name；此映射让日成本引擎能用真名匹配定价表。
+func buildModelNameByID(byModel []historymetrics.UsageDashboardRawModelAggregate) map[string]string {
+	out := make(map[string]string, len(byModel))
+	for _, m := range byModel {
+		name := strings.TrimSpace(m.ModelName)
+		id := strings.TrimSpace(m.ModelID)
+		if name != "" && id != "" {
+			if _, ok := out[id]; !ok {
+				out[id] = name
+			}
+		}
+	}
+	return out
+}
+
 // daily.ByModel 存在时按 per-model 语义折算 fresh_input 后求和；无 by_model（旧版 usage.json）回退到裸 realTotalTokens。
-func realTotalTokensFromDailyByModel(d historymetrics.UsageDashboardRawDaily, pricing PricingSnapshot) int64 {
+func realTotalTokensFromDailyByModel(d historymetrics.UsageDashboardRawDaily, pricing PricingSnapshot, nameByID map[string]string) int64 {
 	if len(d.ByModel) == 0 {
 		return realTotalTokens(d.InputTokens, d.OutputTokens, d.CacheReadTokens, d.CacheWriteTokens)
 	}
 	var total int64
 	for _, dm := range d.ByModel {
-		price := findPrice(pricing.Models, dm.ModelID)
+		price := findPriceForModel(pricing.Models, dm.ModelID, nameByID[dm.ModelID])
 		total += realTotalTokensForModel(dm.InputTokens, dm.OutputTokens, dm.CacheReadTokens, dm.CacheWriteTokens, price.InputTokenSemantics)
 	}
 	return total
@@ -225,7 +244,7 @@ func cacheHitRate(input, cacheRead int64) *float64 {
 func buildDashboardModelStats(byModel []historymetrics.UsageDashboardRawModelAggregate, pricing PricingSnapshot, adapterMultipliers map[string]float64, defaultMultiplier float64) []UsageDashboardModelStat {
 	out := make([]UsageDashboardModelStat, 0, len(byModel))
 	for _, m := range byModel {
-		price := findPrice(pricing.Models, m.ModelID)
+		price := findPriceForModel(pricing.Models, m.ModelID, m.ModelName)
 		multiplier := defaultMultiplier
 		if am, ok := adapterMultipliers[strings.ToLower(strings.TrimSpace(m.ModelID))]; ok && am > 0 {
 			multiplier = am
@@ -288,12 +307,12 @@ func aggregateDashboardByProvider(byModel []UsageDashboardModelStat) []UsageDash
 }
 
 // buildDashboardDaily 把按日 token 聚合转成含成本的日趋势。
-func buildDashboardDaily(daily []historymetrics.UsageDashboardRawDaily, pricing PricingSnapshot, adapterMultipliers map[string]float64, defaultMultiplier float64) []UsageDashboardDaily {
+func buildDashboardDaily(daily []historymetrics.UsageDashboardRawDaily, pricing PricingSnapshot, adapterMultipliers map[string]float64, defaultMultiplier float64, nameByID map[string]string) []UsageDashboardDaily {
 	out := make([]UsageDashboardDaily, 0, len(daily))
 	for _, d := range daily {
 		// daily.ByModel 存在时按 per-model 价格×倍率精确算日成本；
 		// 旧版 usage.json 无此字段，回退到加权均价近似。
-		cost, precise := computeDailyCost(d, pricing, adapterMultipliers, defaultMultiplier)
+		cost, precise := computeDailyCost(d, pricing, adapterMultipliers, defaultMultiplier, nameByID)
 		out = append(out, UsageDashboardDaily{
 			Date:             d.Date,
 			ProviderCalls:    d.ProviderCalls,
@@ -302,7 +321,7 @@ func buildDashboardDaily(daily []historymetrics.UsageDashboardRawDaily, pricing 
 			CacheReadTokens:  d.CacheReadTokens,
 			CacheWriteTokens: d.CacheWriteTokens,
 			TotalTokens:      d.TotalTokens,
-			RealTotalTokens:  realTotalTokensFromDailyByModel(d, pricing),
+			RealTotalTokens:  realTotalTokensFromDailyByModel(d, pricing, nameByID),
 			CostUSD:          cost,
 			CostApproximate:  !precise,
 		})
@@ -313,14 +332,14 @@ func buildDashboardDaily(daily []historymetrics.UsageDashboardRawDaily, pricing 
 
 // computeDailyCost 优先用 daily.ByModel 按模型精确算成本；无 by_model 时回退加权均价近似。
 // 第二返回值表示是否精确（true=精确，false=近似）。
-func computeDailyCost(d historymetrics.UsageDashboardRawDaily, pricing PricingSnapshot, adapterMultipliers map[string]float64, defaultMultiplier float64) (float64, bool) {
+func computeDailyCost(d historymetrics.UsageDashboardRawDaily, pricing PricingSnapshot, adapterMultipliers map[string]float64, defaultMultiplier float64, nameByID map[string]string) (float64, bool) {
 	if len(d.ByModel) == 0 {
 		return estimateDailyCost(d, pricing, defaultMultiplier), false
 	}
 	var total float64
 	anyMatched := false
 	for _, dm := range d.ByModel {
-		price := findPrice(pricing.Models, dm.ModelID)
+		price := findPriceForModel(pricing.Models, dm.ModelID, nameByID[dm.ModelID])
 		multiplier := defaultMultiplier
 		if am, ok := adapterMultipliers[strings.ToLower(strings.TrimSpace(dm.ModelID))]; ok && am > 0 {
 			multiplier = am
@@ -378,7 +397,7 @@ func estimateDailyCost(d historymetrics.UsageDashboardRawDaily, pricing PricingS
 func buildDashboardEvents(events []historymetrics.UsageDashboardRawEvent, pricing PricingSnapshot, adapterMultipliers map[string]float64, defaultMultiplier float64) []UsageDashboardEvent {
 	out := make([]UsageDashboardEvent, 0, len(events))
 	for _, e := range events {
-		price := findPrice(pricing.Models, e.ModelID)
+		price := findPriceForModel(pricing.Models, e.ModelID, e.ModelName)
 		multiplier := defaultMultiplier
 		if am, ok := adapterMultipliers[strings.ToLower(strings.TrimSpace(e.ModelID))]; ok && am > 0 {
 			multiplier = am

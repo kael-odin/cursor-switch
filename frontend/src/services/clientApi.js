@@ -85,17 +85,18 @@ export function getUsageDashboard() {
   );
 }
 
+// 清零使用统计：把 usage.json 重写为空文档。不可逆，前端调用前应弹确认框。
+export function resetUsageStats() {
+  return withApiLogging("ResetUsageStats", undefined, () =>
+    Call.ByName(`${METRICS_SERVICE_NAME}.ResetUsageStats`),
+  );
+}
+
 // getCursorAccountStatus 只读探测 Cursor 客户端是否登录了官方账号。
 // 用于前端"Tab 补全依赖官方账号"的缺失告警（能力缺失标注）。
 export function getCursorAccountStatus() {
   return withApiLogging("GetCursorAccountStatus", undefined, () =>
     Call.ByName(`${PROXY_SERVICE_NAME}.GetCursorAccountStatus`),
-  );
-}
-
-export function getTokenPricing() {
-  return withApiLogging("GetTokenPricing", undefined, () =>
-    Call.ByName(`${METRICS_SERVICE_NAME}.GetTokenPricing`),
   );
 }
 
@@ -196,6 +197,14 @@ export function testModelAdapter(adapter) {
 export function getModelAdapterTestResults() {
   return withApiLogging("GetModelAdapterTestResults", undefined, () =>
     Call.ByName(`${PROXY_SERVICE_NAME}.GetModelAdapterTestResults`),
+  );
+}
+
+// 探活 Tab 服务 / WebSearch / WebFetch 配置：把当前表单值打包传入，后端按 kind 探活。
+// 与 testModelAdapter 同语义——测的是表单当前值（未必已保存），成功/失败给友好摘要。
+export function testWebTools(request) {
+  return withApiLogging("TestWebTools", request, () =>
+    Call.ByName(`${PROXY_SERVICE_NAME}.TestWebTools`, request),
   );
 }
 

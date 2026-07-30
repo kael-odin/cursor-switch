@@ -41,6 +41,13 @@ type ModelAdapterConfig struct {
 	DisplayName string `json:"displayName"`
 	// Type 表示当前声明中的 Type。
 	Type string `json:"type"`
+	// ProviderLabel 是使用统计展示用的品牌标签（如 deepseek/qwen/glm），空则回退 Type。
+	ProviderLabel string `json:"providerLabel,omitempty"`
+	// ImageModelID 是该适配器用于图像生成的模型标识（如 gpt-image-2），空则回退 ModelID。
+	ImageModelID string `json:"imageModelID,omitempty"`
+	// Role 标识该 adapter 用途：chat（仅聊天，默认）、image（仅生图）、both（既能 chat 又能生图）。
+	// Role==image 的 adapter 可独立配置，resolveImageChannel 找不到挂 ImageModelID 的 chat adapter 时兜底取它。
+	Role string `json:"role,omitempty"`
 	// BaseURL 表示当前声明中的 BaseURL。
 	BaseURL string `json:"baseURL"`
 	// APIKey 表示当前声明中的 APIKey。
@@ -115,6 +122,9 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 		next := ModelAdapterConfig{
 			DisplayName:          strings.TrimSpace(item.DisplayName),
 			Type:                 normalizeModelAdapterType(item.Type),
+			ProviderLabel:        strings.TrimSpace(item.ProviderLabel),
+			ImageModelID:         strings.TrimSpace(item.ImageModelID),
+			Role:                 normalizeAdapterRole(item.Role),
 			BaseURL:              baseURL,
 			APIKey:               strings.TrimSpace(item.APIKey),
 			TooltipData:          strings.TrimSpace(item.TooltipData),
@@ -144,6 +154,10 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 		next.Priority = item.Priority
 		next.Enabled = item.Enabled
 		next.Weight = item.Weight
+		// 纯 image adapter（Role==image 且 ModelID 空）允许用 ImageModelID 兜底 ModelID，绕过 ModelID 必填。
+		if next.Role == "image" && strings.TrimSpace(next.ModelID) == "" && strings.TrimSpace(next.ImageModelID) != "" {
+			next.ModelID = strings.TrimSpace(next.ImageModelID)
+		}
 		switch {
 		case next.DisplayName == "":
 			return nil, errors.New("模型适配器 displayName 不能为空")
@@ -153,6 +167,8 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 			return nil, errors.New("模型适配器 apiKey 不能为空")
 		case next.TooltipData == "":
 			return nil, errors.New("模型适配器 tooltipData 不能为空")
+		case next.Role == "image" && strings.TrimSpace(next.ImageModelID) == "":
+			return nil, errors.New("模型适配器 role=image 时 imageModelID 不能为空")
 		case next.ModelID == "":
 			return nil, errors.New("模型适配器 modelID 不能为空")
 		case next.Type == "openai" && next.ReasoningEffort == "":
@@ -257,6 +273,18 @@ func normalizeModelAdapterType(value string) string {
 	}
 }
 
+// normalizeAdapterRole 限定 adapter Role 为 chat/image/both，空/非法默认 chat。
+func normalizeAdapterRole(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "image":
+		return "image"
+	case "both":
+		return "both"
+	default:
+		return "chat"
+	}
+}
+
 // ResolvedChannel 表示当前选中的模型渠道。
 type ResolvedChannel struct {
 	// ID 表示当前声明中的 ID。
@@ -269,6 +297,13 @@ type ResolvedChannel struct {
 	Code string
 	// Provider 表示当前声明中的 Provider。
 	Provider string
+	// ProviderLabel 是使用统计展示用的品牌标签（如 deepseek/qwen/glm），空则回退 Provider。
+	ProviderLabel string
+	// ImageModelID 是该适配器用于图像生成的模型标识（如 gpt-image-2），空则回退 Model。
+	ImageModelID string
+	// Role 标识该 adapter 用途：chat/image/both。resolveImageChannel 据此判断是否复用 chat adapter
+	// 还是兜底取全局 image adapter。
+	Role string
 	// BaseURL 表示当前声明中的 BaseURL。
 	BaseURL string
 	// APIKey 表示当前声明中的 APIKey。
@@ -376,6 +411,56 @@ func (s *FixedChannelService) SelectChannelForRequestBody(_ context.Context, _ [
 	return s.SelectChannelForModel(context.Background(), "")
 }
 
+// SelectChannelForImage 返回全局 image adapter（Role==image/both，按 Priority 升序取首个 enabled）。
+// 供 resolveImageChannel 兜底命中独立 image adapter。与 Manager.SelectChannelForImage 对称（项目维护两套实现）。
+func (s *FixedChannelService) SelectChannelForImage(ctx context.Context) (*ResolvedChannel, error) {
+	if s == nil {
+		return nil, ErrChannelNotAvailable
+	}
+	if s.configProvider != nil {
+		cfg, err := s.configProvider(ctx)
+		if err != nil {
+			return nil, err
+		}
+		adapters, err := NormalizeModelAdapterConfigs(cfg.ModelAdapters)
+		if err != nil {
+			return nil, err
+		}
+		type indexed struct {
+			idx      int
+			priority int
+		}
+		enabled := make([]indexed, 0, len(adapters))
+		for i, adapter := range adapters {
+			if !adapter.Enabled {
+				continue
+			}
+			role := strings.TrimSpace(adapter.Role)
+			if role != "image" && role != "both" {
+				continue
+			}
+			enabled = append(enabled, indexed{idx: i, priority: adapter.Priority})
+		}
+		if len(enabled) == 0 {
+			return nil, ErrChannelNotAvailable
+		}
+		sort.SliceStable(enabled, func(i, j int) bool {
+			return enabled[i].priority < enabled[j].priority
+		})
+		return s.buildResolvedChannel(adapters[enabled[0].idx]), nil
+	}
+	// 固定渠道路径：仅当该渠道本身 Role 为 image/both 时返回，否则无独立 image adapter。
+	role := strings.TrimSpace(s.channel.Role)
+	if role != "image" && role != "both" {
+		return nil, ErrChannelNotAvailable
+	}
+	if strings.TrimSpace(s.channel.BaseURL) == "" || strings.TrimSpace(s.channel.APIKey) == "" {
+		return nil, ErrChannelNotAvailable
+	}
+	resolved := s.channel
+	return &resolved, nil
+}
+
 // SelectChannelForModel 用于处理与 SelectChannelForModel 相关的逻辑。
 func (s *FixedChannelService) SelectChannelForModel(ctx context.Context, modelID string) (*ResolvedChannel, error) {
 	channels, err := s.SelectChannelsForModel(ctx, modelID)
@@ -455,6 +540,9 @@ func (s *FixedChannelService) buildResolvedChannel(adapter ModelAdapterConfig) *
 		GroupName:                   "local",
 		Code:                        strings.TrimSpace(adapter.ID),
 		Provider:                    strings.TrimSpace(adapter.Type),
+		ProviderLabel:               strings.TrimSpace(adapter.ProviderLabel),
+		ImageModelID:                strings.TrimSpace(adapter.ImageModelID),
+		Role:                        strings.TrimSpace(adapter.Role),
 		BaseURL:                     strings.TrimSpace(adapter.BaseURL),
 		APIKey:                      strings.TrimSpace(adapter.APIKey),
 		Model:                       strings.TrimSpace(adapter.ModelID),

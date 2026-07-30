@@ -662,23 +662,25 @@
   },
   {
     "function": {
-      "description": "Generate or display an image using Cursor's native image result flow. Use this when the model already has generated image data to return. The image must be provided as raw base64 in image_data; the backend maps it to Cursor's native GenerateImageResult.success.image_data for display. Do not use markdown images, data URLs, or custom image/file URL protocols.",
+      "description": "Generate an image from a text description. Call this when the user asks to create, draw, or generate an image (e.g. \"draw a cat\", \"生成一张猫的图片\"). Provide a clear `description` of what to draw; the backend calls the configured image model and returns the rendered image for display. You do NOT generate the image bytes yourself — just describe what to draw. For image-to-image (editing an image the user attached/uploaded in the chat), `description` is the EDIT INSTRUCTION (e.g. \"把背景换成海滩\" / \"replace the background with a beach\") — the backend automatically uses the user's uploaded image as the reference, so you do NOT need to (and usually cannot) fill `reference_image_paths` for uploaded images. Only pass `reference_image_paths` when editing images that already exist as files in the workspace. Do not use markdown images or data URLs to show images; always use this tool so the result renders inline.",
       "name": "GenerateImage",
       "parameters": {
         "properties": {
           "description": {
-            "description": "Optional description of the generated image or the user's image generation intent.",
+            "description": "What to draw — a clear text prompt for the image (subject, style, composition). For image-to-image editing of an uploaded image, this is the EDIT INSTRUCTION describing how to change the image (e.g. \"把背景换成海滩\"). Always required.",
             "type": "string"
           },
           "file_path": {
-            "description": "Optional target file path if the user explicitly requested one.",
+            "description": "Optional target file path if the user explicitly asked to save the image somewhere.",
             "type": "string"
           },
-          "image_data": {
-            "description": "Raw base64 image data for the generated image. Do not include a data:image/...;base64, prefix.",
-            "type": "string"
+          "reference_image_paths": {
+            "description": "Optional paths to existing workspace IMAGE FILES to use as references for image-to-image editing. Leave empty when editing an image the user uploaded/attached in the chat — those are auto-attached. Only fill this for images that already exist as files in the workspace. Relative paths resolve against the workspace root.",
+            "items": { "type": "string" },
+            "type": "array"
           }
         },
+        "required": ["description"],
         "type": "object"
       }
     },

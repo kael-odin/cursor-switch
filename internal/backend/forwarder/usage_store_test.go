@@ -603,3 +603,57 @@ func TestLookupEventExactKeyShortCircuit(t *testing.T) {
 		t.Errorf("exact lookup model = %q, want claude-5", agg.ModelID)
 	}
 }
+
+// TestUsageFileStoreReset 验证 Reset 把 usage.json 重置为空文档：所有累计清零，
+// 但文件仍是合法 schema 文档（schema_version 保留），后续 UpsertEvent 能继续写入。
+func TestUsageFileStoreReset(t *testing.T) {
+	dir := t.TempDir()
+	store := NewUsageFileStore(dir)
+	at := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+
+	// 先写入若干累计数据。
+	if err := store.UpsertEvent(usageFileEvent{
+		EventID: "evt-a", Kind: usageEventKindProvider, At: at,
+		InputTokens: 1000, OutputTokens: 500, ModelID: "gpt-5", ModelName: "GPT-5", Provider: "openai",
+	}); err != nil {
+		t.Fatalf("UpsertEvent evt-a: %v", err)
+	}
+	doc, _ := readUsageFileDocument(store.path)
+	if doc.Totals.InputTokens != 1000 {
+		t.Fatalf("precondition: expect 1000 input, got %d", doc.Totals.InputTokens)
+	}
+
+	// Reset。
+	if err := store.Reset(); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+
+	// 重置后：所有累计清零，schema_version 保留。
+	doc2, err := readUsageFileDocument(store.path)
+	if err != nil {
+		t.Fatalf("readUsageFileDocument after reset: %v", err)
+	}
+	if doc2.Totals.InputTokens != 0 || doc2.Totals.ProviderCalls != 0 {
+		t.Errorf("after reset totals not zeroed: input=%d calls=%d",
+			doc2.Totals.InputTokens, doc2.Totals.ProviderCalls)
+	}
+	if len(doc2.RecentEvents) != 0 || len(doc2.ByModel) != 0 || len(doc2.Daily) != 0 {
+		t.Errorf("after reset aggregates not empty: events=%d byModel=%d daily=%d",
+			len(doc2.RecentEvents), len(doc2.ByModel), len(doc2.Daily))
+	}
+	if doc2.SchemaVersion != usageFileSchemaVersion {
+		t.Errorf("schema_version after reset = %d, want %d", doc2.SchemaVersion, usageFileSchemaVersion)
+	}
+
+	// Reset 后能继续正常写入（文件结构完好）。
+	if err := store.UpsertEvent(usageFileEvent{
+		EventID: "evt-b", Kind: usageEventKindProvider, At: at,
+		InputTokens: 222, ModelID: "claude-5",
+	}); err != nil {
+		t.Fatalf("UpsertEvent after reset: %v", err)
+	}
+	doc3, _ := readUsageFileDocument(store.path)
+	if doc3.Totals.InputTokens != 222 {
+		t.Errorf("after reset+upsert: expect 222 input, got %d", doc3.Totals.InputTokens)
+	}
+}

@@ -40,8 +40,17 @@ const openAIEndpointOptions = [
   { label: "自定义路径", value: OPENAI_ENDPOINT_CUSTOM, icon: "icon-[mdi--pencil-outline]" },
 ];
 
+const roleOptions = [
+  { label: "chat — 仅聊天", value: "chat", icon: "icon-[mdi--chat-outline]" },
+  { label: "image — 仅生图", value: "image", icon: "icon-[mdi--image-edit-outline]" },
+  { label: "both — 聊天 + 生图", value: "both", icon: "icon-[mdi--image-multiple-outline]" },
+];
+
 const fieldTips = {
   openAIExtraParams: "开启后会把 JSON 对象覆盖到 OpenAI 请求体。同名字段以这里为准。OpenAI service_tier 支持 auto、default、flex、scale、priority；priority 可用于高优先级/Fast 类场景。",
+  providerLabel: "类型(type)是协议选择器，仅 openai/anthropic 两种。这里是使用统计展示的品牌标签，留空则回退类型。比如接 deepseek 走 openai 协议：类型=openai、标签=deepseek，使用统计就归到 deepseek 而非 openai。",
+  imageModelID: "生图时调用的模型（如 gpt-image-2），留空则回退 ModelID。GenerateImage 工具用此模型打 {baseURL}/v1/images/generations。同一 adapter 既能 chat（ModelID）又能生图（Image 模型）——比如 gpt-5.6-sol adapter 填 imageModelID=gpt-image-2 即可生图。",
+  role: "用途：chat=仅聊天（ModelID 必填）；image=仅生图（Image 模型必填，ModelID 可空——独立生图 adapter，不参与聊天路由）；both=既能聊天又能生图（ModelID 与 Image 模型各自必填）。填错位置生图会失败——生图模型请填到「Image 模型」而非 ModelID。",
 };
 
 const props = defineProps({
@@ -166,6 +175,30 @@ function handleSave() {
                 </label>
 
                 <label class="flex flex-col gap-1">
+                  <span class="center-row justify-start gap-1.5 text-sm text-[#d4d4d4]">
+                    <Tooltip :content="fieldTips.imageModelID" />
+                    <span>Image 模型</span>
+                  </span>
+                  <input
+                    v-model="draft.imageModelID"
+                    type="text"
+                    placeholder="gpt-image-2（留空则用 ModelID）"
+                    class="h-9 rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
+                  />
+                </label>
+
+                <label class="flex flex-col gap-1">
+                  <span class="center-row justify-start gap-1.5 text-sm text-[#d4d4d4]">
+                    <Tooltip :content="fieldTips.role" />
+                    <span>用途 (Role)</span>
+                  </span>
+                  <Select
+                    v-model="draft.role"
+                    :options="roleOptions"
+                  />
+                </label>
+
+                <label class="flex flex-col gap-1">
                   <span class="text-sm text-[#d4d4d4]">类型</span>
                   <Select
                     v-model="draft.type"
@@ -182,6 +215,19 @@ function handleSave() {
                   />
                 </label>
               </div>
+
+              <label class="mt-3 flex flex-col gap-1">
+                <span class="center-row justify-start gap-1.5 text-sm text-[#d4d4d4]">
+                  <Tooltip :content="fieldTips.providerLabel" />
+                  <span>Provider 标签</span>
+                </span>
+                <input
+                  v-model="draft.providerLabel"
+                  type="text"
+                  placeholder="deepseek / qwen / glm（留空则用类型）"
+                  class="h-9 rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
+                />
+              </label>
 
               <label class="mt-3 flex flex-col gap-1">
                 <span class="text-sm text-[#d4d4d4]">baseURL</span>

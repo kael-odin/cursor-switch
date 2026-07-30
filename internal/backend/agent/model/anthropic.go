@@ -700,7 +700,7 @@ func (adapter *AnthropicAdapter) streamOnce(ctx context.Context, req StreamReque
 			if err := sink(ModelEvent{
 				Kind:              ModelEventKindTurnFinished,
 				OccurredAt:        time.Now().UTC(),
-				Provider:          "anthropic",
+				Provider:          effectiveProvider(req),
 				Model:             currentModel,
 				InputTokens:       inputTokens,
 				OutputTokens:      outputTokens,

@@ -31,6 +31,12 @@ type FetchedModelsPayload = client.FetchedModelsPayload
 // ModelAdapterTestResultsPayload 定义测速结果事件载荷。
 type ModelAdapterTestResultsPayload = client.ModelAdapterTestResultsPayload
 
+// WebToolsProbeRequest 是 Web 工具探活请求载荷。
+type WebToolsProbeRequest = client.WebToolsProbeRequest
+
+// WebToolsProbeResult 是 Web 工具探活结果。
+type WebToolsProbeResult = client.WebToolsProbeResult
+
 // ProxyService 定义了当前模块中的 ProxyService 类型。
 type ProxyService struct {
 	// core 表示当前声明中的 core。
@@ -85,6 +91,11 @@ func (s *ProxyService) TestModelAdapter(adapter ModelAdapterConfig) (ModelAdapte
 // GetModelAdapterTestResults 用于处理与 GetModelAdapterTestResults 相关的逻辑。
 func (s *ProxyService) GetModelAdapterTestResults() []ModelAdapterTestResult {
 	return s.core.GetModelAdapterTestResults()
+}
+
+// TestWebTools 探活 Tab 服务 / WebSearch / WebFetch 配置，供「测试」按钮确认配置可用。
+func (s *ProxyService) TestWebTools(request WebToolsProbeRequest) (WebToolsProbeResult, error) {
+	return s.core.TestWebTools(request)
 }
 
 // FetchProviderModels 调用 provider 的模型列表端点，供「一键获取模型列表」使用。

@@ -60,6 +60,10 @@ func (r *fakeResolver) SelectChannelsForModel(_ context.Context, _ string) ([]*l
 	return r.channels, nil
 }
 
+func (r *fakeResolver) SelectChannelForImage(_ context.Context) (*legacyruntime.ResolvedChannel, error) {
+	return nil, legacyruntime.ErrChannelNotAvailable
+}
+
 func (r *fakeResolver) ProviderStreamIdleTimeout(_ context.Context) time.Duration {
 	return r.idleTimeout
 }

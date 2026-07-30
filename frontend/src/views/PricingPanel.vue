@@ -328,7 +328,7 @@ onMounted(refresh);
           暂无定价记录
         </div>
         <div v-else class="overflow-x-auto rounded-lg border border-[#2a2a2a]">
-          <table class="w-full text-xs">
+          <table class="w-full text-xs" aria-label="模型定价">
             <thead class="bg-[#222] text-[#a3a3a3]">
               <tr>
                 <th class="px-3 py-2 text-left font-medium">模型 ID</th>

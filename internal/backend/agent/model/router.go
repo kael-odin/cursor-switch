@@ -33,6 +33,9 @@ type ChannelResolver interface {
 	// SelectChannelsForModel 返回 modelID 的全部 enabled 候选（B2 failover 候选链），
 	// 已按 adapter.Priority 升序稳定排序。空切片表示无可用候选。
 	SelectChannelsForModel(context.Context, string) ([]*legacyruntime.ResolvedChannel, error)
+	// SelectChannelForImage 返回全局 image adapter（Role==image 或 both 的 enabled adapter，按 Priority 升序取首个）。
+	// 供 resolveImageChannel 在未命中挂 ImageModelID 的 chat adapter 时兜底——让纯 image adapter 独立服务生图。
+	SelectChannelForImage(context.Context) (*legacyruntime.ResolvedChannel, error)
 	ProviderStreamIdleTimeout(context.Context) time.Duration
 }
 
@@ -315,6 +318,7 @@ func (router *Router) applyChannelToRequest(req StreamRequest, channel *legacyru
 		resolved.RequestKnobs = cloned
 	}
 	resolved.Provider = strings.TrimSpace(channel.Provider)
+	resolved.ProviderLabel = strings.TrimSpace(channel.ProviderLabel)
 	resolved.BaseURL = strings.TrimSpace(channel.BaseURL)
 	resolved.APIKey = strings.TrimSpace(channel.APIKey)
 	resolved.ProviderModelID = strings.TrimSpace(channel.Model)
@@ -390,6 +394,20 @@ func (router *Router) applyChannelToRequest(req StreamRequest, channel *legacyru
 		}
 	}
 	return resolved
+}
+
+// effectiveProvider 返回 usage 落盘应使用的 provider 标签：
+// 优先用户配置的 ProviderLabel（品牌，如 deepseek/qwen/glm），空则回退协议 Provider（openai/anthropic）。
+//
+// 背景：openai.go/anthropic.go 的 TurnFinished 事件原本硬编码 Provider 为 "openai"/"anthropic"，
+// 导致接 deepseek（走 openai 协议）的请求在使用统计的 by-provider 表里全归到 openai。
+// 这里让用户在模型配置填的 ProviderLabel 覆盖该硬编码值，使统计按品牌归类。
+// 仅作用于 TurnFinished 事件——其 Provider 才会落盘进 usage.json。
+func effectiveProvider(req StreamRequest) string {
+	if label := strings.TrimSpace(req.ProviderLabel); label != "" {
+		return label
+	}
+	return strings.TrimSpace(req.Provider)
 }
 
 // isClientSideCancellation 判定错误是否源于客户端取消或全局超时，而非 provider 故障。

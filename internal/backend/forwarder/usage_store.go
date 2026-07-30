@@ -263,6 +263,28 @@ func (store *UsageFileStore) LookupEvent(needle string) (usageFileEvent, bool, e
 	return lookupUsageEventInDoc(doc, needle)
 }
 
+// Reset 清空使用统计：把 usage.json 重置为空文档（保留 schema_version）。
+// 不可逆——所有累计 token / 成本 / 请求日志 / 模型聚合全部清零。
+// 加锁 + 原子写，避免与并发 UpsertEvent 竞争写出半截文件。
+func (store *UsageFileStore) Reset() error {
+	if store == nil || strings.TrimSpace(store.path) == "" {
+		return fmt.Errorf("usage store path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(store.path), 0o755); err != nil {
+		return fmt.Errorf("create usage directory: %w", err)
+	}
+	release, err := acquireConversationLock(store.path + ".lock")
+	if err != nil {
+		return err
+	}
+	defer release()
+	empty := usageFileDocument{
+		SchemaVersion: usageFileSchemaVersion,
+		UpdatedAt:     time.Now().UTC(),
+	}
+	return writeJSONFileAtomic(store.path, empty)
+}
+
 // lookupUsageEventInDoc 在已加载的内存文档上做事件聚合，避免 LookupEvent + UpsertEvent
 // 各自全量读+unmarshal（N-28）。语义与原 LookupEvent 完全一致：精确匹配 needle 或
 // 前缀匹配 needle+sep（sep=\x1f，见 eventIDSep）的事件聚合到一条。先精确直查

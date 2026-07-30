@@ -1,3 +1,43 @@
+# 2.0.8
+
+## 文生图 + 图生图端到端打通
+
+2.0.8 把 Cursor 的 GenerateImage 工具从空壳 stub 接到真实上游 OpenAI 兼容 images API，文生图与图生图均端到端实测通过（`gpt-image-2`：文生图约 2-3min、图生图约 1.5min 出图）。配置见 [docs/文生图与图生图配置指南.md](./docs/文生图与图生图配置指南.md)。
+
+### GenerateImage 异步化（治本）
+
+- 原实现：`handleGenerateImageToolInvocation` 在 stream actor goroutine 上**同步**调上游 images API（~93s）→ starve mailbox → Cursor 并发 BidiAppend 触发 mitm 60s ResponseHeaderTimeout → 499 → provider loop interrupted。图实际生成但流已死。
+- 改造：`PendingImages` map + `image_result` intent kind。actor 上只登记 pending + 派 goroutine + return nil；`pendingBridgeCount` 计入 PendingImages → provider 流进 TurnPhaseWaitingExternal 暂停；goroutine 跑完通过 `dispatchInboundIntent({Kind:"image_result"})` 回投 mailbox，`handleImageResult`（actor 串行）走尾 + terminal。
+- **生图超时**：部分文生图正常就要 120s+。移除 `http.Client.Timeout`（整请求硬上限会砍慢请求），改 Transport 级 `DialContext`(30s) / `ResponseHeaderTimeout`(10min) / `IdleConnTimeout`(90s)，整体看门狗交 ctx（`runImageGeneration` 给 15min）。
+
+### 图生图：直取 inline 参考图（守 F-30，不落盘）
+
+- 根因：用户上传图走 `SelectedImage` inline data，但 F-30 清空 Path、只留 inline data，图无工作区路径；而图生图工具参数 `reference_image_paths` 要工作区路径——模型填不出，退化成文生图。
+- 治本（方案 A，经两轮协商用户否决落盘）：`ActiveStream.CurrentTurnSelectedImages` 在 `handleRunIntent` 入站快照本轮上传图 inline data（实测到达形态 `blob_id_with_data`，data 在 `BlobIdWithData.Data` 字段）；`handleGenerateImageToolInvocation` 在 `reference_image_paths` 为空时直取 inline 走 `/v1/images/edits`。不落盘、不写工作区、不依赖模型填路径。
+
+### 图生图 multipart MIME 修复
+
+- Go stdlib `multipart.Writer.CreateFormFile` **写死** `Content-Type: application/octet-stream`，上游 `/v1/images/edits` 校验 data URL 的 image MIME 直接 400 拒绝。
+- 改 `CreatePart` + 显式 `Content-Type`：新 helper `imagePartContentType`（声明 mime 优先、否则 `http.DetectContentType` 嗅探、**绝不返回非 image/\***、兜底 `image/png`）；`imageReference` 加 `mimeType` 字段从 `SelectedImage.MimeType` 透传。测试 `TestImagePartContentType` 锁死契约。
+
+### 上游 SSE 残缺尾行容错
+
+- 根因：上游 `gpt-5.6-terra` 流式中途 TCP reset，留下半截 `data:` JSON 行，`bufio.Scanner` 当最后一行交上来，`json.Unmarshal` 报 `unexpected end of JSON input` → 整轮死（含尚未调用的图生图工具）。
+- 治本：openai.go chat/responses 两处 SSE 解析遇 `json.Unmarshal` 失败时，**已发过有效事件**则跳过残缺行 `break` 走 flush + 正常收尾（复用 P1-2 graceful-drain 路径），零事件仍 fail（保留 F-20 截断判定 + failover）。新增日志 `openai ... stream: skipping malformed tail payload after emitted content`。
+
+### adapter Role 字段（独立生图 adapter）
+
+- `ModelAdapterConfig.Role`（chat/image/both）：`image` 类型 adapter 可独立配置（不依赖 chat adapter 的 ModelID 命中）；`Role==image && ModelID=="" && ImageModelID!=""` 时 ModelID 兜底成 ImageModelID 绕过必填；`Role==image` 时 ImageModelID 必填。
+- 透传 config→runtime→resolver；`ChannelResolver` 接口加 `SelectChannelForImage(ctx)`；`resolveImageChannel` 两段兜底（先按 chat 模型命中复用，否则取全局 Role=image/both adapter）。前端两编辑器加 Role Select。
+- **前端校验 bug 修复**：`validateModelAdapters` 原死拦「ModelID 必填」，致纯 image adapter 存不下来（与后端兜底矛盾）。改 Role 感知校验：chat→ModelID 必填；image→ModelID 可空但 Image 模型必填；both→两者各自必填。
+
+### 其他
+
+- 生成端点 prompt 提示微调：图生图时 description 是改图指令，上传图自动可用无需填 `reference_image_paths`（agent/multitask 两处 tools.json）。
+- 测试：`adapter_role_test.go`、`image_inline_refs_test.go`、`image_async_test.go`、`image_edit_test.go`、`image_generation_test.go`、`appState.test.js`（role-aware 校验 3 例）等。go build/vet/test + 前端 vitest + vite build 全绿。
+
+---
+
 # 2.0.7
 
 ## Web 工具增强（免费、零部署、惠及所有用户）

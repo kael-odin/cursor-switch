@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"cursor/internal/appdata"
+	forwarderusage "cursor/internal/backend/forwarder"
 	"cursor/internal/backend/server/config"
 	"cursor/internal/historymetrics"
 )
@@ -129,6 +130,17 @@ func (service *MetricsService) GetTokenPricing() TokenPricing {
 // GetPricingSnapshot 返回完整定价配置（全局倍率 + 全部模型定价）。
 func (service *MetricsService) GetPricingSnapshot() (PricingSnapshot, error) {
 	return service.loadPricing(), nil
+}
+
+// ResetUsageStats 清空使用统计：把 usage.json 重写为空文档。
+// 不可逆——所有累计 token / 成本 / 请求日志 / 模型与 Provider 聚合全部清零。
+// 前端调用前应弹确认框。重置后前端需重新拉取 dashboard 刷新界面。
+func (service *MetricsService) ResetUsageStats() error {
+	if err := appdata.EnsureAssistantHome(); err != nil {
+		return err
+	}
+	store := forwarderusage.NewUsageFileStore(appdata.HistoryRootPath())
+	return store.Reset()
 }
 
 // UpdateModelPricing 新增或更新单个模型定价（upsert）。
@@ -351,7 +363,7 @@ func computeCostByModel(byModel []historymetrics.ModelUsage, pricing PricingSnap
 	costs := make([]ModelCost, 0, len(byModel))
 	var total float64
 	for _, usage := range byModel {
-		price := findPrice(pricing.Models, usage.ModelID)
+		price := findPriceForModel(pricing.Models, usage.ModelID, usage.ModelName)
 		multiplier := defaultMultiplier
 		// per-adapter 倍率同样拒绝 NaN/Inf/<=0（loadAdapterMultipliers 已过滤，这里防御性二次校验）。
 		if am, ok := adapterMultipliers[strings.ToLower(strings.TrimSpace(usage.ModelID))]; ok && am > 0 && !math.IsNaN(am) && !math.IsInf(am, 0) {
@@ -375,6 +387,20 @@ func computeCostByModel(byModel []historymetrics.ModelUsage, pricing PricingSnap
 		total += cost.TotalCost
 	}
 	return costs, total
+}
+
+// findPriceForModel 在 findPrice 基础上先按模型真名（model_name）匹配，再回退到 model_id。
+//
+// 背景：usage.json 的 by_model.model_id 存的是通道/适配器哈希（如 57693a3f4c14f02b），
+// 而定价表里是模型真名（如 gpt-5.6-sol）。直接用 model_id 做候选匹配会全部 miss → 零价 → 成本归零。
+// model_name 才是真名。这里优先用 model_name 查价，命中不了再用 model_id 兜底，保证成本引擎拿到真实价。
+func findPriceForModel(models []TokenPricing, modelID, modelName string) TokenPricing {
+	if name := strings.TrimSpace(modelName); name != "" {
+		if hit := findPrice(models, name); hit.InputPerMillion > 0 || hit.OutputPerMillion > 0 || hit.Disabled {
+			return hit
+		}
+	}
+	return findPrice(models, modelID)
 }
 
 // findPrice 按候选匹配查定价（移植 cc-switch model_pricing_candidates），

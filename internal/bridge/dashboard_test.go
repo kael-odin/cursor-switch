@@ -151,7 +151,7 @@ func TestRealTotalTokensFromDailyByModel(t *testing.T) {
 	if err := json.Unmarshal([]byte(rawFallback), &dFallback); err != nil {
 		t.Fatalf("unmarshal fallback: %v", err)
 	}
-	if got := realTotalTokensFromDailyByModel(dFallback, pricing); got != 200 {
+	if got := realTotalTokensFromDailyByModel(dFallback, pricing, nil); got != 200 {
 		t.Errorf("fallback realTotalTokens=%d want 200", got)
 	}
 
@@ -169,7 +169,7 @@ func TestRealTotalTokensFromDailyByModel(t *testing.T) {
 	if err := json.Unmarshal([]byte(rawByModel), &dByModel); err != nil {
 		t.Fatalf("unmarshal by_model: %v", err)
 	}
-	if got := realTotalTokensFromDailyByModel(dByModel, pricing); got != 1640 {
+	if got := realTotalTokensFromDailyByModel(dByModel, pricing, nil); got != 1640 {
 		t.Errorf("by_model aggregate realTotalTokens=%d want 1640", got)
 	}
 }

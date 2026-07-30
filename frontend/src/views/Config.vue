@@ -22,7 +22,7 @@ import {
   toUserError,
 } from "@/state/appState";
 import { computed, onMounted, ref } from "vue";
-import { getCursorAccountStatus } from "@/services/clientApi";
+import { getCursorAccountStatus, testWebTools } from "@/services/clientApi";
 
 const routeModeOptions = ROUTE_MODE_OPTIONS;
 const tabServerSaving = ref(false);
@@ -117,6 +117,64 @@ async function handleSaveTabServerBaseURL() {
     });
   } finally {
     tabServerSaving.value = false;
+  }
+}
+
+// Web 工具探活：对 Tab 服务 / WebSearch / WebFetch 做一次连通性测试，
+// 复用 testModelAdapter 的「测的是表单当前值」语义（未必已保存）。结果内联显示。
+const tabServerTesting = ref(false);
+const tabServerTestResult = ref("");
+const webSearchTesting = ref(false);
+const webSearchTestResult = ref("");
+const webFetchTesting = ref(false);
+const webFetchTestResult = ref("");
+
+function resultText(result) {
+  if (!result) return "";
+  return result.status === "success" ? `✓ ${result.detail}` : `✗ ${result.detail}`;
+}
+
+async function handleTestTabServer() {
+  tabServerTesting.value = true;
+  tabServerTestResult.value = "";
+  try {
+    tabServerTestResult.value = resultText(
+      await testWebTools({ kind: "tabserver", tabServerBaseURL: appState.tabServerBaseURL }),
+    );
+  } catch (error) {
+    tabServerTestResult.value = `✗ ${toUserError(error)}`;
+  } finally {
+    tabServerTesting.value = false;
+  }
+}
+
+async function handleTestWebSearch() {
+  webSearchTesting.value = true;
+  webSearchTestResult.value = "";
+  try {
+    webSearchTestResult.value = resultText(
+      await testWebTools({
+        kind: "websearch",
+        webSearchProvider: appState.webSearchProvider,
+        webSearchAPIKey: appState.webSearchAPIKey,
+      }),
+    );
+  } catch (error) {
+    webSearchTestResult.value = `✗ ${toUserError(error)}`;
+  } finally {
+    webSearchTesting.value = false;
+  }
+}
+
+async function handleTestWebFetch() {
+  webFetchTesting.value = true;
+  webFetchTestResult.value = "";
+  try {
+    webFetchTestResult.value = resultText(await testWebTools({ kind: "webfetch" }));
+  } catch (error) {
+    webFetchTestResult.value = `✗ ${toUserError(error)}`;
+  } finally {
+    webFetchTesting.value = false;
   }
 }
 
@@ -281,16 +339,26 @@ onMounted(async () => {
           </div>
           <Button
             variant="primary"
-            :disabled="tabServerSaving"
+            :disabled="tabServerSaving || tabServerTesting"
             @click="handleSaveTabServerBaseURL"
           >
             {{ tabServerSaving ? "保存中..." : "保存地址" }}
+          </Button>
+          <Button
+            variant="default"
+            :disabled="tabServerSaving || tabServerTesting"
+            @click="handleTestTabServer"
+          >
+            {{ tabServerTesting ? "测试中..." : "测试" }}
           </Button>
         </div>
         <Input
           v-model="appState.tabServerBaseURL"
           placeholder="留空 = 走官方 api2.cursor.sh；例如 https://tab.example.com"
         />
+        <div v-if="tabServerTestResult" class="text-xs" :class="tabServerTestResult.startsWith('✓') ? 'text-emerald-300' : 'text-red-300'">
+          {{ tabServerTestResult }}
+        </div>
         <!-- 直连官方上游时探测本机 Cursor 账号登录状态，缺失则告警 -->
         <div
           v-if="tabDependsOnLocalCursorAccount"
@@ -383,6 +451,15 @@ onMounted(async () => {
             @blur="handleSaveWebSearchAPIKey"
           />
           <div v-if="webSearchKeySaving" class="text-xs text-[#737373]">保存中…</div>
+          <div class="flex items-center gap-3">
+            <Button variant="default" :disabled="webSearchTesting" @click="handleTestWebSearch">
+              {{ webSearchTesting ? "测试中..." : "测试搜索" }}
+            </Button>
+            <span class="text-xs text-[#737373]">用当前 provider + key 发一次真实搜索验证连通性。</span>
+          </div>
+          <div v-if="webSearchTestResult" class="text-xs" :class="webSearchTestResult.startsWith('✓') ? 'text-emerald-300' : 'text-red-300'">
+            {{ webSearchTestResult }}
+          </div>
           <div
             v-if="webSearchNeedsKey"
             class="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-300"
@@ -400,10 +477,16 @@ onMounted(async () => {
             class="w-full rounded border border-[#2a2a2a] bg-[#1a1a1a] p-2 text-sm text-[#e5e5e5] outline-none focus:border-[#3a3a3a]"
           ></textarea>
           <div class="flex items-center gap-3">
-            <Button variant="primary" :disabled="webFetchAllowlistSaving" @click="handleSaveWebFetchAllowlist">
+            <Button variant="primary" :disabled="webFetchAllowlistSaving || webFetchTesting" @click="handleSaveWebFetchAllowlist">
               {{ webFetchAllowlistSaving ? "保存中..." : "保存白名单" }}
             </Button>
+            <Button variant="default" :disabled="webFetchAllowlistSaving || webFetchTesting" @click="handleTestWebFetch">
+              {{ webFetchTesting ? "测试中..." : "测试抓取" }}
+            </Button>
             <span class="text-xs text-[#737373]">显式放行的 host 绕过私网拒绝；空表 = 最安全（拒绝所有内网）。</span>
+          </div>
+          <div v-if="webFetchTestResult" class="text-xs" :class="webFetchTestResult.startsWith('✓') ? 'text-emerald-300' : 'text-red-300'">
+            {{ webFetchTestResult }}
           </div>
         </div>
       </div>
