@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"io/fs"
+	"os"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +32,10 @@ import (
 const (
 	// appName 表示当前模块中的 appName 状态值。
 	appName = "Cursor助手"
+	// disableWebViewSandboxEnv 允许受影响的 VDI 用户选择关闭 WebView2 沙箱。
+	// VDI 环境（如 VMware Horizon）会阻止 WebView2 创建沙箱受限令牌的 renderer 进程，导致主窗口白屏，
+	// 设置该环境变量为 1/true 时追加 --no-sandbox 使渲染进程正常启动。
+	disableWebViewSandboxEnv = "CURSOR_SWITCH_DISABLE_WEBVIEW_SANDBOX"
 )
 
 // EmbeddedResources 定义了当前模块中的 EmbeddedResources 类型。
@@ -92,6 +98,9 @@ func Run(resources EmbeddedResources) error {
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(resources.Assets),
 		},
+		Windows: application.WindowsOptions{
+			AdditionalBrowserArgs: windowsAdditionalBrowserArgs(),
+		},
 		Mac: application.MacOptions{
 			ActivationPolicy: application.ActivationPolicyAccessory,
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
@@ -128,7 +137,7 @@ func Run(resources EmbeddedResources) error {
 		Hidden:              false,
 		HideOnEscape:        false,
 		MinimiseButtonState: application.ButtonEnabled,
-		MaximiseButtonState: application.ButtonHidden,
+		MaximiseButtonState: application.ButtonEnabled,
 		CloseButtonState:    application.ButtonEnabled,
 		BackgroundColour:    application.RGBA{Red: 25, Green: 25, Blue: 25, Alpha: 255},
 		Mac: application.MacWindow{
@@ -249,6 +258,16 @@ func Run(resources EmbeddedResources) error {
 	refreshTray()
 
 	return app.Run()
+}
+
+// windowsAdditionalBrowserArgs 根据环境变量决定是否向 WebView2 追加 --no-sandbox。
+// 仅当用户显式开启 disableWebViewSandboxEnv 时返回，默认不降级 WebView2 沙箱安全。
+func windowsAdditionalBrowserArgs() []string {
+	disableSandbox, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(disableWebViewSandboxEnv)))
+	if err != nil || !disableSandbox {
+		return nil
+	}
+	return []string{"--no-sandbox"}
 }
 
 // logMachineCAInfo 用于记录本机 CA 的加载信息（sha256/subject/有效期）。
