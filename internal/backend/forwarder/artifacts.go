@@ -23,10 +23,10 @@ type artifactRecorder struct {
 }
 
 type artifactSession struct {
-	conversationID string
-	turnSeq        int64
-	requestPayload map[string]any
-	summaryPayload map[string]any
+	conversationID   string
+	turnSeq          int64
+	requestPrefix    requestArtifactPrefix
+	hasRequestPrefix bool
 }
 
 type requestArtifactPrefix struct {
@@ -62,14 +62,22 @@ func (recorder *artifactRecorder) RecordLLMRequest(requestID string, _ string, m
 	if err != nil {
 		return "", err
 	}
-	session.requestPayload = cloneStringAnyMap(payload)
+	prefix, hasPrefix, prefixErr := decodeRequestPrefixPayload(payload)
+	session.requestPrefix = requestArtifactPrefix{}
+	session.hasRequestPrefix = false
+	if prefixErr == nil && hasPrefix && prefix != nil {
+		session.requestPrefix = *prefix
+		session.hasRequestPrefix = true
+	}
 	recorder.mu.Lock()
 	recorder.sessions[artifactSessionKey(requestID, modelCallID)] = session
 	recorder.mu.Unlock()
-	if prefix, ok, err := decodeRequestPrefixPayload(session.requestPayload); err == nil && ok && prefix != nil {
+	if prefixErr == nil && hasPrefix && prefix != nil {
 		recorder.persistLatestRequestPrefix(session.conversationID, requestID, modelCallID, prefix)
 	}
-	recorder.debug.LogProviderArtifact(context.Background(), requestID, session.conversationID, modelCallID, "llm_request", session.requestPayload)
+	// payload 同步序列化用于 debug 输出，刻意不保留在 session 中：
+	// 它可能包含整个重放的对话，长期持有是内存泄漏来源（上游 e401303）。
+	recorder.debug.LogProviderArtifact(context.Background(), requestID, session.conversationID, modelCallID, "llm_request", payload)
 	return "", nil
 }
 
@@ -97,17 +105,17 @@ func (recorder *artifactRecorder) RecordLLMSummary(requestID string, _ string, m
 	if err != nil {
 		return "", err
 	}
-	session.summaryPayload = cloneStringAnyMap(payload)
-	recorder.mu.Lock()
-	recorder.sessions[artifactSessionKey(requestID, modelCallID)] = session
-	recorder.mu.Unlock()
-	if prefix, ok, err := decodeRequestPrefixPayload(session.requestPayload); err == nil && ok && prefix != nil {
-		if tokens := readInt64Value(session.summaryPayload["prompt_tokens_total"]); tokens > 0 {
-			prefix.PromptTokensTotal = tokens
+	if session.hasRequestPrefix {
+		if tokens := readInt64Value(payload["prompt_tokens_total"]); tokens > 0 {
+			session.requestPrefix.PromptTokensTotal = tokens
 		}
-		recorder.persistLatestRequestPrefix(session.conversationID, requestID, modelCallID, prefix)
+		recorder.mu.Lock()
+		recorder.sessions[artifactSessionKey(requestID, modelCallID)] = session
+		recorder.mu.Unlock()
+		recorder.persistLatestRequestPrefix(session.conversationID, requestID, modelCallID, &session.requestPrefix)
 	}
-	recorder.debug.LogProviderArtifact(context.Background(), requestID, session.conversationID, modelCallID, "llm_summary", session.summaryPayload)
+	// 与 RecordLLMRequest 一致：payload 同步日志后不保留。
+	recorder.debug.LogProviderArtifact(context.Background(), requestID, session.conversationID, modelCallID, "llm_summary", payload)
 	return "", nil
 }
 

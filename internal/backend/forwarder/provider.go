@@ -27,6 +27,7 @@ func (gateway *DefaultProviderGateway) StartStream(ctx context.Context, req Prov
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	defer releaseArtifactSession(req.Observer, req.RequestID, req.ModelCallID)
 	requestKnobs := make(map[string]any, len(req.RequestKnobs)+2)
 	for key, value := range req.RequestKnobs {
 		requestKnobs[key] = value
@@ -61,4 +62,19 @@ func (gateway *DefaultProviderGateway) StartStream(ctx context.Context, req Prov
 		return providerTerminalError{cause: err}
 	}
 	return nil
+}
+
+// artifactSessionCleaner 允许 observer 声明它可以按 request 清理 artifacts session。
+// 与 F-36 的 OnStreamRemoved 回调互补：即便 stream 因 502 等异常悬空未触发移除，
+// StartStream 返回时也会强制释放该 request 的 session。
+type artifactSessionCleaner interface {
+	ClearActiveArtifacts(requestID string, modelCallID string)
+}
+
+func releaseArtifactSession(observer modeladapter.LLMArtifactObserver, requestID string, modelCallID string) {
+	cleaner, ok := observer.(artifactSessionCleaner)
+	if !ok {
+		return
+	}
+	cleaner.ClearActiveArtifacts(requestID, modelCallID)
 }
