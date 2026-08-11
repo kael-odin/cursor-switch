@@ -535,12 +535,12 @@ func normalizePerNamespace(input map[string]string) map[string]string {
 }
 
 // normalizeWebToolsConfig 归一 WebSearch/WebFetch 工具配置。
-// Provider 仅认 duckduckgo/bing/serper/tavily 四值，其余（含空）回退 duckduckgo（免 key）。
+// Provider 仅认 duckduckgo/baidu/bing/serper/tavily 五值，其余（含空）回退 duckduckgo（免 key）。
 // Allowlist 去重 + 去空白 + 小写，空表归 nil（保持现 SSRF 硬拒绝基线）。
 func normalizeWebToolsConfig(input WebToolsConfig) WebToolsConfig {
 	provider := strings.ToLower(strings.TrimSpace(input.WebSearchProvider))
 	switch provider {
-	case "bing", "serper", "tavily", "duckduckgo":
+	case "bing", "serper", "tavily", "duckduckgo", "baidu":
 	default:
 		provider = "duckduckgo"
 	}

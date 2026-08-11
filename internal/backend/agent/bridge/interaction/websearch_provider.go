@@ -4,6 +4,7 @@
 //（https://html.duckduckgo.com/html/?q=），易被封禁、结果质量/时效性差。
 // 改为按 WebToolsConfig.WebSearchProvider 分派：
 //   - duckduckgo（默认，免 key）：首选 Instant Answer JSON 端点（更稳），空结果回退 HTML 抓取。
+//   - baidu（免 key，中文质量更好）：百度搜索，失败/无结果自动回退 DuckDuckGo。
 //   - bing / serper / tavily：BYOK API key，走各家 HTTPS GET + JSON。
 //
 // 缺 provider（空或非认可值）一律回退 duckduckgo；选了 bing/serper/tavily 但 key 缺失，
@@ -46,6 +47,9 @@ func (bridge *Bridge) dispatchWebSearch(searchTerm string) ([]*agentv1.WebSearch
 			return nil, "", errWebSearchAPIKeyMissing
 		}
 		return executeTavilySearch(bridge.httpClient, searchTerm, cfg.WebSearchAPIKey)
+	case "baidu":
+		// 免 key，中文结果质量更好；百度失败或无结果时自动回退 DuckDuckGo。
+		return bridge.executeBaiduSearch(searchTerm)
 	default:
 		// duckduckgo / 空 / 非认可值：免 key 降级路径。
 		return bridge.executeDuckDuckGoSearch(searchTerm)

@@ -127,7 +127,7 @@ func probeWebSearch(ctx context.Context, provider, apiKey string) (string, error
 	p := strings.ToLower(strings.TrimSpace(provider))
 	client := netproxy.NewHTTPClientNoRedirect(webToolsProbeTimeout)
 	switch p {
-	case "bing", "serper", "tavily":
+	case "bing", "serper", "tavily", "baidu":
 	default:
 		p = "duckduckgo"
 	}
@@ -159,6 +159,12 @@ func probeWebSearch(ctx context.Context, provider, apiKey string) (string, error
 			return "", fmt.Errorf("Tavily 搜索失败: %w", err)
 		}
 		return fmt.Sprintf("Tavily 搜索成功，返回 %d 条结果", count), nil
+	case "baidu":
+		// baidu 免 key：直接抓搜索页，2xx 即可达（运行时解析失败会回退 DDG）。
+		if err := probeBaiduSearch(ctx, client); err != nil {
+			return "", fmt.Errorf("百度搜索失败: %w", err)
+		}
+		return "百度搜索端点可达（免 key，失败自动回退 DuckDuckGo）", nil
 	default:
 		// duckduckgo 免 key 探活：直接抓 Instant Answer JSON 端点，返回 200 即可达。
 		if err := probeDuckDuckGoSearch(ctx, client); err != nil {
@@ -220,6 +226,28 @@ func probeDuckDuckGoSearch(ctx context.Context, client *http.Client) error {
 	requestURL := "https://api.duckduckgo.com/?q=" + neturl.QueryEscape(webToolsProbeSearchTerm) + "&format=json&no_html=1"
 	var payload map[string]any
 	return probeGetJSON(ctx, client, requestURL, nil, &payload)
+}
+
+// probeBaiduSearch 探活百度搜索端点：GET 搜索页，2xx 即视为可达。
+// 百度返回 HTML（非 JSON），故不复用 probeGetJSON；运行时解析失败会回退 DDG。
+func probeBaiduSearch(ctx context.Context, client *http.Client) error {
+	requestURL := "https://www.baidu.com/s?ie=utf-8&tn=baidu&wd=" + neturl.QueryEscape(webToolsProbeSearchTerm)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(resp.Body, webToolsProbeMaxBodyBytes))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("http status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // probeGetJSON 发 GET 请求并以 JSON 解析到 out。超时由 ctx 控制。
