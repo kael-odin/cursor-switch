@@ -444,7 +444,12 @@ type pendingImage struct {
 	ReasoningSignatureSource string
 	FilePath                 string // carrier.FilePath，成功时回传
 	ProviderPass             int
-	OpenedAt                 time.Time
+	// ImageModelID 是生图实际命中的模型（channel.ImageModelID 最终值），handleImageResult 记 usage
+	// provider_call 用。生图无 token 计费，仅记调用次数与模型归属（F-3）。
+	ImageModelID string
+	// ImageProvider 是生图命中的 provider 标签（ProviderLabel 优先回退 Provider），按 provider 聚合用。
+	ImageProvider string
+	OpenedAt      time.Time
 }
 
 // imageResultPayload 是生图 goroutine 回投给 actor 的结果。成功时 ImageData 非空（base64，无 data: 前缀）；

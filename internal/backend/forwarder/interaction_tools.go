@@ -324,6 +324,8 @@ func (service *Service) handleGenerateImageToolInvocation(stream *ActiveStream, 
 		ReasoningSignatureSource: invocation.ReasoningSignatureSource,
 		FilePath:                 args.GetFilePath(),
 		ProviderPass:             providerPass,
+		ImageModelID:             strings.TrimSpace(channel.ImageModelID),
+		ImageProvider:            firstNonEmpty(strings.TrimSpace(channel.ProviderLabel), strings.TrimSpace(channel.Provider)),
 		OpenedAt:                 time.Now().UTC(),
 	}
 	stream.mu.Lock()
@@ -401,6 +403,16 @@ func (service *Service) handleImageResult(intent InboundIntent) error {
 	stream.mu.Lock()
 	pending, found := stream.PendingImages[payload.ImageID]
 	delete(stream.PendingImages, payload.ImageID)
+	// #1:最后一张在途图处理完、PendingImages 清空后回收 pass 期间保留的
+	// ProviderCancel/Context。生图 goroutine 已回投不再需要取消信号，调用 cancel
+	// 释放旧 pass ctx（无监听者，安全）；此后新 pass 会重新设置自己的 cancel。
+	if len(stream.PendingImages) == 0 {
+		if stream.ProviderCancel != nil {
+			stream.ProviderCancel()
+		}
+		stream.ProviderCancel = nil
+		stream.ProviderContext = nil // #1:随 cancel 一起回收
+	}
 	stream.UpdatedAt = time.Now().UTC()
 	stream.mu.Unlock()
 	if !found {
@@ -418,6 +430,29 @@ func (service *Service) handleImageResult(intent InboundIntent) error {
 	} else {
 		result, p := buildGenerateImageSuccessResult(payload.FilePath, payload.ImageData)
 		resultPayload, toolCall = p, buildGenerateImageToolCall(args, result)
+	}
+
+	// F-3：生图/图生图记 provider_call 用量事件（token 全 0，成本 $0）。images API 无 token 用量、
+	// 也无单图定价字段，但调用确实消耗了 provider 配额，应在使用统计里可见（调用数/时间线/按模型归属）。
+	// EventID 用 requestID + "img:" + ImageID 派生，保证与同 request 的 chat provider_call 不冲突
+	// （"img:" 前缀使 usageEventID 永不回退成裸 requestID，避免覆盖 chat 计费事件）。
+	if service.usageStore != nil && strings.TrimSpace(pending.ImageModelID) != "" {
+		status := "completed"
+		if strings.TrimSpace(payload.Err) != "" {
+			status = "error"
+		}
+		if err := service.usageStore.UpsertEvent(usageFileEvent{
+			EventID:      usageEventID(intent.RequestID, "img:"+pending.ImageID),
+			Kind:         usageEventKindProvider,
+			Status:       status,
+			At:           time.Now().UTC(),
+			UsagePresent: false,
+			ModelID:      strings.TrimSpace(pending.ImageModelID),
+			ModelName:    strings.TrimSpace(pending.ImageModelID),
+			Provider:     strings.TrimSpace(pending.ImageProvider),
+		}); err != nil {
+			return err
+		}
 	}
 
 	if err := service.appendToolResult(stream, pending.ToolCallID, pending.ToolName, pending.ArgsJSON, resultPayload, pending.ReasoningContent, toolCall); err != nil {
@@ -502,22 +537,86 @@ func (service *Service) resolveImageChannel(modelID string) (*legacyruntime.Reso
 // 服务端读工作区文件的场景（Read 工具走 exec bridge 由客户端读），故在此内联，不抽公共 helper。
 //
 // 文件名取 filepath.Base，multipart 用它作文件名（OpenAI 据扩展名判 Content-Type）。
+//
+// 大小防护对齐内联路径的 F-30（extractCurrentTurnSelectedImages / guardSelectedImages）：
+//   - 最多 6 张，超出整张丢弃 + log；
+//   - 读盘前先 stat，单文件 > 总预算（32MB）直接丢弃——os.ReadFile 会整体读进内存，
+//     缩放也须先全量解码，病理级大文件读入即 OOM；以总预算为读盘硬上限，单文件读入最多 32MB；
+//   - 10MB < 文件 ≤ 32MB 走「解码→缩放→重编码」（长边≤2000px）而非裸字节截断——裸截断会损坏
+//     PNG/JPEG 完整性致上游解码失败；缩放/解码失败整张丢弃，绝不外发损坏数据；
+//   - 请求总字节预算 32MB，超限再按剩余预算缩放，仍超丢弃；
+//   - 全部被丢弃时返回错误而非静默回退文生图——用户显式给了参考图路径，静默丢图是正确性 bug。
 func loadReferenceImages(stream *ActiveStream, paths []string) ([]imageReference, error) {
 	pathContext := snapshotStreamPathContext(stream)
-	refs := make([]imageReference, 0, len(paths))
+	refs := make([]imageReference, 0, minInt(len(paths), promptGuardSelectedImageMaxCount))
+	remaining := promptGuardSelectedImagesTotalBytes
+	dropped := 0
 	for _, raw := range paths {
+		if len(refs) >= promptGuardSelectedImageMaxCount {
+			log.Printf("forwarder reference_image over max count=%d — dropping %s", promptGuardSelectedImageMaxCount, raw)
+			dropped++
+			continue
+		}
 		resolved, ok := resolveWorkspacePath(raw, pathContext.workspacePaths, true)
 		if !ok {
 			return nil, fmt.Errorf("reference image not found in workspace: %s", raw)
+		}
+		fi, err := os.Stat(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("stat reference image %s: %w", raw, err)
+		}
+		if fi.Size() > int64(promptGuardSelectedImagesTotalBytes) {
+			log.Printf("forwarder reference_image too large size=%d read_cap=%d — dropping %s", fi.Size(), promptGuardSelectedImagesTotalBytes, raw)
+			dropped++
+			continue
 		}
 		data, err := os.ReadFile(resolved)
 		if err != nil {
 			return nil, fmt.Errorf("read reference image %s: %w", raw, err)
 		}
+		mimeType := ""
+		if len(data) > promptGuardSelectedImageMaxBytes {
+			// 超单图字节上限：缩放重编码（长边≤2000px）而非裸字节截断——裸截断损坏二进制完整性。
+			rescaled, newMIME, _, err := rescaleImageIfNeeded(data, "", promptGuardSelectedImageMaxBytes, imageRescaleMaxEdge)
+			if err == nil && rescaled != nil {
+				data = rescaled
+				mimeType = newMIME // 缩放可能 webp/gif→png/jpeg，同步更新 MIME 供下游 part Content-Type
+			} else {
+				log.Printf("forwarder reference_image rescale failed bytes=%d err=%v — dropping %s", len(data), err, raw)
+				dropped++
+				continue // 缩放/解码失败整张丢弃，绝不裸截断或外发损坏数据
+			}
+		}
+		if remaining <= 0 {
+			break
+		}
+		if len(data) > remaining {
+			// 超总量预算：再缩放一次（按剩余字节为上限）。仍超则丢弃该张 + log。
+			rescaled, newMIME, _, err := rescaleImageIfNeeded(data, mimeType, remaining, imageRescaleMaxEdge)
+			if err == nil && rescaled != nil && len(rescaled) <= remaining {
+				data = rescaled
+				if newMIME != "" {
+					mimeType = newMIME
+				}
+			} else {
+				log.Printf("forwarder reference_image over total budget bytes=%d remaining=%d err=%v — dropping %s", len(data), remaining, err, raw)
+				dropped++
+				continue
+			}
+		}
+		remaining -= len(data)
 		refs = append(refs, imageReference{
 			filename: filepath.Base(resolved),
+			mimeType: mimeType,
 			data:     data,
 		})
+	}
+	if len(refs) == 0 && dropped > 0 {
+		return nil, fmt.Errorf("all %d reference image(s) were dropped: each file must be ≤ %d bytes, total ≤ %d bytes, at most %d images (oversized/non-image files are skipped)",
+			dropped, promptGuardSelectedImageMaxBytes, promptGuardSelectedImagesTotalBytes, promptGuardSelectedImageMaxCount)
+	}
+	if dropped > 0 {
+		log.Printf("forwarder reference_image dropped=%d kept=%d budget_remaining=%d", dropped, len(refs), remaining)
 	}
 	return refs, nil
 }
