@@ -141,7 +141,7 @@ func probeWebSearch(ctx context.Context, provider, apiKey string) (string, error
 			return fmt.Sprintf("Bing 搜索成功，返回 %d 条结果", count), nil
 		}
 		// 免 key 双模：探活免费 HTML 搜索端点（运行时无 key 走免费链，有 key 走官方 API）。
-		if err := probeBingHTMLSearch(ctx, client); err != nil {
+		if err := probeBingHTMLSearch(ctx); err != nil {
 			return "", fmt.Errorf("Bing（免 key）搜索失败: %w", err)
 		}
 		return "Bing 免 key HTML 搜索端点可达（填 key 后自动升级为官方 API）", nil
@@ -255,9 +255,17 @@ func probeBaiduSearch(ctx context.Context, client *http.Client) error {
 }
 
 // probeBingHTMLSearch 探活免 key 必应 HTML 搜索端点：GET 搜索页，2xx 即可达。
-// 与运行时 executeBingHTMLSearch 同一端点/UA（运行时解析失败仍由免费链接管）。
-func probeBingHTMLSearch(ctx context.Context, client *http.Client) error {
+// 运行时 executeBingHTMLSearch 走跟随重定向的客户端；探活保持一致——国内访问 www.bing.com
+// 会 302 → cn.bing.com，用 no-redirect 客户端会把重定向误判为失败（探活与运行时口径不一致）。
+func probeBingHTMLSearch(ctx context.Context) error {
+	client := netproxy.NewHTTPClient(webToolsProbeTimeout)
 	requestURL := "https://www.bing.com/search?q=" + neturl.QueryEscape(webToolsProbeSearchTerm)
+	return probeBingHTMLRequest(ctx, client, requestURL)
+}
+
+// probeBingHTMLRequest 发一次必应搜索页 GET 并检查可达（2xx）。
+// URL 可注入便于单测；真实端点由 probeBingHTMLSearch 固定。
+func probeBingHTMLRequest(ctx context.Context, client *http.Client, requestURL string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return err
