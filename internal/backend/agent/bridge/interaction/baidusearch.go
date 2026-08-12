@@ -10,6 +10,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -136,13 +137,27 @@ func normalizeBaiduSearchURL(rawURL string) string {
 }
 
 // resolveBaiduWebSearchRedirects 把百度跳转链接解析为最终目标地址，就地更新引用列表。
+//
+// 每个引用的解析独立——只写自己那一个元素的 Url，无共享写，并发安全；并行发起可消除
+// N 次串行 HEAD/GET（各 ≤6s 超时）的累积延迟，最坏 N*12s 坍缩到 12s。http.Client 设计为
+// 并发安全，可跨 goroutine 共用；信号量限并发（≤4），引用数量异常大时不爆 goroutine。
 func resolveBaiduWebSearchRedirects(client *http.Client, references []*agentv1.WebSearchReference) {
+	const maxConcurrentBaiduRedirects = 4
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrentBaiduRedirects)
 	for _, reference := range references {
 		if reference == nil {
 			continue
 		}
-		reference.Url = resolveBaiduRedirectURL(client, reference.GetUrl())
+		wg.Add(1)
+		go func(ref *agentv1.WebSearchReference) {
+			defer wg.Done()
+			sem <- struct{}{} // 占一个并发槽
+			defer func() { <-sem }()
+			ref.Url = resolveBaiduRedirectURL(client, ref.GetUrl())
+		}(reference)
 	}
+	wg.Wait()
 }
 
 // resolveBaiduRedirectURL 判断链接是否是百度跳转链接，并尝试解析出真实目标。

@@ -1,7 +1,14 @@
 package interaction
 
 import (
+	"io"
+	"net/http"
+	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"cursor/gen/agentv1"
 )
 
 // TestExtractBaiduWebSearchReferences 验证百度搜索结果页解析：
@@ -82,4 +89,77 @@ func TestIsBaiduRedirectURL(t *testing.T) {
 			t.Errorf("isBaiduRedirectURL(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}
+}
+
+// TestResolveBaiduWebSearchRedirectsConcurrent 验证跳转解析被并发化（#15）：
+// 用自定义 Transport 拦截所有 baidu.com/link 请求并回 302+Location，同时统计同一时刻最大在途请求数。
+// 断言 (a) 每个跳转引用都被解析到 Location；(b) 观测到并发 ≥2——串行实现该值恒为 1，本断言确定性区分。
+func TestResolveBaiduWebSearchRedirectsConcurrent(t *testing.T) {
+	transport := &countingRedirectTransport{
+		location: "https://target.example.com/real",
+		delay:    100 * time.Millisecond, // 放大重叠窗口，让并发观测稳定
+	}
+	client := &http.Client{Transport: transport}
+
+	refs := []*agentv1.WebSearchReference{
+		{Url: "https://www.baidu.com/link?url=1"},
+		{Url: "https://www.baidu.com/link?url=2"},
+		{Url: "https://www.baidu.com/link?url=3"},
+		{Url: "https://www.baidu.com/link?url=4"},
+		nil, // nil 引用：应跳过，不 panic
+		{Url: "https://golang.google.cn/"}, // 非跳转链接：原样保留，不发请求
+	}
+	resolveBaiduWebSearchRedirects(client, refs)
+
+	if len(refs) != 6 {
+		t.Fatalf("refs length = %d, want 6", len(refs))
+	}
+	for i := 0; i < 4; i++ {
+		if refs[i].GetUrl() != "https://target.example.com/real" {
+			t.Errorf("ref[%d].Url = %q, want resolved Location", i, refs[i].GetUrl())
+		}
+	}
+	if refs[4] != nil {
+		t.Errorf("nil ref mutated: %+v", refs[4])
+	}
+	if refs[5].GetUrl() != "https://golang.google.cn/" {
+		t.Errorf("non-redirect ref[5].Url = %q, want unchanged", refs[5].GetUrl())
+	}
+	if transport.maxConcurrent < 2 {
+		t.Errorf("max concurrent redirect requests = %d, want ≥ 2 (resolution should be parallel)", transport.maxConcurrent)
+	}
+}
+
+// countingRedirectTransport 是测试用 RoundTripper：对所有请求返回 302 + Location，
+// 并统计同一时刻在途请求的最大并发数。
+type countingRedirectTransport struct {
+	mu            sync.Mutex
+	concurrent    int
+	maxConcurrent int
+	location      string
+	delay         time.Duration
+}
+
+func (transport *countingRedirectTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	transport.mu.Lock()
+	transport.concurrent++
+	if transport.concurrent > transport.maxConcurrent {
+		transport.maxConcurrent = transport.concurrent
+	}
+	transport.mu.Unlock()
+	defer func() {
+		transport.mu.Lock()
+		transport.concurrent--
+		transport.mu.Unlock()
+	}()
+	if transport.delay > 0 {
+		time.Sleep(transport.delay)
+	}
+	return &http.Response{
+		StatusCode: http.StatusFound,
+		Status:     "302 Found",
+		Header:     http.Header{"Location": []string{transport.location}},
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    request,
+	}, nil
 }
