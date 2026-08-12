@@ -300,6 +300,14 @@ func (broker *StreamBroker) RemoveIfIdle(requestID string) bool {
 	status := stream.Status
 	if status == StreamStatusCompleted || status == StreamStatusCanceled || status == StreamStatusFailed {
 		broker.stopTerminalCleanupTimerLocked(stream)
+		// #1:终结时兜底回收残留 ProviderCancel/Context。handleProviderDoneEvent 在存在
+		// 在途生图时会保留取消信号直到 PendingImages 清空；若 stream 先终结（如取消/异常），
+		// 这里调用 cancel 释放生图 goroutine 的快照 ctx，避免空跑白耗上游额度。
+		if stream.ProviderCancel != nil {
+			stream.ProviderCancel()
+			stream.ProviderCancel = nil
+			stream.ProviderContext = nil // #1:随 cancel 一起回收
+		}
 	}
 	stream.mu.Unlock()
 	if subscriberCount > 0 {

@@ -708,8 +708,15 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 	terminalToolInvocation := stream.ProviderTerminalToolInvocation
 	existingCompletion := stream.PendingProviderCompletion
 	stream.ProviderActive = false
-	stream.ProviderCancel = nil
-	stream.ProviderContext = nil // #1:随 cancel 一起回收
+	// #1:仅在无在途生图时回收 ProviderCancel/Context。生图 goroutine 快照了
+	// ProviderContext 派生自己的 15min ctx，pass 结束不能立即释放——否则用户取消
+	// (broker.Cancel→ProviderCancel())无法传播到在途生图 HTTP，空跑白耗上游额度。
+	// 有在途生图时保留，由 handleImageResult 清空 PendingImages 后回收，stream
+	// 终结时 broker.RemoveIfIdle 兜底调用。
+	if len(stream.PendingImages) == 0 {
+		stream.ProviderCancel = nil
+		stream.ProviderContext = nil // #1:随 cancel 一起回收
+	}
 	stream.PendingProviderAction = providerActionNone
 	stream.ProviderAccumulatedText.Reset()
 	stream.ProviderAccumulatedReasoning.Reset()
