@@ -1,7 +1,9 @@
-// baidusearch.go 实现 WebSearch 的百度搜索上游（免 key）。
+// baidusearch.go 实现 WebSearch 的百度搜索上游（免 key，免 key 链的成员之一）。
 //
-// 审计「行为偏离-3」补充：duckduckgo 仍是默认免 key 路径；"baidu" 作为可选项接入，
-// 对中文用户结果质量/时效性更好。百度失败或无结果时自动回退 DuckDuckGo（与上游 556ea21 一致）。
+// 审计「行为偏离-3」补充："baidu" 作为免 key 可选项接入，对中文用户结果质量/时效性更好。
+// 百度失败或无结果时，由 websearch_provider.go 的免 key 链式回退接管（执行顺序经
+// freeWebSearchChain 由 provider 决定，链尾固定 duckduckgo → bing → baidu），
+// 不再在此处内联单级回退——避免链上重复尝试同一引擎。
 package interaction
 
 import (
@@ -16,33 +18,16 @@ import (
 	"github.com/PuerkitoBio/goquery"
 
 	"cursor/gen/agentv1"
-	"cursor/internal/netproxy"
 )
 
 const (
 	baiduWebSearchBaseURL     = "https://www.baidu.com/s?ie=utf-8&tn=baidu&wd="
 	baiduWebSearchHostURL     = "https://www.baidu.com"
-	baiduSearchAbstractLimit  = 300
 	baiduSearchReferenceLimit = 8
 )
 
-// executeBaiduSearch 是 "baidu" provider 的入口：先尝试百度搜索，失败或无结果时
-// 回退 DuckDuckGo（免 key 兜底），保证搜索工具始终可用。
-func (bridge *Bridge) executeBaiduSearch(searchTerm string) ([]*agentv1.WebSearchReference, string, error) {
-	if strings.TrimSpace(searchTerm) == "" {
-		return nil, "", fmt.Errorf("web search search_term is required")
-	}
-	client := bridge.httpClient
-	if client == nil {
-		client = netproxy.NewHTTPClient(15 * time.Second)
-	}
-	if references, payload, err := tryBaiduWebSearch(client, searchTerm); err == nil && len(references) > 0 {
-		return references, payload, nil
-	}
-	return bridge.executeDuckDuckGoSearch(searchTerm)
-}
-
 // tryBaiduWebSearch 抓取百度搜索结果页并解析出引用列表。
+// 由免 key 链的 executeFreeSearchEngine 直接调用（不再有单级回退包装）。
 func tryBaiduWebSearch(client *http.Client, searchTerm string) ([]*agentv1.WebSearchReference, string, error) {
 	requestURL := baiduWebSearchBaseURL + neturl.QueryEscape(searchTerm)
 	request, err := http.NewRequest(http.MethodGet, requestURL, nil)
@@ -97,7 +82,7 @@ func extractBaiduWebSearchReferences(body string) []*agentv1.WebSearchReference 
 		references = append(references, &agentv1.WebSearchReference{
 			Title: title,
 			Url:   normalizeBaiduSearchURL(resultURL),
-			Chunk: truncateBaiduSearchAbstract(abstract),
+			Chunk: truncateWebSearchAbstract(abstract, webSearchAbstractLimit),
 		})
 		return true
 	})
@@ -106,7 +91,7 @@ func extractBaiduWebSearchReferences(body string) []*agentv1.WebSearchReference 
 
 // extractBaiduSearchResult 从单条百度搜索结果节点中提取标题、链接和摘要。
 func extractBaiduSearchResult(selection *goquery.Selection) (string, string, string) {
-	title := cleanBaiduSearchText(selection.Find("h3").First().Text())
+	title := cleanWebSearchText(selection.Find("h3").First().Text())
 	resultURL, _ := selection.Find("h3 a").First().Attr("href")
 	if title == "" {
 		title = firstBaiduSearchLine(selection.Text())
@@ -114,9 +99,9 @@ func extractBaiduSearchResult(selection *goquery.Selection) (string, string, str
 	if resultURL == "" {
 		resultURL, _ = selection.Find("a").First().Attr("href")
 	}
-	abstract := cleanBaiduSearchText(selection.Find(".c-abstract").First().Text())
+	abstract := cleanWebSearchText(selection.Find(".c-abstract").First().Text())
 	if abstract == "" {
-		abstract = cleanBaiduSearchText(selection.ChildrenFiltered("div").First().Text())
+		abstract = cleanWebSearchText(selection.ChildrenFiltered("div").First().Text())
 	}
 	if abstract == "" {
 		abstract = baiduSearchTextAfterFirstLine(selection.Text())
@@ -239,23 +224,10 @@ func isBaiduRedirectURL(rawURL string) bool {
 	return (host == "baidu.com" || strings.HasSuffix(host, ".baidu.com")) && strings.HasPrefix(path, "/link")
 }
 
-// truncateBaiduSearchAbstract 按字符数截断摘要文本，避免结果过长。
-func truncateBaiduSearchAbstract(value string) string {
-	value = cleanBaiduSearchText(value)
-	if baiduSearchAbstractLimit <= 0 {
-		return value
-	}
-	runes := []rune(value)
-	if len(runes) <= baiduSearchAbstractLimit {
-		return value
-	}
-	return string(runes[:baiduSearchAbstractLimit])
-}
-
 // firstBaiduSearchLine 返回文本中第一个非空行。
 func firstBaiduSearchLine(value string) string {
 	for _, line := range strings.Split(strings.ReplaceAll(value, "\r", "\n"), "\n") {
-		line = cleanBaiduSearchText(line)
+		line = cleanWebSearchText(line)
 		if line != "" {
 			return line
 		}
@@ -267,7 +239,7 @@ func firstBaiduSearchLine(value string) string {
 func baiduSearchTextAfterFirstLine(value string) string {
 	nonEmpty := make([]string, 0, 8)
 	for _, line := range strings.Split(strings.ReplaceAll(value, "\r", "\n"), "\n") {
-		line = cleanBaiduSearchText(line)
+		line = cleanWebSearchText(line)
 		if line != "" {
 			nonEmpty = append(nonEmpty, line)
 		}
@@ -275,10 +247,5 @@ func baiduSearchTextAfterFirstLine(value string) string {
 	if len(nonEmpty) <= 1 {
 		return ""
 	}
-	return cleanBaiduSearchText(strings.Join(nonEmpty[1:], " "))
-}
-
-// cleanBaiduSearchText 折叠多余空白并去除首尾空格。
-func cleanBaiduSearchText(value string) string {
-	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	return cleanWebSearchText(strings.Join(nonEmpty[1:], " "))
 }

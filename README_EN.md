@@ -104,10 +104,11 @@ When the same modelID has multiple adapters, a primary→backup candidate chain 
 
 2.0.7 closes the two web-tool items from [docs/AUDIT_2026-07-29_独立全量审查.md](./docs/AUDIT_2026-07-29_独立全量审查.md) ("behavior-deviation-3") — all free, zero-deploy, no config needed to start.
 
-### WebSearch multi-provider SDK + DuckDuckGo JSON lite endpoint
+### WebSearch multi-provider SDK + DuckDuckGo JSON lite endpoint + keyless chain fallback
 
-- **Multi-provider BYOK**: WebSearch no longer hardcodes DuckDuckGo HTML scraping. Pick Bing / Serper / Tavily in the "Web Tools" config card, enter the API key, and it goes through each provider's official HTTPS JSON (your own key = BYOK, far better quality/timeliness than HTML scraping).
-- **No silent failure on missing key**: if you pick a key-required provider but leave the key empty, the tool result explicitly warns "API key required" instead of silently returning empty.
+- **Multi-provider BYOK**: WebSearch no longer hardcodes DuckDuckGo HTML scraping. Pick Bing / Serper / Tavily in the "Web Tools" config card, enter the API key, and it goes through each provider's official HTTPS JSON (your own key = BYOK, far better quality/timeliness than HTML scraping). Bing with a key uses the official API v7; without a key it drops to keyless HTML scraping.
+- **Keyless chain fallback (free tier)**: the selected keyless provider is the "chain head"; on failure or no results it tries the remaining keyless engines in a fixed order and the first engine returning non-empty results wins. Head duckduckgo → fallback order duckduckgo → bing → baidu; head baidu = Chinese-first (baidu→DDG→bing), head bing = mixed (bing→DDG→baidu), which also rescues mainland users whose DuckDuckGo is unreachable. All engines failing yields an aggregate error, never a silent empty.
+- **No silent failure on missing key**: if you pick a key-required provider (serper/tavily) but leave the key empty, the tool result explicitly warns "API key required" instead of silently returning empty.
 - **DuckDuckGo JSON lite (default, free)**: with no provider configured, WebSearch first tries the DuckDuckGo **Instant Answer JSON endpoint** (`api.duckduckgo.com/?format=json`, official, structured, no reliance on brittle HTML classes — **more stable**); on empty results it falls back to the original HTML scrape, so coverage never drops.
 
 ### WebFetch body LRU cache + intranet host allowlist

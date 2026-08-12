@@ -1,14 +1,21 @@
 // websearch_provider.go 实现 WebSearch 的可配置多 provider 上游。
 //
 // 审计「行为偏离-3」：原 executeWebSearch 硬编码 DuckDuckGo HTML 抓取
-//（https://html.duckduckgo.com/html/?q=），易被封禁、结果质量/时效性差。
-// 改为按 WebToolsConfig.WebSearchProvider 分派：
-//   - duckduckgo（默认，免 key）：首选 Instant Answer JSON 端点（更稳），空结果回退 HTML 抓取。
-//   - baidu（免 key，中文质量更好）：百度搜索，失败/无结果自动回退 DuckDuckGo。
-//   - bing / serper / tavily：BYOK API key，走各家 HTTPS GET + JSON。
+// （https://html.duckduckgo.com/html/?q=），易被封禁、结果质量/时效性差。
+// 改为按 WebToolsConfig.WebSearchProvider 分派，分两层：
 //
-// 缺 provider（空或非认可值）一律回退 duckduckgo；选了 bing/serper/tavily 但 key 缺失，
-// 返回 errWebSearchAPIKeyMissing 让调用方在工具结果里显式告警（而非静默失败）。
+//   - 免 key 层（duckduckgo / baidu / bing 无 key）走「链式回退」：provider 单选即「链首」，
+//     失败或无结果按固定兜底顺序试其余免 key 引擎，首个返回非空结果的引擎胜出
+//     （executeFreeSearchChain）。链尾固定 duckduckgo → bing → baidu：
+//     duckduckgo 走稳定 Instant Answer JSON，bing 是 HTML 抓取，baidu 英文结果最弱垫底。
+//     中文查询选 baidu 作链首质量最佳；英文/混搜选 bing 或 duckduckgo。
+//     amadeus 浏览器版的「必应>DDG>百度」是数据中心 IP 被百度风控逼出来的，
+//     本机住宅 IP 不适用，故 baidu 允许靠前。
+//   - BYOK 层（bing 有 key / serper / tavily）：走各家官方 HTTPS GET + JSON，缺 key 返回
+//     errWebSearchAPIKeyMissing 显式告警（而非静默失败）；调用失败即报错，不静默降级到
+//     免费层——用户为结果质量付费，静默替换是正确性 bug。
+//
+// 缺 provider（空或非认可值）一律回退 duckduckgo 作链首。
 package interaction
 
 import (
@@ -21,22 +28,23 @@ import (
 	"time"
 
 	"cursor/gen/agentv1"
+	"cursor/internal/netproxy"
 )
 
 // errWebSearchAPIKeyMissing 在用户选了需 key 的 provider 但未填 key 时返回。
 // 调用方把它作为工具结果回给模型，让用户明确知道 WebSearch 因缺 key 不可用。
 var errWebSearchAPIKeyMissing = fmt.Errorf("configured web search provider requires an API key; configure webSearchAPIKey or switch to duckduckgo")
 
-// dispatchWebSearch 按当前配置选择 provider 执行搜索。
+// dispatchWebSearch 按当前配置选择搜索路径执行搜索。
 // searchTerm 已由调用方 trim 过。返回 references（≤5）+ payload。
+//
+// 分派语义：
+//   - serper / tavily：BYOK，缺 key → errWebSearchAPIKeyMissing；调用失败响亮报错，不回退免费层。
+//   - bing：有 key 走官方 API v7（BYOK）；无 key 走免费 HTML 抓取并作为免 key 链首。
+//   - baidu / duckduckgo / 空 / 非认可值：免 key 链式回退，链首分别 baidu / duckduckgo / duckduckgo。
 func (bridge *Bridge) dispatchWebSearch(searchTerm string) ([]*agentv1.WebSearchReference, string, error) {
 	cfg := bridge.currentWebTools()
 	switch strings.ToLower(strings.TrimSpace(cfg.WebSearchProvider)) {
-	case "bing":
-		if strings.TrimSpace(cfg.WebSearchAPIKey) == "" {
-			return nil, "", errWebSearchAPIKeyMissing
-		}
-		return executeBingSearch(bridge.httpClient, searchTerm, cfg.WebSearchAPIKey)
 	case "serper":
 		if strings.TrimSpace(cfg.WebSearchAPIKey) == "" {
 			return nil, "", errWebSearchAPIKeyMissing
@@ -47,13 +55,98 @@ func (bridge *Bridge) dispatchWebSearch(searchTerm string) ([]*agentv1.WebSearch
 			return nil, "", errWebSearchAPIKeyMissing
 		}
 		return executeTavilySearch(bridge.httpClient, searchTerm, cfg.WebSearchAPIKey)
+	case "bing":
+		// 双模：有 key → 官方 API（失败响亮不回退）；无 key → 免费 HTML 抓取为免 key 链首。
+		if strings.TrimSpace(cfg.WebSearchAPIKey) != "" {
+			return executeBingSearch(bridge.httpClient, searchTerm, cfg.WebSearchAPIKey)
+		}
+		return bridge.executeFreeSearchChain("bing", searchTerm)
 	case "baidu":
-		// 免 key，中文结果质量更好；百度失败或无结果时自动回退 DuckDuckGo。
-		return bridge.executeBaiduSearch(searchTerm)
+		return bridge.executeFreeSearchChain("baidu", searchTerm)
 	default:
-		// duckduckgo / 空 / 非认可值：免 key 降级路径。
+		// duckduckgo / 空 / 非认可值：免 key 降级路径，duckduckgo 为链首。
+		return bridge.executeFreeSearchChain("duckduckgo", searchTerm)
+	}
+}
+
+// webSearchAbstractLimit 是搜索摘要按 rune 截断的上限（百度/必应共用，对齐 amadeus 的 300）。
+const webSearchAbstractLimit = 300
+
+// freeWebSearchFallbackOrder 是免 key 链的固定兜底顺序（链首排除后按此补位）。
+// 考量见包注释：duckduckgo（稳定 JSON）→ bing（HTML 抓取）→ baidu（英文结果最弱）。
+var freeWebSearchFallbackOrder = []string{"duckduckgo", "bing", "baidu"}
+
+// freeWebSearchChain 返回免 key 链的实际执行顺序：链首（用户选中的 provider）在前，
+// 其余引擎按 freeWebSearchFallbackOrder 固定顺序补位。链首非免 key 值（未知值）一律
+// 归一为 duckduckgo，保证 executeFreeSearchEngine 只收得免 key 引擎。
+func freeWebSearchChain(head string) []string {
+	switch head {
+	case "baidu", "bing":
+	default:
+		head = "duckduckgo"
+	}
+	engines := make([]string, 0, len(freeWebSearchFallbackOrder))
+	engines = append(engines, head)
+	for _, engine := range freeWebSearchFallbackOrder {
+		if engine != head {
+			engines = append(engines, engine)
+		}
+	}
+	return engines
+}
+
+// executeFreeSearchChain 在免 key 引擎间按 freeWebSearchChain 的顺序逐个尝试，
+// 首个返回非空结果的引擎胜出。全链失败返回聚合错误（含各引擎原因），绝不静默返回空——
+// 调用方把它作为工具结果回给模型，让用户知道搜索为何不可用。
+func (bridge *Bridge) executeFreeSearchChain(head string, searchTerm string) ([]*agentv1.WebSearchReference, string, error) {
+	if strings.TrimSpace(searchTerm) == "" {
+		return nil, "", fmt.Errorf("web search search_term is required")
+	}
+	failures := make([]string, 0, len(freeWebSearchFallbackOrder))
+	for _, engine := range freeWebSearchChain(head) {
+		references, payload, err := bridge.executeFreeSearchEngine(engine, searchTerm)
+		if err == nil && len(references) > 0 {
+			return references, payload, nil
+		}
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s(%v)", engine, err))
+		}
+	}
+	return nil, "", fmt.Errorf("web search failed on all free engines: %s", strings.Join(failures, "; "))
+}
+
+// executeFreeSearchEngine 执行单个免 key 引擎。engine ∈ {duckduckgo, bing, baidu}。
+func (bridge *Bridge) executeFreeSearchEngine(engine string, searchTerm string) ([]*agentv1.WebSearchReference, string, error) {
+	switch engine {
+	case "baidu":
+		client := bridge.httpClient
+		if client == nil {
+			client = netproxy.NewHTTPClient(15 * time.Second)
+		}
+		return tryBaiduWebSearch(client, searchTerm)
+	case "bing":
+		return executeBingHTMLSearch(bridge.httpClient, searchTerm)
+	default:
 		return bridge.executeDuckDuckGoSearch(searchTerm)
 	}
+}
+
+// cleanWebSearchText 折叠空白并去除首尾空格（搜索摘要通用清洗，百度/必应共用）。
+func cleanWebSearchText(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+}
+
+// truncateWebSearchAbstract 按 rune 数截断摘要，超限截断到 limit（百度/必应共用）。
+func truncateWebSearchAbstract(value string, limit int) string {
+	value = cleanWebSearchText(value)
+	if limit <= 0 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
 }
 
 // httpGetJSON 发 GET 请求并以 JSON 解析到 out。超时由 client 控制。

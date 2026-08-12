@@ -34,9 +34,9 @@ const (
 type WebToolsProbeKind string
 
 const (
-	WebToolsProbeKindTabServer  WebToolsProbeKind = "tabserver"
-	WebToolsProbeKindWebSearch  WebToolsProbeKind = "websearch"
-	WebToolsProbeKindWebFetch   WebToolsProbeKind = "webfetch"
+	WebToolsProbeKindTabServer WebToolsProbeKind = "tabserver"
+	WebToolsProbeKindWebSearch WebToolsProbeKind = "websearch"
+	WebToolsProbeKindWebFetch  WebToolsProbeKind = "webfetch"
 )
 
 // WebToolsProbeResult 是一次 Web 工具探活结果。前端按 Status 渲染成功/失败，Detail 作摘要。
@@ -48,10 +48,10 @@ type WebToolsProbeResult struct {
 
 // WebToolsProbeRequest 是前端传入的探活请求，携带三类工具各自的当前表单值。
 type WebToolsProbeRequest struct {
-	Kind             WebToolsProbeKind `json:"kind"`
-	TabServerBaseURL string            `json:"tabServerBaseURL,omitempty"`
+	Kind              WebToolsProbeKind `json:"kind"`
+	TabServerBaseURL  string            `json:"tabServerBaseURL,omitempty"`
 	WebSearchProvider string            `json:"webSearchProvider,omitempty"`
-	WebSearchAPIKey  string            `json:"webSearchAPIKey,omitempty"`
+	WebSearchAPIKey   string            `json:"webSearchAPIKey,omitempty"`
 }
 
 // TestWebTools 对 Tab 服务 / WebSearch / WebFetch 做一次连通性探活。
@@ -133,14 +133,18 @@ func probeWebSearch(ctx context.Context, provider, apiKey string) (string, error
 	}
 	switch p {
 	case "bing":
-		if strings.TrimSpace(apiKey) == "" {
-			return "", fmt.Errorf("Bing 需要订阅 key（Ocp-Apim-Subscription-Key），请先填写")
+		if strings.TrimSpace(apiKey) != "" {
+			count, err := probeBingSearch(ctx, client, apiKey)
+			if err != nil {
+				return "", fmt.Errorf("Bing 搜索失败: %w", err)
+			}
+			return fmt.Sprintf("Bing 搜索成功，返回 %d 条结果", count), nil
 		}
-		count, err := probeBingSearch(ctx, client, apiKey)
-		if err != nil {
-			return "", fmt.Errorf("Bing 搜索失败: %w", err)
+		// 免 key 双模：探活免费 HTML 搜索端点（运行时无 key 走免费链，有 key 走官方 API）。
+		if err := probeBingHTMLSearch(ctx, client); err != nil {
+			return "", fmt.Errorf("Bing（免 key）搜索失败: %w", err)
 		}
-		return fmt.Sprintf("Bing 搜索成功，返回 %d 条结果", count), nil
+		return "Bing 免 key HTML 搜索端点可达（填 key 后自动升级为官方 API）", nil
 	case "serper":
 		if strings.TrimSpace(apiKey) == "" {
 			return "", fmt.Errorf("Serper 需要 API key，请先填写")
@@ -164,7 +168,7 @@ func probeWebSearch(ctx context.Context, provider, apiKey string) (string, error
 		if err := probeBaiduSearch(ctx, client); err != nil {
 			return "", fmt.Errorf("百度搜索失败: %w", err)
 		}
-		return "百度搜索端点可达（免 key，失败自动回退 DuckDuckGo）", nil
+		return "百度搜索端点可达（免 key，失败自动回退其他免 key 引擎）", nil
 	default:
 		// duckduckgo 免 key 探活：直接抓 Instant Answer JSON 端点，返回 200 即可达。
 		if err := probeDuckDuckGoSearch(ctx, client); err != nil {
@@ -232,6 +236,28 @@ func probeDuckDuckGoSearch(ctx context.Context, client *http.Client) error {
 // 百度返回 HTML（非 JSON），故不复用 probeGetJSON；运行时解析失败会回退 DDG。
 func probeBaiduSearch(ctx context.Context, client *http.Client) error {
 	requestURL := "https://www.baidu.com/s?ie=utf-8&tn=baidu&wd=" + neturl.QueryEscape(webToolsProbeSearchTerm)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(resp.Body, webToolsProbeMaxBodyBytes))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("http status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// probeBingHTMLSearch 探活免 key 必应 HTML 搜索端点：GET 搜索页，2xx 即可达。
+// 与运行时 executeBingHTMLSearch 同一端点/UA（运行时解析失败仍由免费链接管）。
+func probeBingHTMLSearch(ctx context.Context, client *http.Client) error {
+	requestURL := "https://www.bing.com/search?q=" + neturl.QueryEscape(webToolsProbeSearchTerm)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return err

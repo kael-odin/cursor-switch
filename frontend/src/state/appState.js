@@ -176,8 +176,9 @@ function normalizePerNamespace(raw) {
   return cleaned;
 }
 
-// 审计「行为偏离-3」：WebSearch provider 合法值。duckduckgo/baidu = 免 key（baidu 中文质量更好，
-// 失败自动回退 DDG）；bing/serper/tavily = 需对应 APIKey（BYOK）。空/非认可值归 duckduckgo。
+// 审计「行为偏离-3」：WebSearch provider 合法值。duckduckgo/baidu/bing（无 key）= 免 key，
+// 失败按固定顺序回退（duckduckgo→必应→百度）；bing（有 key）/serper/tavily = 需对应 APIKey
+// （BYOK，失败响亮报错不回退免费层）。空/非认可值归 duckduckgo。
 const SUPPORTED_WEB_SEARCH_PROVIDERS = new Set([
   "duckduckgo",
   "baidu",
@@ -188,8 +189,8 @@ const SUPPORTED_WEB_SEARCH_PROVIDERS = new Set([
 
 export const WEB_SEARCH_PROVIDER_OPTIONS = [
   { value: "duckduckgo", label: "DuckDuckGo（免 key，降级质量）" },
-  { value: "baidu", label: "百度（免 key，中文质量好，失败回退 DDG）" },
-  { value: "bing", label: "Bing Web Search v7（需 key）" },
+  { value: "baidu", label: "百度（免 key，中文质量好，失败自动回退）" },
+  { value: "bing", label: "Bing（有 key 走官方 API，无 key 走免费 HTML）" },
   { value: "serper", label: "Serper / Google（需 key）" },
   { value: "tavily", label: "Tavily（需 key）" },
 ];
@@ -1437,7 +1438,7 @@ export async function saveTabUseCursorCredentials(value) {
 }
 
 // saveWebSearchProvider 设置 WebSearch 上游 provider（审计「行为偏离-3」）。
-// duckduckgo = 免 key 降级；bing/serper/tavily = 需对应 APIKey（BYOK）。
+// duckduckgo/baidu/bing（无 key）= 免 key 链式回退；bing（有 key）/serper/tavily = 需对应 APIKey（BYOK）。
 export async function saveWebSearchProvider(provider) {
   const currentConfig = await loadPersistedUserConfig();
   const previous = appState.webSearchProvider;

@@ -245,9 +245,10 @@ function syncWebFetchAllowlistDraft() {
 }
 
 // 选了需 key 的 provider 但 key 空 → 前端告警（与后端缺 key 错误对齐，不静默失败）。
+// bing 免 key 可走 HTML 抓取，不在告警之列（仅 serper/tavily 必填 key）。
 const webSearchNeedsKey = computed(() => {
   const p = String(appState.webSearchProvider || "").toLowerCase();
-  return (p === "bing" || p === "serper" || p === "tavily") && !String(appState.webSearchAPIKey || "").trim();
+  return (p === "serper" || p === "tavily") && !String(appState.webSearchAPIKey || "").trim();
 });
 
 async function handleSaveWebSearchProvider(nextProvider) {
@@ -464,7 +465,7 @@ onMounted(async () => {
         <div>
           <h2 class="text-base font-medium text-white">Web 工具（WebSearch / WebFetch）</h2>
           <div class="text-sm text-[#a3a3a3]">
-            agent 交互桥的外网工具。WebSearch 默认走 DuckDuckGo（免 key，降级质量，易被封）；可配置 Bing/Serper/Tavily 走自带 key（BYOK）。WebFetch 默认拒绝所有内网 host（SSRF 防护），可放行企业内网 Wiki/Confluence。
+            agent 交互桥的外网工具。WebSearch 默认走 DuckDuckGo（免 key，降级质量，易被封）；免 key provider 失败会按固定顺序回退（duckduckgo→必应→百度），也可配置 Bing/Serper/Tavily 走自带 key（BYOK，Bing 填 key 自动升级官方 API）。WebFetch 默认拒绝所有内网 host（SSRF 防护），可放行企业内网 Wiki/Confluence。
           </div>
         </div>
 
@@ -481,11 +482,11 @@ onMounted(async () => {
         </div>
 
         <div class="flex flex-col gap-2">
-          <div class="text-sm font-medium text-[#e5e5e5]">WebSearch API Key（Bing / Serper / Tavily 必填）</div>
+          <div class="text-sm font-medium text-[#e5e5e5]">WebSearch API Key（Serper / Tavily 必填，Bing 可选）</div>
           <Input
             v-model="appState.webSearchAPIKey"
             type="password"
-            placeholder="选了 Bing/Serper/Tavily 时填写对应 API key"
+            placeholder="Serper/Tavily 必填；Bing 填了升级官方 API，不填走免费 HTML"
             class="w-full"
             @blur="handleSaveWebSearchAPIKey"
           />
@@ -503,7 +504,7 @@ onMounted(async () => {
             v-if="webSearchNeedsKey"
             class="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-300"
           >
-            当前 provider 需要 API key 才可用，未填写时 WebSearch 将报错提示缺 key（不静默失败）。DuckDuckGo 不需要 key。
+            当前 provider 需要 API key 才可用，未填写时 WebSearch 将报错提示缺 key（不静默失败）。DuckDuckGo/百度/Bing（免 key）不需要 key。
           </div>
         </div>
 

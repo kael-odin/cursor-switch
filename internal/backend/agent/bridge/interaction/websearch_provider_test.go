@@ -2,6 +2,8 @@ package interaction
 
 import (
 	"errors"
+	"net/http"
+	"strings"
 	"testing"
 
 	"cursor/internal/safehttp"
@@ -9,8 +11,9 @@ import (
 
 // TestDispatchWebSearchMissingAPIKey 验证选了需 key 的 provider 但未填 key 时，
 // 返回 errWebSearchAPIKeyMissing（缺 key 显式告警而非静默失败，审计「行为偏离-3」）。
+// bing 双模化后免 key 可走 HTML 抓取，不再入缺 key 之列（仅 serper/tavily 必填 key）。
 func TestDispatchWebSearchMissingAPIKey(t *testing.T) {
-	cases := []string{"bing", "serper", "tavily"}
+	cases := []string{"serper", "tavily"}
 	for _, provider := range cases {
 		t.Run(provider, func(t *testing.T) {
 			bridge := NewBridge(func() WebToolsConfig {
@@ -25,21 +28,23 @@ func TestDispatchWebSearchMissingAPIKey(t *testing.T) {
 }
 
 // TestDispatchWebSearchDuckDuckGoFallback 验证空 provider/非认可值回退 duckduckgo
-// （不报缺 key 错，走免 key 降级路径）。
+// （不报缺 key 错，走免 key 链式降级路径）。注入全 403 的脚本化 transport，
+// 断言聚合错误且非缺 key 类（确定性，不发真实网络）。
 func TestDispatchWebSearchDuckDuckGoFallback(t *testing.T) {
 	for _, provider := range []string{"", "unknown", "duckduckgo"} {
 		t.Run("provider="+provider, func(t *testing.T) {
+			transport := &scriptedSearchTransport{}
 			bridge := NewBridge(func() WebToolsConfig {
 				return WebToolsConfig{WebSearchProvider: provider}
 			})
-			// duckduckgo 路径会真发 HTTP，必然失败（无网/非 2xx）；
-			// 这里只断言它不返回缺 key 错误（说明走了 duckduckgo 分支）。
+			bridge.httpClient = &http.Client{Transport: transport} // 所有请求都 403
 			_, _, err := bridge.dispatchWebSearch("test query")
 			if errors.Is(err, errWebSearchAPIKeyMissing) {
 				t.Fatalf("provider=%s: should not report missing API key for duckduckgo fallback", provider)
 			}
-			// err 非 nil 是预期的（网络不可达），但不应是缺 key 类。
-			_ = err
+			if err == nil || !strings.Contains(err.Error(), "failed on all free engines") {
+				t.Fatalf("provider=%s: expected chain aggregate error, got %v", provider, err)
+			}
 		})
 	}
 }

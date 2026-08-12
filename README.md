@@ -104,10 +104,11 @@ Tab 代码补全 / Git Commit / 分支名生成（`StreamCpp` / `CppConfig` / `W
 
 2.0.7 收口 [docs/AUDIT_2026-07-29_独立全量审查.md](./docs/AUDIT_2026-07-29_独立全量审查.md) 中「行为偏离-3」的两项外网工具强化——全部免费、零部署，无需任何配置即开箱可用。
 
-### WebSearch 多 provider SDK + DuckDuckGo JSON lite 端点
+### WebSearch 多 provider SDK + DuckDuckGo JSON lite 端点 + 免 key 链式回退
 
-- **多 provider BYOK**：WebSearch 不再硬编码 DuckDuckGo HTML 抓取。在「Web 工具」配置卡选 Bing / Serper / Tavily，填对应 API key 即走各家官方 HTTPS JSON（自带 key = BYOK，质量与时效性远优于 HTML 抓取）。
-- **缺 key 不静默失败**：选了需 key 的 provider 但未填 key → 工具结果显式告警「需配置 API key」，不再静默返回空。
+- **多 provider BYOK**：WebSearch 不再硬编码 DuckDuckGo HTML 抓取。在「Web 工具」配置卡选 Bing / Serper / Tavily，填对应 API key 即走各家官方 HTTPS JSON（自带 key = BYOK，质量与时效性远优于 HTML 抓取）。Bing 填 key 走官方 API v7；不填 key 自动降级为免 key HTML 抓取。
+- **免 key 链式回退（免费层）**：选中的免 key provider 是「链首」，失败/无结果时按固定顺序试其余免 key 引擎，首个返回非空结果的引擎胜出。链首 duckduckgo → 兜底顺序 duckduckgo → 必应 → 百度；选 baidu 即中文优先（百度→DDG→必应），选 bing 即混搜（必应→DDG→百度），满足国内用户 DDG 不可达时也能兜底。全链失败才聚合报错，绝不静默返回空。
+- **缺 key 不静默失败**：选了 serper/tavily 但未填 key → 工具结果显式告警「需配置 API key」，不再静默返回空。
 - **DuckDuckGo JSON lite 端点（默认免费）**：不配 provider 时首选 DuckDuckGo **Instant Answer JSON 端点**（`api.duckduckgo.com/?format=json`，官方、结构化、不依赖易变 HTML class，**更稳**）；空结果再回退原 HTML 抓取路径，保证覆盖率不降。
 
 ### WebFetch 正文 LRU 缓存 + 内网 host 白名单
