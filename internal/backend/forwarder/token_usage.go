@@ -335,6 +335,16 @@ func (service *Service) recordTurnUsageSnapshot(stream *ActiveStream, conversati
 		}
 		stream.mu.Unlock()
 	}
+	// P0-2 残项：请求模型为元别名 "default"（客户端未指定具体模型，路由解析到默认 adapter）时，
+	// ModelID 若落盘为 "default"，by_model 聚合会把所有走默认模型的调用混进同一桶——不同真实模型
+	// （gpt-5/claude…）的 token 加总后按单一价格计成本，成本失真。此时用 usage.Model（adapter 的
+	// TurnFinished 携带实际服务模型，即 streamOnce 解析后的 req.ProviderModelID）作为模型键，
+	// 按真实模型聚合；display name 下段同样回退 usage.Model，两字段保持同源。
+	if modelID == "" || modelID == "default" {
+		if actual := strings.TrimSpace(usage.Model); actual != "" {
+			modelID = actual
+		}
+	}
 	if strings.TrimSpace(modelName) == "" {
 		modelName = modelID
 	}
