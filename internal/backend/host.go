@@ -731,19 +731,18 @@ func uploadServiceProcedure(pattern string, name string, protocol server.RouteOp
 }
 
 func tabServerUpstreamProcedure(pattern string, name string, stream bool, protocol server.RouteOption, deps upstream.Dependencies, configs *serverconfig.Manager) server.Option {
-	// 在构造 action 前定下凭证策略：留空（目标=官方 cursor.sh）+ 开关开 → 带真实 Cursor 凭证
-	// （补全可用，消耗账号补全额度）；填了自建 tab server → 强制 CredentialNone（防本机 Cursor token
-	// 送到第三方 server）。流式路由（StreamCpp/StreamNextCursorPrediction）带凭证切官方时同样
+	// 凭证策略改为请求时解析（F-4）：路由在 rebuild 时构造一次，但运行时 config 变更
+	// （SaveUserConfigPatch/SaveConfig 仅在 httpServer==nil 时 rebuild）不重建路由，构造期
+	// 烘焙的 credential 会滞后——例如先以「留空 + 开关开」带本机 Cursor 凭证启动，再于设置页
+	// 填自建 TabServerBaseURL，请求会重定向到第三方 server 却仍携带真实 Cursor 凭证（外泄）。
+	// 故在 action 闭包内按当前 config 每请求解析，与下方 TabServerBaseURL 的请求时读取同生命周期，
+	// 两者始终同源一致。留空（目标=官方 cursor.sh）+ 开关开 → 带真实 Cursor 凭证（补全可用，
+	// 消耗账号补全额度）；填了自建 tab server → 强制 CredentialNone（防本机 Cursor token 送到
+	// 第三方 server）。流式路由（StreamCpp/StreamNextCursorPrediction）带凭证切官方时同样
 	// 要避免 30s 端到端超时截断 → Stream:true 走流式 NoRedirect 客户端（已落地）。
-	credential := resolveTabCredentialPolicy(configs)
-	direct := upstream.DirectAction(deps, upstream.CompatRouteConfig{
-		Name:       name,
-		Credential: credential,
-		Stream:     stream,
-	})
 	action := func(ctx *server.Context) error {
 		// H1: tab server 地址由 config 控制。空 = 禁用第三方重定向，回退官方 api2.cursor.sh 透传
-		// （是否带凭证由 TabUseCursorCredentials 控制，已在上面 resolveTabCredentialPolicy 决定）。
+		// （是否带凭证由 TabUseCursorCredentials 控制，由请求时 resolveTabCredentialPolicy 决定）。
 		baseURLStr := ""
 		if configs != nil {
 			baseURLStr = strings.TrimSpace(configs.Current().Routing.TabServerBaseURL)
@@ -753,6 +752,12 @@ func tabServerUpstreamProcedure(pattern string, name string, stream bool, protoc
 				ctx.UpstreamURL = target
 			}
 		}
+		credential := resolveTabCredentialPolicy(configs)
+		direct := upstream.DirectAction(deps, upstream.CompatRouteConfig{
+			Name:       name,
+			Credential: credential,
+			Stream:     stream,
+		})
 		return direct(ctx)
 	}
 	return server.POST(pattern,

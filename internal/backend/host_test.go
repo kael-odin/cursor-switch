@@ -10,6 +10,7 @@ import (
 
 	"cursor/internal/appdata"
 	serverconfig "cursor/internal/backend/server/config"
+	"cursor/internal/logger"
 )
 
 // TestResolveTabUpstreamURL 是 H1 的回归测试：tab server 地址可配置，
@@ -114,4 +115,8 @@ func TestSaveConfigVsStartNoRace(t *testing.T) {
 	stopCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	_ = host.Stop(stopCtx)
+	// newTestHost 把 HOME/USERPROFILE 重定向到 t.TempDir()，Start 走 logger 打开该 tmp 下的
+	// app.log 并长期持有句柄。Windows 上未释放会导致 t.TempDir RemoveAll 报
+	// "being used by another process"（Linux 可 unlink 打开中的文件故 CI 不暴露）。
+	logger.CloseLogFile()
 }
