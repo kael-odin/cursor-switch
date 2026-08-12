@@ -17,6 +17,57 @@ import (
 	"cursor/internal/securefile"
 )
 
+// maxDebugLogFileBytes 是单类 debug jsonl 的大小上限，达到后轮转（保留 .1/.2/.3 三份备份）。
+// 配合 P0-3 的字段脱敏，避免长对话下明文日志无限增长占满磁盘。
+const maxDebugLogFileBytes = 10 * 1024 * 1024
+
+// debugLogFileCap 是轮转实际生效上限，默认取常量；测试可覆盖以小阈值验证轮转逻辑。
+var debugLogFileCap = int(maxDebugLogFileBytes)
+
+// maxDebugBackupCount 是轮转保留的备份份数。
+const maxDebugBackupCount = 3
+
+// maxDebugDataHexLength 是单条 bidi 原始请求体 hex 的上限；超限截断，防止单行超长绕过轮转预算。
+const maxDebugDataHexLength = 64 * 1024
+
+// sensitiveDebugFields 是需要脱敏的字段名（小写精确匹配，递归应用于所有 debug 事件）。
+// P0-3：provider 请求/响应 payload 里的 Authorization、api key、token、password、secret 等
+// 一旦落盘即明文泄露——即使文件权限 0600，配合网盘同步/日志收集仍会外泄。
+var sensitiveDebugFields = map[string]struct{}{
+	"authorization":       {},
+	"auth":                {},
+	"api_key":             {},
+	"apikey":              {},
+	"api-key":             {},
+	"x-api-key":           {},
+	"x_api_key":           {},
+	"x-auth-token":        {},
+	"x_auth_token":        {},
+	"access_key":          {},
+	"access_key_id":       {},
+	"secret":              {},
+	"secret_key":          {},
+	"client_secret":       {},
+	"client-secret":       {},
+	"app_secret":          {},
+	"private_key":         {},
+	"password":            {},
+	"passwd":              {},
+	"pwd":                 {},
+	"token":               {},
+	"access_token":        {},
+	"refresh_token":       {},
+	"id_token":            {},
+	"session_token":       {},
+	"auth_token":          {},
+	"bearer":              {},
+	"cookie":              {},
+	"set-cookie":          {},
+	"set_cookie":          {},
+	"credentials":         {},
+	"proxy-authorization": {},
+}
+
 type debugLogConfig interface {
 	IsObservabilityLogEnabled(context.Context) bool
 }
@@ -28,6 +79,10 @@ type debugRecorder struct {
 	mu          sync.Mutex
 }
 
+// newDebugRecorder 创建 debug 记录器。
+//
+// 注意：historyRoot 不应放在网盘/云同步目录——debug 日志是诊断用途，虽经脱敏且权限 0600，
+// 同步到云端仍会扩大暴露面（P0-3 文档化要求）。
 func newDebugRecorder(historyRoot string, broker *StreamBroker, config debugLogConfig) *debugRecorder {
 	return &debugRecorder{
 		historyRoot: strings.TrimSpace(historyRoot),
@@ -55,8 +110,9 @@ func (recorder *debugRecorder) LogBidiRaw(ctx context.Context, requestID string,
 	event["procedure"] = "/aiserver.v1.BidiService/BidiAppend"
 	event["append_seqno"] = appendSeqno
 	event["status"] = strings.TrimSpace(status)
-	event["data_hex"] = dataHex
+	event["data_hex"] = truncateDebugDataHex(dataHex)
 	event["data_len"] = len(dataHex)
+	event["data_truncated"] = len(dataHex) > maxDebugDataHexLength
 	for key, value := range extra {
 		event[key] = value
 	}
@@ -155,19 +211,90 @@ func (recorder *debugRecorder) appendJSONL(ctx context.Context, requestID string
 	if err != nil {
 		return
 	}
+	// P0-3：落盘前做整树脱敏——先反序列化成通用 JSON 形状（map[string]any/[]any/string），
+	// 再递归把敏感字段（authorization/api_key/token/password/secret 等）替换为 ***。
+	// 覆盖 data_hex 之外的 message/payload/body 所有嵌套层级，含第三方 provider 的认证头。
+	var generic any
+	if err := json.Unmarshal(payload, &generic); err == nil {
+		if sanitized, err := json.Marshal(sanitizeDebugEvent(generic)); err == nil {
+			payload = sanitized
+		}
+	}
 	recorder.mu.Lock()
 	defer recorder.mu.Unlock()
 	// F-18：debug JSONL 含完整请求体（消息/上下文/工具参数），目录 0700、文件 0600。
 	if err := securefile.MkdirAll(dir); err != nil {
 		return
 	}
-	file, err := os.OpenFile(filepath.Join(dir, filename), os.O_CREATE|os.O_WRONLY|os.O_APPEND, securefile.FileMode)
+	logPath := filepath.Join(dir, filename)
+	// P0-6：单类 jsonl 超过上限时轮转（.1/.2/.3，保留 3 份），防止长对话下无限增长占满磁盘。
+	if info, statErr := os.Stat(logPath); statErr == nil && info.Size() >= int64(debugLogFileCap) {
+		recorder.rotateLog(logPath)
+	}
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, securefile.FileMode)
 	if err != nil {
 		return
 	}
 	defer file.Close()
 	_, _ = file.Write(append(payload, '\n'))
-	_ = securefile.EnsureMode(filepath.Join(dir, filename), securefile.FileMode)
+	_ = securefile.EnsureMode(logPath, securefile.FileMode)
+}
+
+// rotateLog 把 logPath 轮转为 logPath.1，并顺延旧备份 .1→.2、.2→.3，删除 .3。
+// 在 recorder.mu 持锁下调用；轮转失败只丢弃当前备份，不阻塞写入。
+func (recorder *debugRecorder) rotateLog(logPath string) {
+	_ = os.Remove(logPath + fmt.Sprintf(".%d", maxDebugBackupCount))
+	for i := maxDebugBackupCount - 1; i >= 1; i-- {
+		older := fmt.Sprintf("%s.%d", logPath, i)
+		newer := fmt.Sprintf("%s.%d", logPath, i+1)
+		if _, err := os.Stat(older); err == nil {
+			_ = os.Rename(older, newer)
+		}
+	}
+	_ = os.Rename(logPath, logPath+".1")
+}
+
+// truncateDebugDataHex 截断超长 bidi 原始请求体 hex，防止单行超长。
+func truncateDebugDataHex(dataHex string) string {
+	if len(dataHex) <= maxDebugDataHexLength {
+		return dataHex
+	}
+	return dataHex[:maxDebugDataHexLength]
+}
+
+// sanitizeDebugEvent 递归脱敏 debug 事件中的敏感字段与敏感字符串值。
+func sanitizeDebugEvent(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if _, sensitive := sensitiveDebugFields[strings.ToLower(strings.TrimSpace(key))]; sensitive {
+				out[key] = "***"
+				continue
+			}
+			out[key] = sanitizeDebugEvent(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = sanitizeDebugEvent(item)
+		}
+		return out
+	case string:
+		return redactSensitiveStringValue(typed)
+	default:
+		return value
+	}
+}
+
+// redactSensitiveStringValue 识别字符串值形态的凭证（Bearer 头）并脱敏。
+func redactSensitiveStringValue(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if strings.HasPrefix(trimmed, "Bearer ") && len(trimmed) > len("Bearer ") {
+		return "***"
+	}
+	return value
 }
 
 func (recorder *debugRecorder) debugDir(requestID string, conversationID string) string {
