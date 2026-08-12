@@ -353,6 +353,16 @@ func (service *Service) handlePreCompactTerminal(stream *ActiveStream, sourcePas
 	return service.startPendingCompactionSummary(stream, plan)
 }
 
+// compactionStreamSnapshot 是压缩 goroutine 只读的 stream 字段快照（P0-4）。
+// startPendingCompactionSummary 在持锁段采集一次，goroutine 全程只读快照，
+// 避免与 actor 线程（新一轮 pass 改写 CurrentModelCallID、OpenStream 刷新
+// ConversationID/ModelID）数据竞争。
+type compactionStreamSnapshot struct {
+	RequestID      string
+	ConversationID string
+	ModelID        string
+}
+
 func (service *Service) startPendingCompactionSummary(stream *ActiveStream, plan *PendingCompaction) error {
 	if service == nil || stream == nil || plan == nil {
 		return nil
@@ -377,6 +387,12 @@ func (service *Service) startPendingCompactionSummary(stream *ActiveStream, plan
 	plan.SummaryModelCallID = summaryModelCallID
 	stream.Phase = TurnPhaseCompacting
 	stream.UpdatedAt = time.Now().UTC()
+	// P0-4：持锁段采集快照，goroutine 只读它而非直接读 stream 字段。
+	snapshot := compactionStreamSnapshot{
+		RequestID:      stream.RequestID,
+		ConversationID: stream.ConversationID,
+		ModelID:        stream.ModelID,
+	}
 	stream.mu.Unlock()
 	if _, err := service.appendConversationEntries(stream, stream.ConversationID, []HistoryEntry{
 		newCompactionRequestEntry(plan),
@@ -384,15 +400,15 @@ func (service *Service) startPendingCompactionSummary(stream *ActiveStream, plan
 		cancel()
 		return err
 	}
-	go service.runPendingCompaction(stream, token, clonePendingCompaction(plan), summaryModelCallID, ctx)
+	go service.runPendingCompaction(stream, token, clonePendingCompaction(plan), summaryModelCallID, ctx, snapshot)
 	return nil
 }
 
-func (service *Service) runPendingCompaction(stream *ActiveStream, token uint64, plan *PendingCompaction, modelCallID string, ctx context.Context) {
+func (service *Service) runPendingCompaction(stream *ActiveStream, token uint64, plan *PendingCompaction, modelCallID string, ctx context.Context, snapshot compactionStreamSnapshot) {
 	if service == nil || stream == nil || plan == nil {
 		return
 	}
-	summaryText, err := service.generateCompactionSummary(ctx, stream, plan, modelCallID)
+	summaryText, err := service.generateCompactionSummary(ctx, stream, plan, modelCallID, snapshot)
 	if err == nil {
 		if trimmed := strings.TrimSpace(summaryText); trimmed != "" {
 			summaryText = trimmed
@@ -409,7 +425,7 @@ func (service *Service) runPendingCompaction(stream *ActiveStream, token uint64,
 			Err:         err,
 		},
 	}); postErr != nil && !errors.Is(postErr, errProviderLoopInterrupted) {
-		log.Printf("forwarder compaction completion post failed request_id=%s token=%d err=%v", strings.TrimSpace(stream.RequestID), token, postErr)
+		log.Printf("forwarder compaction completion post failed request_id=%s token=%d err=%v", strings.TrimSpace(snapshot.RequestID), token, postErr)
 		_ = service.failStreamIfNonTerminal(stream, "unknown", postErr)
 	}
 }
@@ -1433,7 +1449,7 @@ func (service *Service) buildCompactionSummaryMessages(plan *PendingCompaction) 
 	}, nil
 }
 
-func (service *Service) generateCompactionSummary(ctx context.Context, stream *ActiveStream, plan *PendingCompaction, modelCallID string) (string, error) {
+func (service *Service) generateCompactionSummary(ctx context.Context, stream *ActiveStream, plan *PendingCompaction, modelCallID string, snapshot compactionStreamSnapshot) (string, error) {
 	if service == nil || stream == nil || plan == nil {
 		return "", nil
 	}
@@ -1447,11 +1463,11 @@ func (service *Service) generateCompactionSummary(ctx context.Context, stream *A
 	accumulated := ""
 	usage := turnUsageSnapshot{}
 	err = service.provider.StartStream(ctx, ProviderRequest{
-		RequestID:      stream.RequestID,
-		ConversationID: stream.ConversationID,
-		RunID:          stream.RequestID,
+		RequestID:      snapshot.RequestID,
+		ConversationID: snapshot.ConversationID,
+		RunID:          snapshot.RequestID,
 		ModelCallID:    modelCallID,
-		ModelID:        stream.ModelID,
+		ModelID:        snapshot.ModelID,
 		Mode:           agentv1.AgentMode_AGENT_MODE_AGENT,
 		Messages:       messages,
 		MaxTokens:      compactionSummaryOutputMaxTokens,
@@ -1468,7 +1484,7 @@ func (service *Service) generateCompactionSummary(ctx context.Context, stream *A
 			if strings.TrimSpace(accumulated) == "" {
 				return nil
 			}
-			return service.broker.Publish(stream.RequestID, StreamEvent{
+			return service.broker.Publish(snapshot.RequestID, StreamEvent{
 				Message: buildSummaryMessage(accumulated),
 			})
 		case modeladapter.ModelEventKindThinkingDelta, modeladapter.ModelEventKindThinkingCompleted:
