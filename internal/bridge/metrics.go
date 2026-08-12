@@ -468,7 +468,11 @@ func findPrice(models []TokenPricing, modelID string) TokenPricing {
 			IsBuiltin:            hit.IsBuiltin,
 		}
 	}
-	return TokenPricing{ModelID: modelID}
+	// 未命中定价记录（未知模型）：成本按 0 计。语义显式标 FRESH——adapter 落盘前已统一把
+	// input 折算成 fresh_input（openai 存 prompt-cached、anthropic 存 input_tokens 且 API 口径
+	// 已排除 cache），空语义回退 legacy 会对已 fresh 的 input 再减 cacheRead 造成双减、realTotalTokens
+	// 失真（F-2）。TOTAL/legacy 仅留给用户显式配置的自定义 provider。
+	return TokenPricing{ModelID: modelID, InputTokenSemantics: string(config.InputSemanticsFresh)}
 }
 
 // billableInputTokens 按模型的 input_token_semantics 把原始 input token 数折算成「按 input 价计费」的 token 数。
