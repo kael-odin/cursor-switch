@@ -24,7 +24,10 @@ import (
 	"cursor/internal/netproxy"
 )
 
-const bingWebSearchBaseURL = "https://www.bing.com/search?q="
+const (
+	bingWebSearchBaseURL = "https://www.bing.com/search?q="
+	bingWebSearchHostURL = "https://www.bing.com"
+)
 
 // executeBingHTMLSearch 抓取必应搜索结果页并解析引用列表（免 key）。
 func executeBingHTMLSearch(client *http.Client, searchTerm string) ([]*agentv1.WebSearchReference, string, error) {
@@ -74,7 +77,7 @@ func parseBingHTMLReferences(body string) []*agentv1.WebSearchReference {
 	document.Find("li.b_algo").Each(func(_ int, selection *goquery.Selection) {
 		anchor := selection.Find("h2 a").First()
 		title := cleanWebSearchText(anchor.Text())
-		url := strings.TrimSpace(anchor.AttrOr("href", ""))
+		url := normalizeBingSearchURL(anchor.AttrOr("href", ""))
 		if title == "" || url == "" {
 			return
 		}
@@ -89,4 +92,20 @@ func parseBingHTMLReferences(body string) []*agentv1.WebSearchReference {
 		})
 	})
 	return references
+}
+
+// normalizeBingSearchURL 把必应返回的协议省略/相对链接归一化为绝对 URL
+// （对齐 amadeus normalizeSearchUrl 对必应 href 的处理，防畸形引用进 payload）。
+func normalizeBingSearchURL(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	if strings.HasPrefix(rawURL, "//") {
+		return "https:" + rawURL
+	}
+	if strings.HasPrefix(rawURL, "/") {
+		return bingWebSearchHostURL + rawURL
+	}
+	return rawURL
 }

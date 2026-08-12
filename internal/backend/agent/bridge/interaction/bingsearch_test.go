@@ -62,6 +62,25 @@ func TestParseBingHTMLReferencesNoResults(t *testing.T) {
 	}
 }
 
+// TestNormalizeBingSearchURL 验证协议省略/相对链接归一化（对齐 amadeus），
+// 防必应返回非绝对 URL 时产出畸形引用。
+func TestNormalizeBingSearchURL(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"//www.bing.com/ck/a?x=1", "https://www.bing.com/ck/a?x=1"},
+		{"/search?q=hello", "https://www.bing.com/search?q=hello"},
+		{"https://example.com/a", "https://example.com/a"},
+		{"  ", ""},
+	}
+	for _, c := range cases {
+		if got := normalizeBingSearchURL(c.in); got != c.want {
+			t.Errorf("normalizeBingSearchURL(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // TestExecuteBingHTMLSearch 验证免 key 必应 HTML 搜索：注入返回 200+HTML 的 transport，
 // 断言解析成功且结果 ≤ 5（与 limitWebSearchReferences 口径一致）。
 func TestExecuteBingHTMLSearch(t *testing.T) {
